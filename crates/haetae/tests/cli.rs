@@ -137,7 +137,7 @@ fn nothing_is_recorded_without_an_incident() {
     let calm = dir.path().join("calm.jsonl");
     fs::write(
         &calm,
-        r#"{"id":1,"source":"planner","timestamp_ms":0,"action":{"type":"move_to","goal":{"x":3,"y":3},"speed":0.5}}"#,
+        r#"{"id":1,"source":"planner","timestamp_ms":1727241780000,"action":{"type":"move_to","goal":{"x":3,"y":3},"speed":0.5}}"#,
     )
     .unwrap();
     assert!(haetae(&["keygen", "--out", key.to_str().unwrap()])
@@ -187,18 +187,28 @@ fn judge_lines(lines: &str, post: &str) -> (tempfile::TempDir, PathBuf, String, 
     (dir, log, pubkey, out)
 }
 
-const INTO_CHILD_ROOM: &str = r#"{"id":1,"source":"vla","timestamp_ms":1,"action":{"type":"move_to","goal":{"x":8.5,"y":8.5},"speed":0.2}}"#;
-const CALM: &str = r#"{"id":2,"source":"planner","timestamp_ms":2,"action":{"type":"move_to","goal":{"x":3,"y":3},"speed":0.2}}"#;
-const WORLD: &str = r#"{"world":{"robot":{"pose":{"x":1,"y":1}},"humans":[],"confidence":0.9}}"#;
+const INTO_CHILD_ROOM: &str = r#"{"id":1,"source":"vla","timestamp_ms":1727241780001,"action":{"type":"move_to","goal":{"x":8.5,"y":8.5},"speed":0.2}}"#;
+const CALM: &str = r#"{"id":2,"source":"planner","timestamp_ms":1727241780002,"action":{"type":"move_to","goal":{"x":3,"y":3},"speed":0.2}}"#;
+const WORLD: &str = r#"{"world":{"stamp_ms":1727241780002,"robot":{"pose":{"x":1,"y":1}},"humans":[],"confidence":0.9}}"#;
 
 /// H3 (Devin's review): a line mixing `fault` and `world` must not silently
-/// drop the fault.
+/// drop the fault. W2: it is rejected, and the run continues (per-message
+/// isolation) instead of aborting.
 #[test]
-fn mixed_event_line_is_rejected() {
-    let line = r#"{"fault":{"code":"X","timestamp_ms":1,"raise_to":"hold"},"world":{"robot":{"pose":{"x":1,"y":1}},"confidence":0.9}}"#;
-    let (_dir, _log, _pk, out) = judge_lines(line, "8");
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("must be the only key"));
+fn mixed_event_line_is_rejected_and_the_run_continues() {
+    let mixed = r#"{"fault":{"code":"X","timestamp_ms":1,"raise_to":"hold"},"world":{"stamp_ms":1,"robot":{"pose":{"x":1,"y":1}},"confidence":0.9}}"#;
+    let lines = [mixed, "not json at all", CALM].join("\n");
+    let (_dir, _log, _pk, out) = judge_lines(&lines, "8");
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(":1: rejected:") && err.contains("must be the only key"),
+        "{err}"
+    );
+    assert!(err.contains(":2: rejected:"), "{err}");
+    assert!(err.contains("rejected=2"), "{err}");
+    // The valid line after the garbage was still judged.
+    assert!(stdout(&out).contains(r#""proposal_id":2"#));
 }
 
 /// M3 (Devin's review): world updates do not use up the post-incident window.
@@ -229,4 +239,30 @@ fn world_updates_do_not_starve_the_post_window() {
     ]);
     let report: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(report["fully_sealed"], true);
+}
+
+/// W2 review H2: an untrusted far-future timestamp must not move the file
+/// adapter's clock and make every later line stale.
+#[test]
+fn forged_future_timestamp_does_not_poison_the_clock() {
+    let forged = r#"{"id":1,"source":"vla","timestamp_ms":18446744073709551615,"action":{"type":"move_to","goal":{"x":3,"y":3},"speed":0.5}}"#;
+    let lines = [forged, WORLD, CALM].join("\n");
+    let (_dir, _log, _pk, out) = judge_lines(&lines, "8");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decisions: Vec<serde_json::Value> = stdout(&out)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        decisions[0]["fired"],
+        serde_json::json!(["invalid:timestamp"])
+    );
+    assert_eq!(
+        decisions[1]["verdict"], "yun",
+        "later lines are still judged fresh"
+    );
 }

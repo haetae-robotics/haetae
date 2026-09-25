@@ -4,9 +4,9 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use haetae::sillok::{self, Keypair, Sacho, SillokWriter};
-use haetae::{ActionKind, ActionProposal, Gate, Mode, Policy, Verdict, WorldSnapshot};
-use serde::Deserialize;
+use haetae::runtime::{Inbound, Outcome, RecorderConfig, Runtime, RuntimeConfig};
+use haetae::sillok::{self, Keypair};
+use haetae::{ActionKind, Policy, Verdict, WorldSnapshot};
 use serde_json::{json, Value};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -76,50 +76,6 @@ enum SillokCommand {
     },
 }
 
-/// A line of the proposals stream.
-enum Step {
-    /// New facts from the trusted safety-perception path.
-    World(WorldSnapshot),
-    Fault(Fault),
-    Proposal(ActionProposal),
-}
-
-impl Step {
-    /// Dispatch on the top-level key explicitly. An untagged serde enum would
-    /// pick the first variant that fits and silently drop extra keys, so a line
-    /// mixing `fault` and `world` could lose the fault.
-    fn parse(line: &str) -> std::result::Result<Step, String> {
-        let value: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
-        let obj = value.as_object().ok_or("expected a JSON object")?;
-        let event = |key: &str| -> std::result::Result<Option<Value>, String> {
-            match (obj.get(key), obj.len()) {
-                (None, _) => Ok(None),
-                (Some(v), 1) => Ok(Some(v.clone())),
-                (Some(_), _) => Err(format!("`{key}` must be the only key on its line")),
-            }
-        };
-        let err = |e: serde_json::Error| e.to_string();
-        if let Some(w) = event("world")? {
-            return serde_json::from_value(w).map(Step::World).map_err(err);
-        }
-        if let Some(f) = event("fault")? {
-            return serde_json::from_value(f).map(Step::Fault).map_err(err);
-        }
-        serde_json::from_value(value)
-            .map(Step::Proposal)
-            .map_err(err)
-    }
-}
-
-/// A fault reported by maek (self-diagnosis). W1 feeds these in by hand.
-#[derive(Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-struct Fault {
-    code: String,
-    timestamp_ms: u64,
-    raise_to: Mode,
-}
-
 fn main() {
     if let Err(e) = run(Cli::parse()) {
         eprintln!("error: {e}");
@@ -140,10 +96,18 @@ fn run(cli: Cli) -> Result<()> {
             post,
         } => {
             let recorder = match (sillok, key) {
-                (Some(path), Some(key)) => Some(Recorder::new(path, read_key(&key)?, post)),
+                (Some(path), Some(key)) => Some(RecorderConfig {
+                    post_window: post,
+                    ..RecorderConfig::new(path, read_key(&key)?)
+                }),
                 _ => None,
             };
-            judge(&policy, &world, &proposals, recorder, sacho as usize)
+            let cfg = RuntimeConfig {
+                sacho_capacity: sacho as usize,
+                recorder,
+                ..RuntimeConfig::default()
+            };
+            judge(&policy, &world, &proposals, cfg)
         }
         Command::Sillok {
             command: SillokCommand::Verify { log, pubkey },
@@ -191,73 +155,20 @@ fn read_key(path: &Path) -> Result<Keypair> {
     Ok(Keypair::from_seed_hex(fs::read_to_string(path)?.trim())?)
 }
 
-/// Dashcam-style recorder: nothing is persisted until the first incident.
-/// On an incident the sacho window is flushed and sealed, and the next
-/// `post_window` steps are recorded too.
-struct Recorder {
-    path: PathBuf,
-    key: Option<Keypair>,
-    writer: Option<SillokWriter>,
-    post_window: usize,
-    post_remaining: usize,
-    incidents: usize,
-}
-
-impl Recorder {
-    fn new(path: PathBuf, key: Keypair, post_window: usize) -> Self {
-        Recorder {
-            path,
-            key: Some(key),
-            writer: None,
-            post_window,
-            post_remaining: 0,
-            incidents: 0,
-        }
-    }
-
-    /// Called after every step. `counts` is false for world updates, so the
-    /// post-incident window covers the next `post_window` proposals and faults.
-    fn after_step(&mut self, incident: bool, counts: bool, sacho: &mut Sacho) -> Result<()> {
-        if incident {
-            if let Some(key) = self.key.take() {
-                self.writer = Some(SillokWriter::create(&self.path, key, 64)?);
-            }
-            self.incidents += 1;
-            self.post_remaining = self.post_window;
-        } else if self.post_remaining == 0 {
-            return Ok(());
-        } else if counts {
-            self.post_remaining -= 1;
-        }
-        if let Some(w) = self.writer.as_mut() {
-            sacho.flush_into(w)?;
-            if incident || self.post_remaining == 0 {
-                w.seal()?;
-            }
-        }
-        Ok(())
-    }
-
-    fn close(self) -> Result<()> {
-        if let Some(w) = self.writer {
-            w.close()?;
-        }
-        Ok(())
-    }
-}
-
-fn judge(
-    policy: &Path,
-    world: &Path,
-    proposals: &Path,
-    mut recorder: Option<Recorder>,
-    sacho_capacity: usize,
-) -> Result<()> {
-    let mut gate = Gate::new(Policy::from_json(&fs::read_to_string(policy)?)?)?;
-    let mut world: WorldSnapshot = serde_json::from_str(&fs::read_to_string(world)?)?;
-    let mut sacho = Sacho::new(sacho_capacity);
+/// File transport for the runtime: one JSON line in, one outcome out.
+///
+/// Receive time is stream time taken from the trusted perception path only:
+/// the latest world `stamp_ms` seen so far. Proposal and fault timestamps are
+/// untrusted claims and never move the clock, so one forged far-future line
+/// cannot make everything after it stale. Malformed lines are rejected and
+/// the run continues.
+fn judge(policy: &Path, world: &Path, proposals: &Path, cfg: RuntimeConfig) -> Result<()> {
+    let policy = Policy::from_json(&fs::read_to_string(policy)?)?;
+    let world: WorldSnapshot = serde_json::from_str(&fs::read_to_string(world)?)?;
+    let mut recv_ms = world.stamp_ms;
+    let mut rt = Runtime::new(policy, Some(world), cfg)?;
     let mut counts = [0usize; 3];
-    let mut last_ts = 0u64;
+    let mut rejected = 0usize;
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
@@ -269,57 +180,40 @@ fn judge(
         if line.trim().is_empty() {
             continue;
         }
-        let step = Step::parse(&line)
-            .map_err(|e| format!("{}:{}: {e}", proposals.display(), lineno + 1))?;
-        let counts_toward_post = !matches!(step, Step::World(_));
-        let incident = match step {
-            Step::World(w) => {
-                world = w;
-                sacho.push(last_ts, "world", serde_json::to_value(&world)?);
-                false
+        let outcome = match Inbound::from_json(line.as_bytes()) {
+            Ok(msg) => {
+                if let Inbound::World(w) = &msg {
+                    recv_ms = recv_ms.max(w.stamp_ms);
+                }
+                rt.handle(msg, recv_ms)?
             }
-            Step::Fault(fault) => {
-                last_ts = fault.timestamp_ms;
-                let before = gate.mode();
-                gate.raise_mode(fault.raise_to);
-                sacho.push(
-                    fault.timestamp_ms,
-                    "fault",
-                    json!({ "fault": fault, "mode_before": before, "mode_after": gate.mode() }),
-                );
-                gate.mode() > before && gate.mode().stop_only()
-            }
-            Step::Proposal(p) => {
-                last_ts = p.timestamp_ms;
-                sacho.push(
-                    p.timestamp_ms,
-                    "proposal",
-                    json!({ "proposal": p, "world": world }),
-                );
-                let d = gate.judge(&p, &world);
-                sacho.push(p.timestamp_ms, "decision", serde_json::to_value(&d)?);
+            Err(_) => rt.handle_bytes(line.as_bytes(), recv_ms)?,
+        };
+        match outcome {
+            Outcome::Decision(d) => {
                 writeln!(out, "{}", serde_json::to_string(&d)?)?;
                 counts[match d.verdict {
                     Verdict::Yun => 0,
                     Verdict::Jeol => 1,
                     Verdict::Bul => 2,
                 }] += 1;
-                d.verdict == Verdict::Bul
             }
-        };
-        if let Some(r) = recorder.as_mut() {
-            r.after_step(incident, counts_toward_post, &mut sacho)?;
+            Outcome::Rejected { error } => {
+                rejected += 1;
+                eprintln!("{}:{}: rejected: {error}", proposals.display(), lineno + 1);
+            }
+            Outcome::WorldUpdated { .. } | Outcome::ModeChanged { .. } => {}
         }
     }
 
-    let incidents = recorder.as_ref().map_or(0, |r| r.incidents);
     eprintln!(
-        "yun={} jeol={} bul={} incidents_recorded={incidents}",
-        counts[0], counts[1], counts[2]
+        "yun={} jeol={} bul={} rejected={rejected} incidents={}",
+        counts[0],
+        counts[1],
+        counts[2],
+        rt.incidents()
     );
-    if let Some(r) = recorder {
-        r.close()?;
-    }
+    rt.close()?;
     Ok(())
 }
 
@@ -388,6 +282,7 @@ fn replay(log: &Path, pubkey: &str) -> Result<()> {
                 text(&p["mode_after"])
             ),
             "seal" => format!("── seal (key {}) ──", text(&p["key_id"])),
+            "reject" => format!("reject  {}", text(&p["error"])),
             other => format!("{other} {p}"),
         };
         println!("{mark}{ts}  {line}");
