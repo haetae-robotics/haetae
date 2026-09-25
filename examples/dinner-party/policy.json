@@ -1,0 +1,19 @@
+{
+  "envelope": { "max_speed": 1.0, "workspace": { "min": {"x":0,"y":0}, "max": {"x":10,"y":10} } },
+  "allowed_sources": ["vla", "planner", "teleop"],
+  "zones": [
+    { "id": "hall", "area": { "min": {"x":4,"y":0}, "max": {"x":6,"y":10} }, "speed_limit": 0.3 },
+    { "id": "child-room", "area": { "min": {"x":7,"y":7}, "max": {"x":10,"y":10} }, "no_entry": true }
+  ],
+  "rules": [
+    { "id": "knife-near-child",
+      "when": { "object_any": ["knife"], "human_within": { "class": "child", "distance": 1.5 } },
+      "then": "bul" },
+    { "id": "slow-near-human",
+      "when": { "human_within": { "distance": 1.0 } },
+      "then": { "jeol": { "max_speed": 0.2 } } },
+    { "id": "low-confidence",
+      "when": { "confidence_below": 0.6 },
+      "then": { "jeol": { "max_speed": 0.2 } } }
+  ]
+}

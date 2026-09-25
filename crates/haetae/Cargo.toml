@@ -1,0 +1,20 @@
+[package]
+name = "haetae"
+description = "Robot safety & security stack for physical AI: a policy gate between untrusted models and actuators (pre-alpha)"
+readme = "README.md"
+keywords = ["robotics", "safety", "security", "ros2", "guardrail"]
+categories = ["science::robotics"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+haetae-core.workspace = true
+sillok.workspace = true
+clap = { version = "4.6.7", features = ["derive"] }
+serde_json = "1.0.151"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

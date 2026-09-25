@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/haetae", "crates/haetae-core", "crates/sillok"]
+
+[workspace.package]
+version = "0.0.2"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/haetae-robotics/haetae"
+
+[workspace.dependencies]
+haetae-core = { path = "crates/haetae-core", version = "0.0.2" }
+sillok = { path = "crates/sillok", version = "0.0.2", package = "haetae-sillok" }
