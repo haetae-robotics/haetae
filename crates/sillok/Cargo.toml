@@ -1,0 +1,22 @@
+[package]
+name = "haetae-sillok"
+description = "Haetae sillok: tamper-evident, signed, hash-chained incident recorder for robots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "sillok"
+
+[dependencies]
+ed25519-dalek = "3.0.0"
+getrandom = "0.4.3"
+hex = "0.4.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

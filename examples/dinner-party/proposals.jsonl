@@ -1,0 +1,10 @@
+{"id":1,"source":"planner","timestamp_ms":1727241780000,"action":{"type":"move_to","goal":{"x":3,"y":3},"speed":0.5}}
+{"id":2,"source":"vla","timestamp_ms":1727241782000,"action":{"type":"grasp","object":"knife","at":{"x":3.2,"y":3}}}
+{"world":{"robot":{"pose":{"x":3,"y":3},"holding":"knife"},"humans":[{"id":"kid","class":"child","pos":{"x":2,"y":6}}],"confidence":0.95}}
+{"id":3,"source":"vla","timestamp_ms":1727241787212,"action":{"type":"move_to","goal":{"x":2.5,"y":5.2},"speed":0.8}}
+{"id":4,"source":"vla","timestamp_ms":1727241787260,"action":{"type":"move_to","goal":{"x":8.5,"y":8.5},"speed":2.0}}
+{"fault":{"code":"M-LIDAR-021","timestamp_ms":1727241787301,"raise_to":"caution"}}
+{"id":5,"source":"planner","timestamp_ms":1727241788000,"action":{"type":"move_to","goal":{"x":3,"y":1},"speed":0.9}}
+{"fault":{"code":"M-LIDAR-022","timestamp_ms":1727241789000,"raise_to":"hold"}}
+{"id":6,"source":"planner","timestamp_ms":1727241789500,"action":{"type":"move_to","goal":{"x":3,"y":2},"speed":0.3}}
+{"id":7,"source":"teleop","timestamp_ms":1727241790000,"action":{"type":"stop"}}

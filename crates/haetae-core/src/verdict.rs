@@ -1,10 +1,8 @@
-//! Haetae (해태): robot safety & security stack for physical AI (pre-alpha).
-//!
-//! Model output is untrusted. Every proposed action is judged by the gate
-//! and receives exactly one [`Verdict`].
+use serde::{Deserialize, Serialize};
 
-/// Result of judging an action proposal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Result of judging an action proposal. Ordered from least to most strict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Verdict {
     /// 允 — allow as proposed.
     Yun,
@@ -17,12 +15,7 @@ pub enum Verdict {
 impl Verdict {
     /// Combine two verdicts; the stricter one wins (tighten-only).
     pub fn stricter(self, other: Verdict) -> Verdict {
-        use Verdict::*;
-        match (self, other) {
-            (Bul, _) | (_, Bul) => Bul,
-            (Jeol, _) | (_, Jeol) => Jeol,
-            _ => Yun,
-        }
+        self.max(other)
     }
 }
 
@@ -34,6 +27,7 @@ mod tests {
     fn stricter_wins() {
         assert_eq!(Yun.stricter(Jeol), Jeol);
         assert_eq!(Jeol.stricter(Bul), Bul);
+        assert_eq!(Bul.stricter(Yun), Bul);
         assert_eq!(Yun.stricter(Yun), Yun);
     }
 }

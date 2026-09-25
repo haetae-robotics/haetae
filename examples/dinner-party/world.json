@@ -1,0 +1,5 @@
+{
+  "robot": { "pose": { "x": 1, "y": 1 }, "holding": null },
+  "humans": [{ "id": "kid", "class": "child", "pos": { "x": 2, "y": 6 } }],
+  "confidence": 0.95
+}
