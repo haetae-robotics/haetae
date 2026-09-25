@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haetae"
+version = "0.0.1"
+description = "Robot safety & security stack for physical AI: a policy gate between untrusted models and actuators (pre-alpha)"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+keywords = ["robotics", "safety", "security", "ros2", "guardrail"]
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Security",
+  "License :: OSI Approved :: Apache Software License",
+]
+
+[project.urls]
+Repository = "https://github.com/haetae-robotics/haetae"
