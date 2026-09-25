@@ -5,4 +5,5 @@
 //! ring buffer and sealed into the tamper-evident `sillok` log on incidents.
 
 pub use haetae_core::*;
+pub use haetae_runtime as runtime;
 pub use sillok;

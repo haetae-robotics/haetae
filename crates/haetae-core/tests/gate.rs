@@ -310,9 +310,26 @@ fn cap_on_speedless_action_is_jeol_with_speed_cap() {
     assert_eq!(d.speed_cap, Some(0.5));
 }
 
+/// W2 review M5: the envelope bounds every allowed action, so the executor
+/// always receives a cap, including for speedless actions like grasp.
 #[test]
-fn uncapped_decisions_carry_no_speed_cap() {
+fn allowed_decisions_always_carry_the_envelope_cap() {
     let d = gate().judge(&move_to(3.0, 1.0, 0.5), &world());
+    assert_eq!(d.verdict, Verdict::Yun);
+    assert_eq!(d.speed_cap, Some(1.0));
+
+    let grasp = propose(
+        Source::Vla,
+        ActionKind::Grasp {
+            object: "cup".into(),
+            at: Point2::new(1.5, 1.0),
+        },
+    );
+    let d = gate().judge(&grasp, &world());
+    assert_eq!(d.verdict, Verdict::Yun);
+    assert_eq!(d.speed_cap, Some(1.0));
+
+    let d = gate().judge(&propose(Source::Vla, ActionKind::Stop), &world());
     assert_eq!(d.speed_cap, None);
 }
 
@@ -381,7 +398,7 @@ fn stop_ignores_freshness() {
 fn freshness_is_configurable_and_validated() {
     let tight = POLICY.replacen(
         r#""allowed_sources""#,
-        r#""freshness": { "world_max_age_ms": 50 }, "allowed_sources""#,
+        r#""freshness": { "world_max_age_ms": 50, "future_tolerance_ms": 20 }, "allowed_sources""#,
         1,
     );
     let g = Gate::new(Policy::from_json(&tight).unwrap()).unwrap();

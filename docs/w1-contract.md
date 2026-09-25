@@ -33,7 +33,8 @@ Coordinates are 2D metres in the robot's map frame. Speeds are m/s.
 - `Gate::judge(&self, &ActionProposal, &WorldSnapshot) -> Decision`
   - `Decision { proposal_id, verdict, fired, action, speed_cap, mode }`
   - `Yun`: allow as proposed. `Bul`: deny, and `action = None`.
-  - `Jeol`: allow within limits. `speed_cap` is the limit the executor must apply to **all** motion, arm included.
+  - `speed_cap` is the limit the executor must apply to **all** motion, arm included. Since W2 it is set on every allowed non-stop decision: the envelope maximum for `Yun`, or lower for `Jeol`.
+  - `Jeol`: allow within limits tighter than the envelope.
     - For `move_to`, the speed is also clamped in `action`.
     - For `grasp` and `place`, `action` is unchanged and `speed_cap` alone carries the limit.
   - Every applicable check runs. The strictest verdict wins (tighten-only), and several caps combine as their minimum.
@@ -44,7 +45,9 @@ Coordinates are 2D metres in the robot's map frame. Speeds are m/s.
   - `Caution` caps speed at half the envelope maximum.
   - `Hold` and above deny everything except `stop`.
 
-### 1.1 Known gaps, planned for W2 (from Devin's W1 review)
+### 1.1 Known gaps from Devin's W1 review
+
+Status after W2: freshness, trusted time, per-message isolation and the reset exposure are addressed in [`w2-contract.md`](w2-contract.md). The last two items remain by design.
 
 - **Freshness (M5)**: `WorldSnapshot` has no stamp and `timestamp_ms` is unused, so a replayed proposal or stale perception cannot be detected. W2 adds `stamp_ms` and a staleness budget to `judge`.
 - **Trusted time (M6)**: the CLI writes the proposal's own `timestamp_ms` as the sillok `ts_ms`, which lets an attacker choose the audit timeline. W2 records receive time in `ts_ms` and keeps the claimed time in the payload.
@@ -67,7 +70,7 @@ Coordinates are 2D metres in the robot's map frame. Speeds are m/s.
 - `prev` of entry 0 is 64 zeros. Otherwise it is the `hash` of the previous entry.
 - `hash = SHA-256( canonical_json({"seq","ts_ms","kind","payload","prev"}) )`, lowercase hex.
   - Canonical JSON uses `serde_json::Value` with default (BTreeMap, sorted-key) maps, serialised with `serde_json::to_vec` (no whitespace). Do **not** enable serde_json's `preserve_order` feature.
-- `kind` is a free string. Known values: `"proposal"`, `"decision"`, `"fault"`, `"mode"`, `"note"`, and the reserved `"seal"`.
+- `kind` is a free string. Known values: `"proposal"`, `"decision"`, `"fault"`, `"world"`, `"reject"` (added in W2), `"mode"`, `"note"`, and the reserved `"seal"`.
 
 ### 2.2 Seals (signatures)
 

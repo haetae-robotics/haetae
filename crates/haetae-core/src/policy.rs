@@ -24,6 +24,9 @@ pub struct Policy {
     pub rules: Vec<Rule>,
 }
 
+/// Upper bound for every freshness budget: one minute.
+pub const MAX_FRESHNESS_BUDGET_MS: u64 = 60_000;
+
 /// How old (or how far in the future) inputs may be, relative to the
 /// runtime clock passed to [`crate::Gate::judge_at`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,8 +151,24 @@ impl Policy {
         if !self.envelope.workspace.is_valid() {
             return invalid("envelope.workspace is not a valid rectangle".into());
         }
-        if self.freshness.world_max_age_ms == 0 || self.freshness.proposal_max_age_ms == 0 {
+        let f = &self.freshness;
+        let budgets = [
+            f.world_max_age_ms,
+            f.proposal_max_age_ms,
+            f.future_tolerance_ms,
+        ];
+        if f.world_max_age_ms == 0 || f.proposal_max_age_ms == 0 {
             return invalid("freshness budgets must be positive".into());
+        }
+        // A huge budget would saturate the clock arithmetic and switch the
+        // checks off, so it is a policy error, not a lenient setting.
+        if budgets.iter().any(|&b| b > MAX_FRESHNESS_BUDGET_MS) {
+            return invalid(format!(
+                "freshness budgets must not exceed {MAX_FRESHNESS_BUDGET_MS} ms"
+            ));
+        }
+        if f.future_tolerance_ms > f.world_max_age_ms {
+            return invalid("future_tolerance_ms must not exceed world_max_age_ms".into());
         }
 
         let mut ids = HashSet::new();

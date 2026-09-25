@@ -41,7 +41,8 @@ pub enum HumanClass {
 }
 
 impl WorldSnapshot {
-    pub(crate) fn is_valid(&self) -> bool {
+    /// Finite pose and positions, confidence within 0..=1.
+    pub fn is_valid(&self) -> bool {
         self.robot.pose.is_finite()
             && (0.0..=1.0).contains(&self.confidence)
             && self.humans.iter().all(|h| h.pos.is_finite())
