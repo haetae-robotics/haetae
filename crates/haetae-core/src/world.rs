@@ -7,6 +7,8 @@ use crate::geom::Point2;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldSnapshot {
+    /// When the safety-perception path produced this snapshot (ms, runtime clock domain).
+    pub stamp_ms: u64,
     pub robot: RobotState,
     #[serde(default)]
     pub humans: Vec<Human>,

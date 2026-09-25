@@ -257,6 +257,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "haetae-runtime"
+version = "0.0.2"
+dependencies = [
+ "haetae-core",
+ "haetae-sillok",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "haetae-sillok"
 version = "0.0.2"
 dependencies = [

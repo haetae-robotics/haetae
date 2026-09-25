@@ -17,9 +17,36 @@ pub struct Policy {
     /// forgetting it must not mean "allow everyone".
     pub allowed_sources: Vec<Source>,
     #[serde(default)]
+    pub freshness: Freshness,
+    #[serde(default)]
     pub zones: Vec<Zone>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+}
+
+/// How old (or how far in the future) inputs may be, relative to the
+/// runtime clock passed to [`crate::Gate::judge_at`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Freshness {
+    /// Maximum age of the world snapshot. Older: `stale:world`.
+    pub world_max_age_ms: u64,
+    /// Maximum age of the proposal's claimed timestamp. Older: `stale:proposal`.
+    /// The claim is untrusted, so this only stops naive replays; the runtime's
+    /// duplicate-id check covers the rest.
+    pub proposal_max_age_ms: u64,
+    /// Allowed clock skew into the future. Further: `invalid:timestamp`.
+    pub future_tolerance_ms: u64,
+}
+
+impl Default for Freshness {
+    fn default() -> Self {
+        Freshness {
+            world_max_age_ms: 500,
+            proposal_max_age_ms: 2000,
+            future_tolerance_ms: 100,
+        }
+    }
 }
 
 /// Hard limits that apply regardless of rules.
@@ -120,6 +147,9 @@ impl Policy {
         }
         if !self.envelope.workspace.is_valid() {
             return invalid("envelope.workspace is not a valid rectangle".into());
+        }
+        if self.freshness.world_max_age_ms == 0 || self.freshness.proposal_max_age_ms == 0 {
+            return invalid("freshness budgets must be positive".into());
         }
 
         let mut ids = HashSet::new();

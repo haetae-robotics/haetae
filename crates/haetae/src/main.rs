@@ -257,7 +257,7 @@ fn judge(
     let mut world: WorldSnapshot = serde_json::from_str(&fs::read_to_string(world)?)?;
     let mut sacho = Sacho::new(sacho_capacity);
     let mut counts = [0usize; 3];
-    let mut last_ts = 0u64;
+    let mut last_ts = world.stamp_ms;
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
@@ -274,12 +274,13 @@ fn judge(
         let counts_toward_post = !matches!(step, Step::World(_));
         let incident = match step {
             Step::World(w) => {
+                last_ts = last_ts.max(w.stamp_ms);
                 world = w;
                 sacho.push(last_ts, "world", serde_json::to_value(&world)?);
                 false
             }
             Step::Fault(fault) => {
-                last_ts = fault.timestamp_ms;
+                last_ts = last_ts.max(fault.timestamp_ms);
                 let before = gate.mode();
                 gate.raise_mode(fault.raise_to);
                 sacho.push(
@@ -290,13 +291,14 @@ fn judge(
                 gate.mode() > before && gate.mode().stop_only()
             }
             Step::Proposal(p) => {
-                last_ts = p.timestamp_ms;
+                last_ts = last_ts.max(p.timestamp_ms);
                 sacho.push(
                     p.timestamp_ms,
                     "proposal",
                     json!({ "proposal": p, "world": world }),
                 );
-                let d = gate.judge(&p, &world);
+                // TODO(W2): haetae-runtime replaces this with a trusted Clock.
+                let d = gate.judge_at(&p, &world, last_ts);
                 sacho.push(p.timestamp_ms, "decision", serde_json::to_value(&d)?);
                 writeln!(out, "{}", serde_json::to_string(&d)?)?;
                 counts[match d.verdict {
