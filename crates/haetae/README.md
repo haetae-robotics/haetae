@@ -34,7 +34,22 @@ The scenario has four parts:
 - A lidar fault raises the mode to `caution`, then to `hold`.
 - Haetae denies (`bul`) or clamps (`jeol`) each unsafe step. The incident windows are sealed into a tamper-evident `sillok` log, which `replay` verifies before printing.
 
-Layout: `crates/haetae-core` (gate), `crates/sillok` (recorder), `crates/haetae` (CLI).
+## Browser simulator
+
+`sim/` is an interactive 2D simulator that runs the **real** `haetae-core` gate compiled to WebAssembly. The page only draws what the gate returns.
+
+- Click the map to propose moves, grasps and places.
+- Drag people around, inject faults, and edit the policy live.
+- Replay the dinner-party attack step by step.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129   # must match Cargo.lock
+sim/build.sh
+python3 -m http.server -d sim 8000                  # then open http://localhost:8000/
+```
+
+Layout: `crates/haetae-core` (gate), `crates/sillok` (recorder), `crates/haetae-runtime` (gate loop), `crates/haetae-wasm` (simulator bindings), `crates/haetae` (CLI).
 Design contract: [`docs/w1-contract.md`](docs/w1-contract.md).
 
 > Status: **pre-alpha (0.0.x)**. Not a certified safety device.

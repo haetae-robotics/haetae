@@ -14,6 +14,8 @@ pub enum Mode {
     /// Everything except `Stop` is denied.
     Hold,
     SafePark,
+    /// Serialized as `"estop"`, matching the `mode:estop` check name.
+    #[serde(rename = "estop")]
     EStop,
 }
 

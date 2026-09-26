@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/haetae", "crates/haetae-core", "crates/haetae-runtime", "crates/sillok"]
+members = ["crates/haetae", "crates/haetae-core", "crates/haetae-runtime", "crates/haetae-wasm", "crates/sillok"]
 
 [workspace.package]
 version = "0.0.2"

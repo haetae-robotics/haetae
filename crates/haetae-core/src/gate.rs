@@ -257,3 +257,22 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::EStop => "estop",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `mode:<name>` check uses the same names as the mode's JSON form.
+    #[test]
+    fn check_names_match_serialized_modes() {
+        for mode in [
+            Mode::Normal,
+            Mode::Caution,
+            Mode::Hold,
+            Mode::SafePark,
+            Mode::EStop,
+        ] {
+            assert_eq!(serde_json::to_value(mode).unwrap(), mode_name(mode));
+        }
+    }
+}
