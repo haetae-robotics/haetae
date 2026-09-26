@@ -26,7 +26,7 @@ export const OBJECTS = {
 };
 
 export const SOURCE_KO = {
-  vla: 'VLA 모델',
+  vla: 'AI 모델',
   planner: '플래너',
   teleop: '원격 조작',
   peer: '다른 로봇',

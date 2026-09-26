@@ -10,25 +10,25 @@
 // invalid-world rejection by the runtime) are not rebuilt here. Only lines that
 // are not structurally a world/fault/proposal message are skipped as invalid.
 
-import { VERDICTS, pt, objectLabel, SOURCE_KO, actionText } from './explain.js';
+import { VERDICTS, pt, objectLabel, SOURCE_KO, actionText, MODE_KO } from './explain.js';
 
 const DWELL_MS = 1500;
 
 // Narration keyed by proposal id / fault code. Captions describe intent only;
 // the verdict is appended from the gate's decision.
-const PROPOSAL_CAPTIONS = {
+export const PROPOSAL_CAPTIONS = {
   1: '① 플래너가 식탁 쪽 (3, 3)으로 이동 제안',
-  2: '② VLA가 식탁 위의 칼 🔪을 집으려 함',
-  3: '③ 탈취된 VLA가 칼을 든 채 아이에게 접근 시도',
+  2: '② AI 모델이 식탁 위의 칼 🔪을 집으려 함',
+  3: '③ 탈취된 AI 모델이 칼을 든 채 아이에게 접근 시도',
   4: '④ 가짜 태그: 아이 방으로 2 m/s 돌진',
   5: '⑤ 플래너가 출발점 쪽 (3, 1)로 복귀 이동 제안',
   6: '⑥ 홀드 중에 플래너가 다시 이동 제안',
-  7: '⑦ 원격 조작자가 정지(stop) 명령',
+  7: '⑦ 원격 조작자가 정지 명령',
 };
 
-const FAULT_CAPTIONS = {
-  'M-LIDAR-021': '라이다 고장 (M-LIDAR-021) → caution',
-  'M-LIDAR-022': '라이다 추가 고장 (M-LIDAR-022) → hold',
+export const FAULT_CAPTIONS = {
+  'M-LIDAR-021': `라이다 고장 → ${MODE_KO.caution} 모드 요청`,
+  'M-LIDAR-022': `라이다 추가 고장 → ${MODE_KO.hold} 모드 요청`,
 };
 
 function proposalCaption(p) {
@@ -37,12 +37,13 @@ function proposalCaption(p) {
 }
 
 function faultCaption(f) {
-  return FAULT_CAPTIONS[f.code] ?? `고장 ${f.code} → ${f.raise_to}`;
+  return FAULT_CAPTIONS[f.code] ?? `고장 ${f.code ?? ''} → ${MODE_KO[f.raise_to] ?? f.raise_to} 모드 요청`;
 }
 
 function worldCaption(w) {
   const holding = w.robot.holding ? `, ${objectLabel(w.robot.holding)} 들고 있음` : '';
-  return `인식 갱신 — 로봇 ${pt(w.robot.pose)}${holding}, 신뢰도 ${w.confidence}`;
+  const conf = typeof w.confidence === 'number' ? `, 신뢰도 ${Math.round(w.confidence * 100)}%` : '';
+  return `인식 갱신 — 로봇 ${pt(w.robot.pose)}${holding}${conf}`;
 }
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -115,9 +116,14 @@ export class ScenarioPlayer {
     this.animating = false;
     this.wake = null;
     this.stepRequested = false;
+    this.dwellMs = DWELL_MS;
   }
 
-  async start() {
+  /**
+   * @param {object} [src] optional overrides { policy, world, stream } (texts);
+   *   any part left out is fetched from ./examples/ as before.
+   */
+  async start(src = {}) {
     this.stop(true);
     // ⏸/⏭ have nothing to act on while the files load. ⏹ stays usable when a
     // restart interrupts playback, so the user can still leave scenario mode.
@@ -131,9 +137,9 @@ export class ScenarioPlayer {
         return res.text();
       };
       const [p, w, s] = await Promise.all([
-        get('./examples/policy.json'),
-        get('./examples/world.json'),
-        get('./examples/proposals.jsonl'),
+        src.policy ?? get('./examples/policy.json'),
+        src.world ?? get('./examples/world.json'),
+        src.stream ?? get('./examples/proposals.jsonl'),
       ]);
       policyText = p;
       world = JSON.parse(w);
@@ -159,8 +165,8 @@ export class ScenarioPlayer {
     this.running = true;
     this.paused = false;
     this.api.controls(this.status());
-    this.api.caption('시나리오 시작 — 초기 월드: 아이(kid)가 (2, 6), 로봇이 (1, 1)', 0, steps.length);
-    await this.sleep(DWELL_MS);
+    this.api.caption(`시나리오 시작 — 초기 세계: 로봇 ${pt(world.robot.pose)}, 사람 ${(world.humans ?? []).length}명`, 0, steps.length);
+    await this.sleep(this.dwellMs);
     this.loop(token).catch((e) => {
       if (token === this.token) this.fail(`시나리오 재생 중 오류: ${e?.message ?? e}`);
     });
@@ -193,7 +199,7 @@ export class ScenarioPlayer {
       this.stepRequested = false;
       await this.step();
       if (!this.alive(token)) return;
-      if (!this.paused) await this.sleep(DWELL_MS);
+      if (!this.paused) await this.sleep(this.dwellMs);
     }
     if (this.alive(token)) this.finish();
   }
