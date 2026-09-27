@@ -5,7 +5,7 @@
 // decision.fired and numbers from the policy; none of them changes, drops or
 // re-derives a verdict. A seal element can only be built from a Decision.
 
-import { VERDICT_UI, sourceName, zoneName, kindOf, capShort, actionTarget } from './copy.js';
+import { VERDICT_UI, verdictIcon, sourceName, zoneName, kindOf, capShort, actionTarget } from './copy.js';
 import { num, MODE_KO, MODES } from './explain.js';
 
 const $ = (id) => document.getElementById(id);
@@ -215,27 +215,30 @@ export function highlightsFor(decision, proposal, world, policy, now) {
   return { canvas, dom };
 }
 
-// ───────────────────────── Seal ─────────────────────────
-
-const SHAPES = {
-  yun: '<circle cx="32" cy="32" r="29" class="s-fill"/><circle cx="32" cy="32" r="24" class="s-ring"/>',
-  jeol: '<path class="s-fill" d="M22 3h20l19 19v20L42 61H22L3 42V22Z" stroke-linejoin="round"/>',
-  bul: '<path class="s-fill" d="M5 6.5 L20 4.2 L33 5.6 L47 3.8 L59.5 5.4 L60.6 19 L58.8 33 L60.9 46 L59 59.4 L45 60.7 L31 58.9 L18 60.6 L4.6 59.2 L5.8 45 L3.9 31 L5.4 18 Z"/><rect x="10" y="10" width="44" height="44" class="s-inner"/>',
-};
+// ───────────────────────── Verdict tag ─────────────────────────
 
 /**
- * Build a seal element from a Decision. There is intentionally no way to
- * build one without a Decision object.
+ * Build a verdict tag from a Decision: a verdict icon (circle / diamond /
+ * octagon) plus the Korean word, and later the reason label. There is
+ * intentionally no way to build one without a Decision object.
  */
-export function makeSeal(decision, { tag } = {}) {
+export function makeTag(decision, { tag } = {}) {
   const v = decision.verdict;
   const ui = VERDICT_UI[v];
-  const s = el('div', `seal seal-${v}`);
-  s.innerHTML = `<svg viewBox="0 0 64 64" aria-hidden="true">${SHAPES[v]}</svg>`;
-  s.append(el('span', 'seal-glyph', ui.glyph));
-  if (v === 'jeol' && decision.speed_cap != null) s.append(el('span', 'seal-sub', `≤${num(decision.speed_cap)}`));
-  if (tag) s.append(el('span', 'seal-tag', tag));
-  return s;
+  const root = el('div', `vtag vtag-${v}`);
+  const leader = el('span', 'vt-leader');
+  const dot = el('span', 'vt-dot');
+  const box = el('div', 'vt-box');
+  box.innerHTML = verdictIcon(v, 'vt-icon');
+  const text = el('div', 'vt-text');
+  const l1 = el('div', 'vt-l1');
+  l1.append(el('span', 'vt-word', ui.word));
+  text.append(l1);
+  if (tag) text.append(el('div', 'vt-tag', tag));
+  box.append(text);
+  root.append(leader, dot, box);
+  root.parts = { leader, dot, box, text, l1 };
+  return root;
 }
 
 // ───────────────────────── Overlay ─────────────────────────
@@ -248,33 +251,63 @@ function overlapArea(a, b) {
 }
 
 const YUN_SETTLE_MS = 1500;
+const EDGE = 8;
 
 export class Overlay {
   constructor(stage) {
-    this.stage = stage;
     this.root = $('overlay');
     this.area = $('map-area');
     this.wrap = $('map-wrap');
-    this.items = []; // { el, world, dx, dy, kind, layout?, after? }
+    this.items = []; // { el, world, h, dx, dy, kind, layout?, after? }
     this.mobileMq = matchMedia('(max-width: 719px)');
     this.tabletMq = matchMedia('(max-width: 1099px)');
-    stage.onResize = () => this.relayout();
+    this.viewQueued = false;
+    this.setStage(stage);
+  }
+
+  /** Runtime stage swap (3D <-> 2D): re-hook resize and camera changes. */
+  setStage(stage) {
+    this.stage = stage;
+    stage.onResize = () => { this.relayout(); this.placeToolbar(); };
+    stage.onView = () => {
+      if (this.viewQueued) return;
+      this.viewQueued = true;
+      requestAnimationFrame(() => { this.viewQueued = false; this.relayout(); });
+    };
+    this.placeToolbar();
   }
 
   get mobile() { return this.mobileMq.matches; }
+  get is3d() { return this.stage.kind === '3d'; }
 
-  sealPx() { return this.mobile ? 48 : this.tabletMq.matches ? 56 : 64; }
+  sealPx() { return this.mobile ? 32 : 40; }
 
-  /** Map size in px (square). */
+  /** Map size in px. */
   get W() { return this.stage.cssW; }
+  get H() { return this.stage.cssH; }
+
+  /** Height (m) above the floor for an overlay anchor, 3D only. */
+  hFor(kind) { return this.is3d ? ({ robot: 1.0, tag: 1.35, barrier: 1.05, yun: 0.4, chip: 1.2, person: 1.35 }[kind] ?? 0) : 0; }
+
+  /** The view toolbar sits in the map's top-right corner but comes after the transport in tab order. */
+  placeToolbar() {
+    const bar = $('view-tools');
+    if (!bar) return;
+    const stage = $('stage');
+    const w = this.wrap.getBoundingClientRect();
+    const s = stage.getBoundingClientRect();
+    bar.classList.toggle('compact', w.width < 440);
+    bar.style.top = `${Math.round(w.top - s.top + 8)}px`;
+    bar.style.right = `${Math.round(s.right - w.right + 8)}px`;
+  }
 
   place(e, x, y) {
     e.style.left = `${Math.round(x)}px`;
     e.style.top = `${Math.round(y)}px`;
   }
 
-  track(e, world, kind, dx = 0, dy = 0) {
-    const item = { el: e, world, kind, dx, dy };
+  track(e, world, kind, dx = 0, dy = 0, h = 0) {
+    const item = { el: e, world, kind, dx, dy, h };
     this.items.push(item);
     this.layoutItem(item);
     return item;
@@ -287,20 +320,14 @@ export class Overlay {
       return;
     }
     if (!it.world) return;
-    const s = this.stage.toScreen(it.world);
-    let x = s.x + it.dx;
-    let y = s.y + it.dy;
-    if (it.kind === 'seal') {
-      const m = 8 + this.sealPx() / 2;
-      x = Math.max(m, Math.min(this.W - m, x));
-      y = Math.max(m, Math.min(this.W - m, y));
-    }
-    this.place(it.el, x, y);
+    const s = this.stage.toScreen(it.world, it.h ?? 0);
+    this.place(it.el, s.x + it.dx, s.y + it.dy);
+    it.el.classList.toggle('offmap', !!s.behind || s.x < 0 || s.x > this.W || s.y < 0 || s.y > this.H);
     if (it.after) it.after();
   }
 
   relayout() {
-    // The slip first: seals stamped on it follow it.
+    // The slip first: tags stamped on it follow it.
     if (this.slipInfo) this.positionSlip();
     for (const it of this.items) this.layoutItem(it);
   }
@@ -320,13 +347,14 @@ export class Overlay {
     this.slipInfo = null;
     this.slip = null;
     this.seal = null;
+    this.sealItem = null;
     this.callout = null;
   }
 
-  /** Current beat's seal shrinks into a trail; everything else of the beat goes away. */
+  /** Current beat's tag shrinks into a trail mark; everything else of the beat goes away. */
   toTrail() {
     for (const e of [...this.root.children]) {
-      const keep = e.classList.contains('seal') && !e.classList.contains('on-slip')
+      const keep = e.classList.contains('vtag') && !e.classList.contains('on-slip')
         && !e.classList.contains('ghost-real') && !e.classList.contains('preview');
       if (keep) { e.classList.remove('settled'); e.classList.add('trail'); } else e.remove();
     }
@@ -335,29 +363,40 @@ export class Overlay {
     this.slip = null;
     this.slipInfo = null;
     this.seal = null;
+    this.sealItem = null;
     this.callout = null;
+    // The trail mark lands on its barrier anchor now, not at the old box corner.
+    for (const it of this.items) this.layoutItem(it);
   }
 
   // ── Obstacles (placement only): what an overlay box must not cover ──
 
-  /** A person's glyph plus the name label under it, in overlay px. */
+  /** A person's figure plus the name label, in overlay px. */
   personRect(p) {
+    if (this.is3d) {
+      const b = this.stage.projBox(p, 0.22, 1.3);
+      return { x: b.x - 4, y: b.y - 18, w: b.w + 8, h: b.h + 18 };
+    }
     const s = this.stage.toScreen(p);
-    const size = Math.max(13, 0.275 * this.stage.scale);
+    const size = Math.max(13, 0.275 * this.stage.pxPerM(p));
     return { x: s.x - size * 0.95, y: s.y - size * 0.9, w: size * 1.9, h: size * 1.85 + 16 };
   }
 
   robotRect(p) {
+    if (this.is3d) {
+      const b = this.stage.projBox(p, 0.34, 1.0);
+      return { x: b.x - 4, y: b.y - 16, w: b.w + 8, h: b.h + 16 };
+    }
     const s = this.stage.toScreen(p);
-    const size = Math.max(26, 0.6 * this.stage.scale);
+    const size = Math.max(26, 0.6 * this.stage.pxPerM(p));
     return { x: s.x - size * 0.8, y: s.y - size * 0.8, w: size * 1.6, h: size * 1.6 + 12 };
   }
 
-  /** Small boxes sampled along the world segment a→b. */
+  /** Small boxes sampled along the world segment a->b. */
   pathRects(a, b, wgt) {
     const A = this.stage.toScreen(a);
     const B = this.stage.toScreen(b);
-    const n = Math.max(1, Math.ceil(Math.hypot(B.x - A.x, B.y - A.y) / 14));
+    const n = Math.max(1, Math.min(80, Math.ceil(Math.hypot(B.x - A.x, B.y - A.y) / 14)));
     const out = [];
     for (let i = 0; i <= n; i++) {
       const x = A.x + ((B.x - A.x) * i) / n;
@@ -375,24 +414,17 @@ export class Overlay {
     return { x: r.left - o.left - pad, y: r.top - o.top - pad, w: r.width + pad * 2, h: r.height + pad * 2 };
   }
 
-  sealRectAt(x, y, k = 1) {
-    const h = (this.sealPx() * k) / 2;
-    return { x: x - h, y: y - h, w: h * 2, h: h * 2 };
-  }
-
   trailRects(wgt) {
-    return [...this.root.querySelectorAll('.seal.trail')].map((e) => ({
-      ...this.sealRectAt(parseFloat(e.style.left), parseFloat(e.style.top), 0.6), wgt,
-    }));
+    return [...this.root.querySelectorAll('.vtag.trail .vt-dot')].map((e) => ({ ...this.domRect(e, 4), wgt })).filter((r) => r.w);
   }
 
   /**
    * Obstacles for a scene: { robot, humans, targets } are world points
-   * (targets: where the robot is sent / ends up; the path runs robot → target).
+   * (targets: where the robot is sent / ends up; the path runs robot -> target).
    */
-  sceneObstacles({ robot, humans = [], targets = [] } = {}, { slip = true, trail = true, ladder = true, pathW = 1 } = {}) {
+  sceneObstacles({ robot, humans = [], targets = [] } = {}, { slip = true, trail = true, ladder = true, pathW = 1, humanW = 3 } = {}) {
     const obs = [];
-    for (const h of humans) obs.push({ ...this.personRect(h), wgt: 3 });
+    for (const h of humans) obs.push({ ...this.personRect(h), wgt: humanW });
     if (robot) {
       obs.push({ ...this.robotRect(robot), wgt: 3 });
       for (const t of targets) {
@@ -410,6 +442,8 @@ export class Overlay {
       const r = this.domRect($('ladder'), 2);
       if (r) obs.push({ ...r, wgt: 2 });
     }
+    const tools = this.domRect($('view-tools'), 2);
+    if (tools && this.is3d) obs.push({ ...tools, wgt: 3 });
     return obs;
   }
 
@@ -455,7 +489,7 @@ export class Overlay {
       this.slipSpeed = null;
     }
     if (tape) s.append(el('div', 'slip-tape', tape));
-    // Mobile: never drawn over the map; a small ✉ tab above the robot instead.
+    // Mobile: never drawn over the map; a small envelope tab above the robot instead.
     if (this.mobile) {
       const t = el('div', 'slip-tab', '✉');
       this.root.append(t);
@@ -490,16 +524,14 @@ export class Overlay {
     const s = this.slip;
     if (!s || !this.slipInfo) return;
     const info = this.slipInfo;
-    const r = this.stage.toScreen(info.robot);
+    const r = this.stage.toScreen(info.robot, this.hFor('robot'));
     if (info.mobile) {
-      this.place(s, r.x, Math.max(12, r.y - 40));
+      this.place(s, Math.max(14, Math.min(this.W - 14, r.x)), Math.max(12, Math.min(this.H - 12, r.y - (this.is3d ? 14 : 40))));
       return;
     }
-    const areaR = this.area.getBoundingClientRect();
-    const rootR = this.root.getBoundingClientRect();
-    const minX = areaR.left - rootR.left + 4;
-    const maxXEdge = areaR.right - rootR.left - 4;
-    // Never cover the people, the earlier seals, the mode ladder or the path.
+    const minX = 4;
+    const maxXEdge = this.W - 4;
+    // Never cover the people, the earlier tags, the mode ladder or the path.
     const obs = this.sceneObstacles(
       { robot: info.robot, humans: info.humans, targets: info.target ? [info.target] : [] },
       { slip: false },
@@ -510,7 +542,7 @@ export class Overlay {
     const solve = () => {
       const w = s.offsetWidth;
       const h = s.offsetHeight;
-      const gap = 30;
+      const gap = this.is3d ? 18 : 30;
       const above = { x: r.x - w / 2, y: r.y - gap - h };
       const below = { x: r.x - w / 2, y: r.y + gap + 14 };
       const left = { x: r.x - gap - w, y: r.y - h / 2 };
@@ -526,7 +558,7 @@ export class Overlay {
         if (c === above || c === below) cands.push({ x: c.x - w * 0.45, y: c.y }, { x: c.x + w * 0.45, y: c.y });
         else cands.push({ x: c.x, y: c.y - h * 0.6 }, { x: c.x, y: c.y + h * 0.6 });
       }
-      return this.pickRect(cands.map((c) => ({ ...c, w, h })), obs, { x0: minX, x1: maxXEdge, y0: 4, y1: this.W - 4 });
+      return this.pickRect(cands.map((c) => ({ ...c, w, h })), obs, { x0: minX, x1: maxXEdge, y0: 4, y1: this.H - 4 });
     };
     s.classList.remove('compact');
     let pick = solve();
@@ -535,12 +567,12 @@ export class Overlay {
       pick = solve();
     }
     const x = Math.max(minX, Math.min(maxXEdge - pick.w, pick.x));
-    const y = Math.max(4, Math.min(this.W - pick.h - 4, pick.y));
+    const y = Math.max(4, Math.min(this.H - pick.h - 4, pick.y));
     s.style.left = `${Math.round(x)}px`;
     s.style.top = `${Math.round(y)}px`;
   }
 
-  /** Slip speed line: ~~2.5~~ → 0.2 m/s, the new value from decision.action.speed. */
+  /** Slip speed line: ~~2.5~~ -> 0.2 m/s, the new value from decision.action.speed. */
   slipSpeedDiff(executed) {
     if (!this.slipSpeed) return;
     const req = this.slipSpeed.querySelector('.req')?.textContent;
@@ -551,181 +583,215 @@ export class Overlay {
     this.slip?.querySelector('.slip-tape')?.classList.add('alarm');
   }
 
-  // ── Seal + callout ──
+  // ── Verdict tag ──
 
-  /** Where a slip-anchored seal goes (in overlay px). */
+  /** Where a slip-anchored tag goes (in overlay px). */
   slipPoint() {
     const s = this.slip;
     if (!s) return null;
-    if (this.slipInfo?.mobile) {
-      return { x: parseFloat(s.style.left), y: parseFloat(s.style.top) };
+    if (this.slipInfo?.mobile) return { x: parseFloat(s.style.left), y: parseFloat(s.style.top), mobile: true };
+    return { x: parseFloat(s.style.left) + s.offsetWidth - 10, y: parseFloat(s.style.top) + 4 };
+  }
+
+  /** Screen point of an item's anchor (clamped into the map; `docked` when it was off-map). */
+  anchorPoint(it) {
+    if (it.kind === 'seal-slip') {
+      const p = this.slipPoint() ?? { x: this.W / 2, y: this.H / 2 };
+      return { ...p, docked: false };
     }
-    return { x: parseFloat(s.style.left) + s.offsetWidth - 22, y: parseFloat(s.style.top) + 20 };
+    const s = this.stage.toScreen(it.world, it.h ?? 0);
+    const off = s.behind || s.x < EDGE || s.x > this.W - EDGE || s.y < EDGE || s.y > this.H - EDGE;
+    return {
+      x: Math.max(EDGE, Math.min(this.W - EDGE, s.x)),
+      y: Math.max(EDGE, Math.min(this.H - EDGE, s.behind ? this.H - EDGE : s.y)),
+      docked: off,
+    };
   }
 
   landSeal(decision, anchor, { reduced, tag, slam = true, settle = true } = {}) {
-    const seal = makeSeal(decision, { tag });
-    seal.classList.add(reduced ? 'fade' : `enter-${decision.verdict}`);
-    this.root.append(seal);
-    let item;
+    const v = decision.verdict;
+    const root = makeTag(decision, { tag });
+    root.classList.add(reduced ? 'fade' : `enter-${v}`);
+    if (this.mobile) root.parts.box.classList.add('pill');
+    this.root.append(root);
+    const h = this.is3d
+      ? (v === 'yun' ? this.hFor('yun') : (anchor.type === 'world' ? this.hFor('barrier') : 0))
+      : 0;
+    const item = anchor.type === 'slip'
+      ? { el: root, world: null, kind: 'seal-slip', h: 0 }
+      : { el: root, world: anchor.p, kind: 'seal', h };
     if (anchor.type === 'slip') {
-      seal.classList.add('on-slip');
-      item = {
-        el: seal,
-        world: null,
-        kind: 'seal-slip',
-        layout: () => {
-          const p = this.slipPoint() ?? { x: this.W / 2, y: this.W / 2 };
-          this.place(seal, p.x, p.y);
-        },
-      };
-      this.items.push(item);
-      item.layout();
+      root.classList.add('on-slip');
       this.slip?.classList.add('stamped');
-    } else {
-      item = this.track(seal, anchor.p, 'seal');
     }
-    this.seal = seal;
-    // 允 steps aside after 1.5 s so the robot arriving under it stays visible (§3e).
-    if (decision.verdict === 'yun' && settle) {
-      setTimeout(() => { if (seal.isConnected && !seal.classList.contains('trail')) seal.classList.add('settled'); }, YUN_SETTLE_MS);
+    item.layout = () => this.layoutTag(item);
+    this.items.push(item);
+    item.layout();
+    this.seal = root;
+    this.sealItem = item;
+    // A pass steps aside after 1.5 s so the robot arriving under it stays visible.
+    if (v === 'yun' && settle) {
+      setTimeout(() => { if (root.isConnected && !root.classList.contains('trail')) root.classList.add('settled'); }, YUN_SETTLE_MS);
     }
-    if (decision.verdict === 'bul' && slam && !reduced) {
+    if (v === 'bul' && slam && !reduced) {
       const ring = el('div', 'ink-ring');
       this.root.append(ring);
-      this.place(ring, parseFloat(seal.style.left), parseFloat(seal.style.top));
+      const a = this.anchorPoint(item);
+      this.place(ring, a.x, a.y);
       setTimeout(() => ring.remove(), 600);
     }
     return item;
   }
 
-  /** Reason callout beside the seal (desktop) or a label pill near it (mobile). */
+  /** Place a tag's box near its anchor, avoiding what it must not cover, with a leader line. */
+  layoutTag(it) {
+    const root = it.el;
+    const { box, dot, leader } = root.parts;
+    const A = this.anchorPoint(it);
+    root.classList.toggle('docked', A.docked);
+    this.place(dot, A.x, A.y);
+    const W = this.W;
+    const H = this.H;
+    if (root.classList.contains('trail')) {
+      box.style.left = `${Math.round(A.x)}px`;
+      box.style.top = `${Math.round(A.y)}px`;
+      leader.style.width = '0px';
+      return;
+    }
+    const w = box.offsetWidth;
+    const h = box.offsetHeight;
+    let pick;
+    if (it.kind === 'seal-slip' && !A.mobile) {
+      // Stamped on the command slip's corner, like stamping a document.
+      pick = { x: A.x - w + 14, y: A.y - h + 6 };
+    } else if (root.classList.contains('preview')) {
+      pick = { x: A.x - w / 2, y: A.y - 22 - h };
+    } else {
+      const gap = this.mobile ? 12 : 18;
+      const cands = [];
+      const up = { x: A.x - w / 2, y: A.y - gap - h, side: 'above' };
+      const rt = { x: A.x + gap, y: A.y - h - 4, side: 'right' };
+      const lt = { x: A.x - gap - w, y: A.y - h - 4, side: 'left' };
+      const dn = { x: A.x - w / 2, y: A.y + gap, side: 'below' };
+      const order = { right: [rt, lt, up, dn], left: [lt, rt, up, dn] }[this.prefer] ?? [up, rt, lt, dn];
+      for (const c of order) {
+        cands.push({ ...c, w, h });
+        if (c.side === 'above' || c.side === 'below') cands.push({ ...c, x: c.x - w * 0.4, w, h }, { ...c, x: c.x + w * 0.4, w, h });
+        else cands.push({ ...c, y: c.y + h * 0.5 + 4, w, h }, { ...c, y: c.y - h * 0.6, w, h });
+      }
+      // The people the rule protects and the verdict effect itself (barrier,
+      // dome, speed gate) must stay visible: they weigh as much as the anchor.
+      const obs = this.sceneObstacles(this.calloutScene ?? {}, { pathW: this.mobile ? 0.35 : 1, humanW: 6 });
+      obs.push({ x: A.x - 12, y: A.y - 12, w: 24, h: 24, wgt: 6 });
+      if (this.is3d && !root.classList.contains('ghost-real')) {
+        for (const k of ['barrier', 'dome', 'arch']) {
+          const b = this.stage.screenBox?.(k);
+          if (b) obs.push({ x: b.x - 3, y: b.y - 3, w: b.w + 6, h: b.h + 6, wgt: 6 });
+        }
+      }
+      if (this.is3d) {
+        const g = this.stage.screenBox?.('ghost');
+        if (g) obs.push({ ...g, wgt: 3 });
+      }
+      const bounds = { x0: EDGE, x1: W - EDGE, y0: EDGE, y1: H - EDGE };
+      pick = this.pickRect(cands, obs, bounds, { x: A.x, y: A.y, k: 1 });
+      // Still over the scene (more than ~40% of the tag on what matters)? Dock it to
+      // the map's top or bottom edge; the leader keeps it tied to its anchor.
+      // cover: the larger of (share of the tag over the scene) and (share of the
+      // most-hidden protected person / verdict effect under the tag).
+      const heavy = obs.filter((o) => (o.wgt ?? 1) >= 3);
+      const key = obs.filter((o) => (o.wgt ?? 1) >= 6 && o.w * o.h > 600);
+      const cover = (r) => Math.max(
+        Math.min(1, heavy.reduce((a, o) => a + overlapArea(r, o), 0) / Math.max(1, r.w * r.h)),
+        ...key.map((o) => overlapArea(r, o) / (o.w * o.h)),
+      );
+      const clampR = (r) => ({ ...r, x: Math.max(EDGE, Math.min(W - EDGE - w, r.x)), y: Math.max(EDGE, Math.min(H - EDGE - h, r.y)) });
+      if (cover(clampR(pick)) > 0.4) {
+        const chips = this.domRect($('ctx-chips'), 2);
+        const dockObs = chips ? [...obs, { ...chips, wgt: 2 }] : obs;
+        const docks = [];
+        for (const y of [EDGE, H - EDGE - h]) {
+          for (const x of [A.x - w / 2, A.x - w * 0.9, A.x - w * 0.1, EDGE, W - EDGE - w]) docks.push({ x, y, w, h, side: 'dock' });
+        }
+        const d = this.pickRect(docks, dockObs, bounds, { x: A.x, y: A.y, k: 0.2 });
+        if (d && cover(clampR(d)) < cover(clampR(pick))) pick = d;
+      }
+    }
+    const x = Math.max(EDGE, Math.min(W - EDGE - w, pick.x));
+    const y = Math.max(EDGE, Math.min(H - EDGE - h, pick.y));
+    box.style.left = `${Math.round(x)}px`;
+    box.style.top = `${Math.round(y)}px`;
+    // Leader: from the anchor to the nearest point of the box.
+    const nx = Math.max(x, Math.min(x + w, A.x));
+    const ny = Math.max(y, Math.min(y + h, A.y));
+    const L = Math.hypot(nx - A.x, ny - A.y);
+    leader.style.left = `${Math.round(A.x)}px`;
+    leader.style.top = `${Math.round(A.y)}px`;
+    leader.style.width = `${Math.max(0, L - 2)}px`;
+    leader.style.transform = `rotate(${Math.atan2(ny - A.y, nx - A.x)}rad)`;
+  }
+
+  /** The reason: the label (and on desktop "+n · 자세히"), inside the verdict tag. */
   showCallout(verdict, labelText, others, { brake, onDetail, prefer, robot, humans, targets }) {
     this.prefer = prefer ?? null;
     this.calloutScene = { robot: robot ?? null, humans: humans ?? [], targets: (targets ?? []).filter(Boolean) };
-    this.callout?.remove();
-    if (!this.seal) return;
-    const ui = VERDICT_UI[verdict];
-    const c = el('div', `callout callout-${verdict}`);
-    const l1 = el('div', 'co-l1');
-    const w = el('span', 'co-word');
-    w.innerHTML = `<span aria-hidden="true">${ui.glyph}</span> ${ui.word}`;
-    l1.append(w, document.createTextNode(' '), el('span', 'co-label', labelText));
-    c.append(l1);
+    const root = this.seal;
+    if (!root) return;
+    const { text, l1 } = root.parts;
+    text.querySelectorAll('.vt-l2, .brake').forEach((e) => e.remove());
+    l1.querySelector('.vt-label')?.remove();
+    l1.append(el('span', 'vt-label', ` · ${labelText}`));
     if (!this.mobile) {
-      const l2 = el('div', 'co-l2');
+      const l2 = el('div', 'vt-l2');
       if (others > 0) l2.append(document.createTextNode(`+${others} · `));
       const more = el('button', 'co-more', '자세히 ▸');
       more.type = 'button';
       more.tabIndex = -1; // the caption's 자세히 ▸ is the keyboard path
       more.addEventListener('click', onDetail);
       l2.append(more);
-      c.append(l2);
+      text.append(l2);
       if (brake?.length) {
         const b = el('div', 'brake');
         brake.forEach((x, i) => {
           if (i) b.append(document.createTextNode(' · '));
           b.append(x.bold ? el('b', null, x.text) : document.createTextNode(x.text));
         });
-        c.append(b);
+        text.append(b);
       }
-    } else {
-      c.classList.add('pill');
     }
-    this.root.append(c);
-    this.callout = c;
-    this.positionCallout();
-    const it = this.items.find((i) => i.el === this.seal);
-    if (it) it.after = () => this.positionCallout();
+    root.classList.add('explained');
+    this.callout = root;
+    this.sealItem?.layout();
   }
 
-  positionCallout() {
-    const c = this.callout;
-    const s = this.seal;
-    if (!c || !s) return;
-    const x = parseFloat(s.style.left);
-    const y = parseFloat(s.style.top);
-    const half = this.sealPx() / 2;
-    const tagged = !!s.querySelector('.seal-tag');
-    c.classList.remove('left', 'right', 'below', 'above');
-    const w = c.offsetWidth;
-    const h = c.offsetHeight;
-    // Mobile: the pill may cross a path line rather than wander off to the map edge.
-    const obs = this.sceneObstacles(this.calloutScene ?? {}, { pathW: this.mobile ? 0.35 : 1 });
-    obs.push({ ...this.sealRectAt(x, y), h: this.sealPx() + (tagged ? 22 : 0), wgt: 4 });
-    const W = this.W;
-    if (this.mobile) {
-      // The pill is centred on its x (translate -50%). Test its whole box.
-      const cands = [];
-      const push = (cx, top, side) => cands.push({ x: cx - w / 2, y: top, w, h, side, cx });
-      const upY = y - half - 8 - h;
-      const downY = y + half + (tagged ? 26 : 8);
-      for (const k of [0, -0.5, 0.5, -1, 1]) {
-        push(x + k * w, upY, 'above');
-        push(x + k * w, downY, 'below');
-      }
-      push(x - half - 8 - w / 2, y - h / 2, 'left');
-      push(x + half + 8 + w / 2, y - h / 2, 'right');
-      push(x, 4, 'above'); // map edges as the last resort
-      push(x, W - h - 4, 'below');
-      const pick = this.pickRect(cands, obs, { x0: 2, x1: W - 2, y0: 2, y1: W - 2 }, { x, y, k: 2 });
-      c.classList.add(pick.side === 'below' ? 'below' : 'above');
-      const cx = Math.max(w / 2 + 2, Math.min(W - w / 2 - 2, pick.cx));
-      this.place(c, cx, Math.max(2, Math.min(W - h - 2, pick.y)));
-      return;
-    }
-    const areaR = this.area.getBoundingClientRect();
-    const rootR = this.root.getBoundingClientRect();
-    const left = areaR.left - rootR.left;
-    const right = areaR.right - rootR.left;
-    const clampX = (v) => Math.max(left + 4, Math.min(right - w - 4, v));
-    const all = {
-      right: { x: x + half + 14, y: y - h / 2, w, h, side: 'right' },
-      left: { x: x - half - 14 - w, y: y - h / 2, w, h, side: 'left' },
-      below: { x: clampX(x - w / 2), y: y + half + (tagged ? 28 : 10), w, h, side: 'below' },
-      above: { x: clampX(x - w / 2), y: y - half - 10 - h, w, h, side: 'above' },
-    };
-    const order = ['right', 'left', 'below', 'above'];
-    if (this.prefer && all[this.prefer]) order.sort((a, b) => (a === this.prefer ? -1 : b === this.prefer ? 1 : 0));
-    const cands = [];
-    for (const k of order) {
-      cands.push(all[k]);
-      if (k === 'right' || k === 'left') {
-        cands.push({ ...all[k], y: y - h - 6 }, { ...all[k], y: y + 6 }); // slid up / down along the seal
-      }
-    }
-    const pick = this.pickRect(cands, obs, { x0: left + 4, x1: right - 4, y0: 4, y1: W - 4 }, { x, y, k: 1 });
-    c.classList.add(pick.side);
-    const cx = Math.max(left + 4, Math.min(right - w - 4, pick.x));
-    const cy = Math.max(4, Math.min(W - h - 4, pick.y));
-    c.style.left = `${Math.round(cx)}px`;
-    c.style.top = `${Math.round(cy)}px`;
-  }
-
-  /** A DOM chip tied to a world point (e.g. 요청 2.5 → 한계 1 m/s at the robot). */
+  /** A DOM chip tied to a world point (e.g. 요청 2.5 -> 한계 1 m/s at the robot). */
   worldChip(text, world, cls, dy = -44) {
     const c = el('div', `speed-chip ${cls ?? ''}`, text);
     this.root.append(c);
-    return this.track(c, world, 'chip', 0, dy);
+    const h = this.hFor('chip');
+    return this.track(c, world, 'chip', 0, this.is3d ? -10 : dy, h);
   }
 
   staleStamp() {
     const s = el('div', 'stale-stamp', '❚❚ 화면 멈춤');
     this.root.append(s);
-    const it = { el: s, world: null, kind: 'stamp', layout: () => this.place(s, this.W / 2, this.W * 0.22) };
+    const it = { el: s, world: null, kind: 'stamp', layout: () => this.place(s, this.W / 2, this.H * 0.22) };
     this.items.push(it);
     it.layout();
   }
 
-  /** Aim preview seal in the lab (a real labGate.judge() Decision). */
+  /** Aim preview tag in the lab (a real labGate.judge() Decision). */
   preview(decision, world) {
-    this.root.querySelector('.preview')?.remove();
+    const old = this.items.find((i) => i.kind === 'preview');
+    if (old) { old.el.remove(); this.items = this.items.filter((i) => i !== old); }
     if (!decision) return;
-    const s = makeSeal(decision, { tag: '미리보기 (실제 판정)' });
-    s.classList.add('preview');
-    this.root.append(s);
-    const p = this.stage.toScreen(world);
-    this.place(s, p.x, p.y - 34);
+    const root = makeTag(decision, { tag: '미리보기 (실제 판정)' });
+    root.classList.add('preview');
+    this.root.append(root);
+    const item = { el: root, world, kind: 'preview', h: 0 };
+    item.layout = () => this.layoutTag(item);
+    this.items.push(item);
+    item.layout();
   }
 }
 
@@ -827,7 +893,7 @@ export function buildLadder() {
   }));
 }
 
-/** Beat dots (●○○) with recorded verdict glyphs, or the 7-slot filmstrip for card 8. */
+/** Beat dots with recorded verdict icons, or the 7-slot filmstrip for card 8. */
 export function setProgress({ total, index, verdicts = [], film = false }) {
   const box = $('progress');
   box.className = film ? 'progress film' : 'progress';
@@ -836,7 +902,8 @@ export function setProgress({ total, index, verdicts = [], film = false }) {
   for (let i = 0; i < total; i++) {
     const v = verdicts[i];
     const d = el('span', `dot${i === index ? ' cur' : ''}${v ? ` v-${v}` : ''}`);
-    d.textContent = v ? VERDICT_UI[v].glyph : (film ? String(i + 1) : '');
+    if (v) d.innerHTML = verdictIcon(v);
+    else d.textContent = film ? String(i + 1) : '';
     d.setAttribute('aria-hidden', 'true');
     box.append(d);
   }

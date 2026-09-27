@@ -1,14 +1,19 @@
-// The stage: a square top-down canvas of the house. World coordinates are
-// metres with y pointing UP; the canvas has y pointing down, so every
-// conversion goes through toScreen()/toWorld().
+// The flat fallback stage: a square top-down canvas of the house. World
+// coordinates are metres with y pointing UP; the canvas has y pointing down,
+// so every conversion goes through toScreen()/toWorld().
 //
 // The stage only DRAWS a scene it is given. It never decides anything: the
 // executed path, barrier, chevrons and verdict-coloured highlights exist in the
 // scene only because the director copied them from a Decision returned by the
 // gate. Violet (--intent) is the model's raw, untrusted command.
 
+import {
+  DECOR, ROOMS, clamp01, easeOut, lerp, dist, prog, robotPose, displayHolding, ghostHolding,
+} from './model.js';
+
+export { DECOR, dist, prog, robotPose } from './model.js';
+
 const DRAG_THRESHOLD = 6;
-const SNAP_MS = 400;
 const PAD_M = 0.4;
 
 const TOKENS = [
@@ -17,54 +22,10 @@ const TOKENS = [
   'intent', 'yun-fill', 'jeol-fill', 'bul-fill', 'yun-fg', 'jeol-fg', 'bul-fg', 'seal-ink', 'focus',
 ];
 const UI_FONT = 'system-ui, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif';
-const SEAL_FONT = '"Noto Serif CJK KR", "AppleMyungjo", "Batang", serif';
-
-// Fixed art. It never enters the world JSON.
-const ROOMS = [
-  { name: '주방·식당', x0: 0, y0: 0, x1: 4, y1: 10, tint: false },
-  { name: '복도', x0: 4, y0: 0, x1: 6, y1: 10, tint: true },
-  { name: '거실', x0: 6, y0: 0, x1: 10, y1: 7, tint: false },
-  { name: '', x0: 6, y0: 7, x1: 7, y1: 10, tint: false },
-  { name: '아이 방', x0: 7, y0: 7, x1: 10, y1: 10, tint: true },
-];
-export const DECOR = {
-  table: { x0: 2.4, y0: 2.5, x1: 3.9, y1: 3.6 },
-  knife: { x: 3.2, y: 3.0 },
-  cup: { x: 3.6, y: 3.3 },
-  sink: { x0: 0.3, y0: 0.2, x1: 1.7, y1: 0.6 },
-  dock: { x: 1, y: 9 },
-  sofa: { x0: 7.2, y0: 1.0, x1: 9.4, y1: 1.8 },
-  bed: { x0: 8.4, y0: 8.2, x1: 9.8, y1: 9.6 },
-  fakeTag: { x: 7.3, y: 6.8 },
-};
-
-const clamp01 = (v) => Math.max(0, Math.min(1, v));
-const easeOut = (t) => 1 - (1 - t) ** 3;
-const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-export const dist = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
-
-/** Progress 0..1 of a timed element at clock `c` (dur ≤ 0 means instant). */
-export function prog(el, c) {
-  if (!el) return 0;
-  if (c < el.t0) return 0;
-  if (!(el.dur > 0)) return 1;
-  return clamp01((c - el.t0) / el.dur);
-}
-
-/** Where the robot is drawn right now (executed motion, or easing after a world jump). */
-export function robotPose(scene, clock, real) {
-  const e = scene.exec;
-  if (e && e.kind === 'move' && clock >= e.t0) return lerp(e.from, e.to, prog(e, clock));
-  const s = scene.robot.snap;
-  if (s) {
-    const t = scene.reduced ? 1 : clamp01((real - s.t0) / SNAP_MS);
-    if (t < 1) return lerp(s.from, scene.robot.pose, easeOut(t));
-  }
-  return scene.robot.pose;
-}
 
 export class Stage {
   constructor(canvas, wrap) {
+    this.kind = '2d';
     this.canvas = canvas;
     this.wrap = wrap;
     this.ctx = canvas.getContext('2d');
@@ -72,9 +33,46 @@ export class Stage {
     this.cssW = 0;
     this.scale = 1;
     this.onResize = null;
+    this.onView = null;
     this.readPalette();
-    new ResizeObserver(() => this.resize()).observe(wrap);
-    window.addEventListener('resize', () => this.resize(true));
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(wrap);
+    this.onWin = () => this.resize(true);
+    window.addEventListener('resize', this.onWin);
+  }
+
+  get cssH() { return this.cssW; }
+
+  // ── Stage interface members shared with the 3D diorama ──
+  pxPerM() { return this.scale; }
+  /** Screen box of something of radius r standing at p (height is ignored in 2D). */
+  projBox(p, r) {
+    const s = this.toScreen(p);
+    const k = Math.max(12, r * this.scale);
+    return { x: s.x - k, y: s.y - k, w: 2 * k, h: 2 * k };
+  }
+  screenBox() { return null; }
+  heightOf() { return 0; }
+  frameBeat() {}
+  resetView() {}
+  viewCmd() {}
+  setLabMode() {}
+  pulse() {}
+  /** A denial: the 160 ms stage shake (the eye flash is drawn from scene.robot.reactT). */
+  react(verdict, anchor, reduced) {
+    if (verdict !== 'bul' || reduced) return;
+    this.wrap.classList.remove('shake');
+    void this.wrap.offsetWidth;
+    this.wrap.classList.add('shake');
+  }
+  /** Arrow keys move along world axes on the flat map. */
+  axisFor(key) {
+    return { ArrowUp: { x: 0, y: 1 }, ArrowDown: { x: 0, y: -1 }, ArrowRight: { x: 1, y: 0 }, ArrowLeft: { x: -1, y: 0 } }[key] ?? null;
+  }
+  dispose() {
+    this.ro.disconnect();
+    window.removeEventListener('resize', this.onWin);
+    this.disposed = true;
   }
 
   readPalette() {
@@ -118,6 +116,7 @@ export class Stage {
     return {
       x: (p.x - this.bounds.minX) * this.scale,
       y: (this.bounds.maxY - p.y) * this.scale, // y flips here
+      behind: false,
     };
   }
 
@@ -183,7 +182,7 @@ export class Stage {
   render(scene, clock, real) {
     const { ctx, pal } = this;
     const W = this.cssW;
-    if (!W || !scene.policy) return;
+    if (this.disposed || !W || !scene.policy) return;
     ctx.save();
     ctx.clearRect(0, 0, W, W);
     ctx.fillStyle = pal['surface-2'];
@@ -352,16 +351,9 @@ export class Stage {
     ctx.restore();
   }
 
-  displayHolding(scene, clock) {
-    const e = scene.exec;
-    if (e && e.kind === 'reach' && clock >= e.t0) return prog(e, clock) >= 0.5 ? e.holdAfter : e.holdBefore;
-    return scene.robot.holding;
-  }
+  displayHolding(scene, clock) { return displayHolding(scene, clock); }
 
-  ghostHolding(g, clock) {
-    if (g.kind === 'reach') return prog(g, clock) >= 0.5 ? g.holdAfter : g.holdBefore;
-    return g.holding;
-  }
+  ghostHolding(g, clock) { return ghostHolding(g, clock); }
 
   drawDecor(scene, holding, ghostHolding, real) {
     const { ctx, pal } = this;
@@ -399,7 +391,7 @@ export class Stage {
     const s = Math.max(14, 0.42 * this.scale);
     ctx.fillStyle = pal.surface;
     roundRect(ctx, c.x - s / 2, c.y - s / 2, s, s, 4); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = pal['jeol-fg'];
+    ctx.fillStyle = pal['robot-eye'];
     ctx.beginPath();
     ctx.moveTo(c.x + s * 0.08, c.y - s * 0.34); ctx.lineTo(c.x - s * 0.2, c.y + s * 0.05); ctx.lineTo(c.x, c.y + s * 0.05);
     ctx.lineTo(c.x - s * 0.08, c.y + s * 0.34); ctx.lineTo(c.x + s * 0.2, c.y - s * 0.05); ctx.lineTo(c.x, c.y - s * 0.05);
@@ -727,8 +719,8 @@ export class Stage {
     if (unknown) ctx.stroke(); else { ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = pal.floor; ctx.lineWidth = 1.5; ctx.stroke(); }
     ctx.setLineDash([]);
     if (child && !unknown) {
-      // Toy.
-      ctx.fillStyle = pal['jeol-fill'];
+      // Toy (wood brown, never a verdict colour).
+      ctx.fillStyle = '#b07a4a';
       ctx.beginPath();
       ctx.arc(s.x + size * 0.78, s.y + size * 0.55, size * 0.2, 0, Math.PI * 2);
       ctx.fill();
@@ -790,25 +782,27 @@ export class Stage {
       ctx.ellipse(half * 0.52, ey, half * 0.13, eh, 0, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Haetae badge on the back.
+    // Haetae badge on the back: a shield with one horn and two eye dots.
     if (!opts.ghost) {
       const b = Math.max(12, size * 0.42);
       ctx.save();
       ctx.translate(-half * 0.45, 0);
-      ctx.rotate(heading - (opts.wiggle ?? 0)); // keep the glyph upright
+      ctx.rotate(heading - (opts.wiggle ?? 0)); // keep the mark upright
       if (opts.glow) {
-        ctx.shadowColor = pal['seal-ink'];
+        ctx.shadowColor = pal['robot-eye'];
         ctx.shadowBlur = 12;
       }
+      shieldPath(ctx, b);
       ctx.fillStyle = opts.glow ? '#fff3c4' : pal['robot-face'];
-      roundRect(ctx, -b / 2, -b / 2, b, b, 2);
       ctx.fill();
       ctx.shadowBlur = 0;
+      ctx.lineWidth = Math.max(1.2, b * 0.08);
+      ctx.strokeStyle = opts.rim ?? pal['robot-body'];
+      ctx.stroke();
       ctx.fillStyle = pal['robot-body'];
-      ctx.font = this.font(700, b * 0.8, SEAL_FONT);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('獬', 0, b * 0.05);
+      ctx.beginPath(); // the one horn
+      ctx.moveTo(-b * 0.1, -b * 0.46); ctx.lineTo(0, -b * 0.78); ctx.lineTo(b * 0.1, -b * 0.46); ctx.closePath(); ctx.fill();
+      for (const ex of [-b * 0.16, b * 0.16]) { ctx.beginPath(); ctx.arc(ex, -b * 0.06, b * 0.08, 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
     }
     ctx.restore();
@@ -823,7 +817,7 @@ export class Stage {
       ctx.fillStyle = pal.surface; ctx.strokeStyle = pal['ink-2']; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(x + size * 0.1, y, size * 0.14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     } else {
-      ctx.fillStyle = pal['jeol-fill'];
+      ctx.fillStyle = '#b07a4a';
       ctx.beginPath(); ctx.arc(x + size * 0.1, y, size * 0.13, 0, Math.PI * 2); ctx.fill();
     }
   }
@@ -859,24 +853,25 @@ export class Stage {
       ctx.save();
       if (scene.mode === 'caution') {
         ctx.setLineDash([5, 4]);
-        ctx.strokeStyle = pal['jeol-fg'];
+        ctx.strokeStyle = pal['zone-slow'];
       } else {
-        ctx.strokeStyle = pal['bul-fg'];
+        ctx.strokeStyle = pal['zone-deny'];
       }
       ctx.lineWidth = 2.5;
       ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(rad, 22), 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
-      if (scene.mode !== 'caution') this.pill('⏸', s.x + Math.max(rad, 22) * 0.75, s.y - Math.max(rad, 22) * 0.75, pal['bul-fg'], { size: 10 });
+      if (scene.mode !== 'caution') this.pill('⏸', s.x + Math.max(rad, 22) * 0.75, s.y - Math.max(rad, 22) * 0.75, pal['zone-deny'], { size: 10 });
       ctx.restore();
     }
 
-    const size = this.drawRobotShape(s, r.heading ?? 0, holding, { eyeRed, wiggle, blink, glow });
+    const fv = scene.fx?.decision?.verdict;
+    const size = this.drawRobotShape(s, r.heading ?? 0, holding, { eyeRed, wiggle, blink, glow, rim: fv ? pal[`${fv}-fill`] : null });
 
     // Sensor glitch sparks after a fault.
     if (r.glitchT != null && !reduced && real - r.glitchT < 700) {
       const k = (real - r.glitchT) / 700;
       ctx.save();
-      ctx.strokeStyle = pal['jeol-fill'];
+      ctx.strokeStyle = pal['zone-slow'];
       ctx.lineWidth = 2;
       ctx.globalAlpha = 1 - k;
       for (let i = 0; i < 5; i++) {
@@ -1024,6 +1019,23 @@ export class Stage {
 
 function fmt(v) {
   return typeof v === 'number' && Number.isFinite(v) ? String(Math.round(v * 100) / 100) : String(v);
+}
+
+/** The Haetae shield outline (flat top with a centre notch, rounded shoulders, pointed base). */
+function shieldPath(ctx, b) {
+  const w = b * 0.84;
+  const h = b;
+  const t = -h * 0.46;
+  ctx.beginPath();
+  ctx.moveTo(-w / 2, t);
+  ctx.lineTo(-w * 0.1, t);
+  ctx.lineTo(0, t + h * 0.09);
+  ctx.lineTo(w * 0.1, t);
+  ctx.lineTo(w / 2, t);
+  ctx.lineTo(w / 2, t + h * 0.35);
+  ctx.quadraticCurveTo(w * 0.47, h * 0.3, 0, h * 0.54);
+  ctx.quadraticCurveTo(-w * 0.47, h * 0.3, -w / 2, t + h * 0.35);
+  ctx.closePath();
 }
 
 export function roundRect(ctx, x, y, w, h, r) {

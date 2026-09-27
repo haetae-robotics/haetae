@@ -2,9 +2,9 @@
 // here decides anything; it only describes what the gate returned.
 
 export const VERDICTS = {
-  yun: { glyph: '允', name: 'yun', ko: '허용' },
-  jeol: { glyph: '節', name: 'jeol', ko: '제한 허용' },
-  bul: { glyph: '不', name: 'bul', ko: '거부' },
+  yun: { sym: '✓', name: 'yun', ko: '통과' },
+  jeol: { sym: '⇊', name: 'jeol', ko: '감속' },
+  bul: { sym: '⊘', name: 'bul', ko: '차단' },
 };
 
 // Mode names as the gate serializes them (EStop → "estop").
@@ -53,7 +53,7 @@ export function pt(p) {
 
 export function verdictLabel(v) {
   const d = VERDICTS[v];
-  return d ? `${d.glyph} ${d.name} (${d.ko})` : String(v);
+  return d ? `${d.sym} ${d.ko} (${d.name})` : String(v);
 }
 
 /** Sim-time as HH:MM:SS.mmm (UTC). */
@@ -130,7 +130,7 @@ export function describeRule(rule) {
   let cond = parts.join(' ');
   cond = cond.replace(/이고$/, '일 때');
   const effect = rule.then === 'bul'
-    ? '거부'
+    ? '차단'
     : rule.then?.jeol ? `속도 ≤ ${num(rule.then.jeol.max_speed)} m/s로 제한` : JSON.stringify(rule.then);
   return `${cond} → ${effect}`;
 }

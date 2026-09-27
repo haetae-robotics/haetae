@@ -8,14 +8,14 @@
 
 import { CARDS, TEASER_BEAT } from './cards.js';
 import {
-  VERDICT_UI, verdictCopy, verdictHtml, sentence, label, sortedFired, sourceName, commandSpoken,
+  VERDICT_UI, verdictCopy, verdictHtml, verdictIcon, sentence, label, sortedFired, sourceName, commandSpoken,
   actionText, outroFor, GENERIC_OUTRO, STRICT, badgeKind, KIND_BADGE, capLimit, actionTarget, zoneName,
 } from './copy.js';
 import { sealAnchor, highlightsFor, setChips, setLadder, setProgress } from './overlay.js';
 import { playUnfiltered } from './ghost.js';
 import { ScenarioPlayer, PROPOSAL_CAPTIONS } from './scenario.js';
 import { MODE_KO, num, pt } from './explain.js';
-import { dist, robotPose, DECOR } from './stage.js';
+import { dist, robotPose, DECOR } from './model.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -95,6 +95,10 @@ export class Director {
       realAlpha: 1,
       lab: null,
       reduced: false,
+      fx: null, // { decision (frozen), anchor, t0, head, from, target }: the verdict moment
+      trail: [], // earlier barriers of this card
+      peer: false,
+      signal: null,
     };
     this.last = performance.now();
     // rAF stops in a hidden tab, so the frame loop cannot notice; hold the player here too.
@@ -201,6 +205,7 @@ export class Director {
       }
       const copy = verdictCopy(d, this.ctx({ proposal: b.proposal, world: b.world, now: b.now, decision: d }));
       const anchor = sealAnchor(d, b.proposal, b.world, this.policy, copy.head);
+      sc.fx = { decision: d, anchor, t0: tl.et, head: copy.head, from: b.world.robot.pose, target: actionTarget(b.proposal.action) };
       this.overlay.landSeal(d, anchor, { reduced, tag: '실제 판정' });
       if (d.verdict === 'bul' && anchor.type === 'world') {
         sc.barrier = { at: anchor.p, dir: anchor.dir, t0: tl.et };
@@ -224,6 +229,8 @@ export class Director {
           this.overlay.root.classList.remove('fading');
           sc.intent = null;
           sc.barrier = null;
+          sc.fx = null;
+          sc.robot.reactT = null;
           $('intro-cta').classList.add('pulse');
         }, 400);
       });
@@ -252,7 +259,7 @@ export class Director {
     this.fxReset();
     const sc = this.scene;
     sc.intent = null; sc.exec = null; sc.barrier = null; sc.hl = []; sc.ghost = null; sc.realAlpha = 1;
-    sc.lab = null;
+    sc.lab = null; sc.fx = null; sc.trail = []; sc.peer = false; sc.signal = null; sc.robot.reactT = null;
     $('speed-badge').hidden = true;
   }
 
@@ -273,6 +280,7 @@ export class Director {
     document.body.dataset.state = this.mode;
     this.setTitle(card);
     this.renderRail();
+    this.stage.frameBeat({ phase: 'card' });
     if (focusStage && this.overlay.mobile) {
       $('stage').scrollIntoView({ behavior: this.reduced ? 'auto' : 'smooth', block: 'start' });
     }
@@ -339,7 +347,12 @@ export class Director {
     tl.at(0, () => {
       this.overlay.toTrail();
       this.fxReset();
+      // The previous beat's barrier sinks into the card's trail (3D form of the tag trail).
+      if (sc.fx && sc.barrier) sc.trail = [...(sc.trail ?? []), { at: sc.barrier.at, dir: sc.barrier.dir }].slice(-3);
       sc.intent = null; sc.exec = null; sc.barrier = null; sc.hl = []; sc.ghost = null; sc.realAlpha = 1;
+      sc.fx = null; sc.robot.reactT = null;
+      sc.peer = p.source === 'peer';
+      sc.signal = null;
       sc.focus = beat.focus ?? card?.focus ?? null;
       sc.focusT = performance.now();
       sc.decor = { ...(beat.decor ?? {}) };
@@ -360,6 +373,14 @@ export class Director {
       this.strip.zigzag(p.source === 'peer');
       this.strip.set('idle');
       this.describeMap(w);
+      if (!opts.instant && !opts.lab && !opts.stream) {
+        const pts = [w.robot.pose, target];
+        const f = sc.focus ?? [];
+        for (const h of w.humans ?? []) if (f.includes(h.id)) pts.push(h.pos);
+        if (f.includes('fakeTag') && sc.decor.fakeTag) pts.push(DECOR.fakeTag);
+        if (sc.peer) pts.push({ x: 6.8, y: -0.9 });
+        this.stage.frameBeat({ phase: 'beat', points: pts });
+      }
     });
 
     tl.at(T.slip, () => {
@@ -374,6 +395,8 @@ export class Director {
         from: $('strip-src'),
       });
       this.strip.set('packet');
+      sc.robot.slipT = performance.now();
+      if (p.source === 'peer') sc.signal = { t0: tl.et };
       const cmd = `명령 · ${sourceName(p.source)} → ${actionText(p.action)}`;
       this.setCaption(this.caption.html, esc(cmd), this.caption.tone);
       if (!opts.instant && !this.reduced) this.app.announce(`명령: ${commandSpoken(p)}`);
@@ -397,6 +420,7 @@ export class Director {
         }
       }
       sc.robot.badgeT = performance.now();
+      this.stage.pulse('judge');
       this.strip.set('judge');
     });
 
@@ -419,7 +443,7 @@ export class Director {
       this.setCaption(`${verdictHtml(d.verdict)} · ${esc(c.sentence)}`, this.caption.cmd, d.verdict);
       if (!opts.instant) {
         const ui = VERDICT_UI[d.verdict];
-        const verdictLine = `해태 판정: ${ui.word}(${ui.glyph}). ${c.sentence}${c.others ? ` 함께 걸린 조건 ${c.others}개.` : ''}`;
+        const verdictLine = `해태 판정: ${ui.word}. ${c.sentence}${c.others ? ` 함께 걸린 조건 ${c.others}개.` : ''}`;
         // Reduced motion: narration, command and verdict land together, so say them as one message.
         const lead = this.reduced ? `${beat.narr ? `${beat.narr} ` : ''}명령: ${commandSpoken(p)}. ` : '';
         this.app.announce(lead + verdictLine);
@@ -434,6 +458,7 @@ export class Director {
 
     tl.at(T.exec, () => {
       const dur = rec.decision ? this.startExec(rec, T, tl.et, sc) : 0;
+      if (sc.exec?.kind === 'move' && dur > 0 && !opts.instant && !opts.lab && !opts.stream) this.stage.frameBeat({ phase: 'exec', points: [sc.exec.from, sc.exec.to] });
       tl.at(tl.et + dur, () => this.execEnd(rec, opts));
     });
   }
@@ -454,6 +479,8 @@ export class Director {
     const avoid = sc.decor?.fakeTag ? [DECOR.fakeTag] : [];
     const anchor = sealAnchor(d, rec.proposal, rec.world, this.policy, rec.copy.head, avoid);
     rec.anchor = anchor;
+    // The verdict moment for the stage: a reference to the frozen Decision (drawing only).
+    sc.fx = { decision: d, anchor, t0: this.tl.et, head: rec.copy.head, from: rec.world.robot.pose, target: actionTarget(rec.proposal.action) };
     this.overlay.landSeal(d, anchor, { reduced });
     this.keepPillClear(anchor);
     this.strip.verdict(d);
@@ -464,13 +491,8 @@ export class Director {
       } else if (sc.intent) {
         sc.intent.fadeT0 = this.tl.et; // the command itself never got past the gate
       }
-      if (!reduced) {
-        sc.robot.reactT = performance.now();
-        const wrap = $('map-wrap');
-        wrap.classList.remove('shake');
-        void wrap.offsetWidth;
-        wrap.classList.add('shake');
-      }
+      sc.robot.reactT = performance.now();
+      this.stage.react('bul', anchor, reduced);
     }
     if (d.verdict === 'jeol' && d.action?.type === 'move_to' && d.action.speed !== rec.proposal.action.speed) {
       this.overlay.slipSpeedDiff(d.action.speed);
@@ -514,7 +536,10 @@ export class Director {
       this.overlay.layoutItem(it);
       if (sc.intent) sc.intent.noPill = true; // same requested speed, said once
     }
-    if (dom.sourceStrike) this.strip.strike();
+    if (dom.sourceStrike) {
+      this.strip.strike();
+      if (sc.signal) sc.signal.bounceT = this.tl.et; // the peer's signal bounces off the shield
+    }
     if (dom.sourceNote) this.strip.logged();
     if (dom.tapeAlarm) this.overlay.slipTapeAlarm();
     if (dom.stale) {
@@ -652,7 +677,8 @@ export class Director {
     const parts = [`로봇 ${pt(w.robot.pose)}${w.robot.holding === 'knife' ? ', 칼을 들고 있음' : w.robot.holding ? `, ${w.robot.holding}을(를) 들고 있음` : ''}`];
     for (const h of w.humans ?? []) parts.push(`${h.class === 'child' ? '아이' : '어른'} ${pt(h.pos)}`);
     const zones = (pol?.zones ?? []).map((z) => (z.no_entry ? `${zoneName(z.id)} 출입 금지` : z.speed_limit != null ? `${zoneName(z.id)} ${num(z.speed_limit)} m/s 제한` : zoneName(z.id)));
-    $('map').setAttribute('aria-label', `지도: ${parts.join('. ')}. ${zones.join(', ')}.`);
+    const prefix = this.stage.kind === '3d' ? '모형 집' : '지도';
+    $('map').setAttribute('aria-label', `${prefix}: ${parts.join('. ')}. ${zones.join(', ')}.`);
     $('entities').replaceChildren(...[...parts, ...zones].map((t) => {
       const li = document.createElement('li');
       li.textContent = t;
@@ -711,7 +737,7 @@ export class Director {
     let html = `<div class="ec-seals" role="img" aria-label="이번 장면 판정: ${verdicts.map((v) => VERDICT_UI[v].word).join(', ')}">${sealsRow}</div>`;
     html += `<p class="ec-outro">${warn ? '<span class="warn" aria-hidden="true">⚠</span> ' : ''}${esc(outro)}</p>`;
     if (verdicts.some((v) => v !== 'yun')) {
-      html += `<p class="ec-ww">해태 없이: 모델 명령 ${recs.length}개가 모두 그대로 실행 · 해태와 함께: 막음 ${counts.bul} · 줄임 ${counts.jeol} · 통과 ${counts.yun}</p>`;
+      html += `<p class="ec-ww">해태 없이: 모델 명령 ${recs.length}개가 모두 그대로 실행 · 해태와 함께: 차단 ${counts.bul} · 감속 ${counts.jeol} · 통과 ${counts.yun}</p>`;
     }
     if (this.app.policyModified()) html += '<p class="ec-note">정책 수정됨 — 판정은 지금 적용된 정책으로 계산했습니다.</p>';
     html += '<div class="ec-actions"></div>';
@@ -741,7 +767,8 @@ export class Director {
     btn('대본 보기', () => this.app.openDetail('transcript'), 'linkbtn');
     box.hidden = false;
     // The caption no longer speaks for the last beat: a neutral tally instead.
-    this.setCaption(esc(`장면 끝 · 막음 ${counts.bul} · 줄임 ${counts.jeol} · 통과 ${counts.yun}`), '', 'end');
+    this.setCaption(esc(`장면 끝 · 차단 ${counts.bul} · 감속 ${counts.jeol} · 통과 ${counts.yun}`), '', 'end');
+    this.stage.frameBeat({ phase: 'end' });
     this.app.markWatched(card.num, verdicts);
     this.renderRail();
     this.app.announce(`장면 끝. ${verdicts.map((v) => VERDICT_UI[v].word).join(', ')}. ${outro}`);
@@ -779,7 +806,7 @@ export class Director {
       strip: this.strip.root.dataset.state,
       scene: {
         world: sc.world, robot: { ...sc.robot }, intent: sc.intent, exec: sc.exec, barrier: sc.barrier,
-        hl: sc.hl, focus: sc.focus, decor: sc.decor,
+        hl: sc.hl, focus: sc.focus, decor: sc.decor, fx: sc.fx, trail: sc.trail, peer: sc.peer, signal: sc.signal,
       },
       rec,
     };
@@ -797,6 +824,7 @@ export class Director {
     sc.world = clone(rec.world);
     sc.robot = { ...sc.robot, pose: { ...rec.world.robot.pose }, holding: rec.world.robot.holding ?? null, snap: null, reactT: null };
     sc.intent = null; sc.barrier = null; sc.hl = []; sc.exec = null; sc.focus = null;
+    sc.fx = null; sc.trail = []; sc.signal = null; sc.peer = rec.proposal.source === 'peer';
     sc.decor = { ...(rec.beat?.decor ?? {}) };
     delete sc.decor.peelT;
     sc.realAlpha = 0.4;
@@ -828,6 +856,11 @@ export class Director {
     this.overlay.seal = keepSeal;
     this.ghostSeal.el.classList.add('ghost-real');
 
+    {
+      const pa = rec.proposal.action;
+      const tgt = pa?.type === 'move_to' ? pa.goal : pa?.at;
+      this.stage.frameBeat({ phase: 'ghost', points: [rec.world.robot.pose, tgt] });
+    }
     const badge = $('speed-badge');
     badge.hidden = !(k > 1.05 && k < BIG);
     badge.textContent = `×${k.toFixed(1)} 배속`;
@@ -1013,8 +1046,8 @@ export class Director {
     const seals = summary.decisions.map((d) => `<span class="v v-${d.verdict}">${verdictHtml(d.verdict)}</span>`).join('<span class="sep">·</span>');
     const words = summary.decisions.map((d) => VERDICT_UI[d.verdict].word).join(', ');
     box.innerHTML = `<div class="ec-seals" role="img" aria-label="판정: ${words}">${seals}</div>
-      <p class="ec-score">통과 ${c.yun} · 줄임 ${c.jeol} · 막음 ${c.bul}</p>
-      <p class="ec-ww">해태 없이: 모델 명령 ${summary.decisions.length}개가 모두 그대로 실행 · 해태와 함께: 막음 ${c.bul} · 줄임 ${c.jeol} · 통과 ${c.yun}</p>
+      <p class="ec-score">통과 ${c.yun} · 감속 ${c.jeol} · 차단 ${c.bul}</p>
+      <p class="ec-ww">해태 없이: 모델 명령 ${summary.decisions.length}개가 모두 그대로 실행 · 해태와 함께: 차단 ${c.bul} · 감속 ${c.jeol} · 통과 ${c.yun}</p>
       ${this.app.policyModified() ? '<p class="ec-note">정책 수정됨 — 판정은 지금 적용된 정책으로 계산했습니다.</p>' : ''}
       <div class="ec-actions"><button type="button" class="btn-secondary" id="ec-lab">⚙ 실험실에서 직접 해 보기</button>
       <button type="button" class="linkbtn" id="ec-transcript">대본 보기</button></div>`;
@@ -1025,11 +1058,12 @@ export class Director {
       narr: r.beat.narr, cmd: `${sourceName(r.proposal.source)} → ${actionText(r.proposal.action)}`,
       verdict: r.decision.verdict, sentence: r.copy?.sentence ?? verdictCopy(r.decision, this.ctx(r)).sentence,
     }));
-    this.setCaption(esc(`${this.customStream ? '스트림' : '저녁 파티'} 끝 · 통과 ${c.yun} · 줄임 ${c.jeol} · 막음 ${c.bul}`), '', 'end');
+    this.setCaption(esc(`${this.customStream ? '스트림' : '저녁 파티'} 끝 · 통과 ${c.yun} · 감속 ${c.jeol} · 차단 ${c.bul}`), '', 'end');
+    this.stage.frameBeat({ phase: 'end' });
     // A pasted/uploaded stream is not card 8: never recorded as watched.
     if (!this.customStream) this.app.markWatched(8, summary.decisions.map((d) => d.verdict));
     this.renderRail();
-    this.app.announce(`${this.customStream ? '스트림 재생' : '저녁 파티'} 끝. 통과 ${c.yun}, 줄임 ${c.jeol}, 막음 ${c.bul}.`);
+    this.app.announce(`${this.customStream ? '스트림 재생' : '저녁 파티'} 끝. 통과 ${c.yun}, 감속 ${c.jeol}, 차단 ${c.bul}.`);
     this.updateTransport();
     if (this.app.kiosk) this.startDwell(6000, () => this.startCard(CARDS[0]));
   }
@@ -1110,11 +1144,18 @@ export class Director {
   }
 
   ghostKey() {
+    const ghostBtn = $('btn-ghost');
+    const hadFocus = document.activeElement === ghostBtn;
     if (this.mode === 'ghost') this.exitGhost();
     else if (this.canGhost()) this.startGhost(this.recs[this.bi]);
     else if (this.mode === 'done') {
       const keyRec = this.recs.find((r) => r?.beat?.key);
       if (keyRec?.decision && keyRec.decision.verdict !== 'yun') this.startGhost(keyRec);
+    }
+    // The pressed button may just have been hidden: keep keyboard focus in the transport.
+    if (hadFocus) {
+      const to = !ghostBtn.hidden && ghostBtn.offsetParent ? ghostBtn : $('btn-primary');
+      if (document.activeElement !== to) to.focus({ preventScroll: true });
     }
   }
 
@@ -1187,10 +1228,11 @@ export class Director {
       const seen = watched.get(c.num);
       if (seen) {
         // Long runs (the 7-command dinner party) as counts, so the title keeps its room.
-        const glyphs = seen.length > 4
-          ? ['yun', 'jeol', 'bul'].filter((v) => seen.includes(v)).map((v) => `<span class="g g-${v}" aria-hidden="true">${VERDICT_UI[v].glyph}</span><span class="n" aria-hidden="true">${seen.filter((x) => x === v).length}</span>`).join('')
-          : seen.map((v) => `<span class="g g-${v}" aria-hidden="true">${VERDICT_UI[v]?.glyph ?? ''}</span>`).join('');
-        badge.innerHTML = `${glyphs}<span class="check" aria-hidden="true">✓</span>`;
+        const icons = seen.length > 4
+          ? ['yun', 'jeol', 'bul'].filter((v) => seen.includes(v)).map((v) => `${verdictIcon(v, 'g')}<span class="n" aria-hidden="true">${seen.filter((x) => x === v).length}</span>`).join('')
+          : seen.map((v) => verdictIcon(v, 'g')).join('');
+        // The watched mark is a word: the check mark now means 통과.
+        badge.innerHTML = `${icons}<span class="seen" aria-hidden="true">봄</span>`;
         status.textContent = `본 장면: ${seen.map((v) => VERDICT_UI[v]?.word).join(', ')}`;
       } else {
         badge.innerHTML = `<span class="tag">${esc(c.tag)}</span>`;
@@ -1210,7 +1252,7 @@ export class Director {
       const d = rec.decision;
       const ui = VERDICT_UI[d.verdict];
       const ctx = this.ctx(rec);
-      html += `<div class="dt-head v-${d.verdict}"><span class="dt-glyph" aria-hidden="true">${ui.glyph}</span><span class="dt-word">${ui.word}</span><code>${d.verdict}</code></div>`;
+      html += `<div class="dt-head v-${d.verdict}">${verdictIcon(d.verdict, 'dt-icon')}<span class="dt-word">${ui.word}</span><code>${d.verdict}</code></div>`;
       const names = sortedFired(d, this.policy);
       if (names.length) {
         html += '<h3>걸린 조건</h3><ul class="dt-fired">';

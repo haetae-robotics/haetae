@@ -8,6 +8,50 @@ import { parseStream } from './scenario.js';
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+// Shipped sources that must contain no Han code points (v3.9).
+const SOURCES = [
+  './index.html', './style.css', './app.js',
+  ...['actors3d', 'cards', 'copy', 'director', 'engine', 'explain', 'fx3d', 'geom3d', 'ghost', 'lab', 'log',
+    'model', 'overlay', 'scenario', 'scene3d', 'selftest', 'stage'].map((m) => `./js/${m}.js`),
+];
+const HAN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
+
+/** Decode %XX runs (e.g. a percent-encoded favicon) so they are scanned too. */
+function decodeRuns(text) {
+  return text.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => { try { return decodeURIComponent(m); } catch { return m; } });
+}
+
+/** Scan the shipped files and the rendered DOM for Han characters. Returns a list of hits. */
+export async function hanScan() {
+  const hits = [];
+  for (const f of SOURCES) {
+    let text = '';
+    try { text = await fetch(f, { cache: 'no-store' }).then((r) => r.text()); } catch { hits.push({ where: f, line: 0, text: 'fetch failed' }); continue; }
+    text.split('\n').forEach((line, i) => {
+      if (HAN.test(line) || HAN.test(decodeRuns(line))) hits.push({ where: f, line: i + 1, text: line.trim().slice(0, 120) });
+    });
+  }
+  hits.push(...hanScanDom());
+  return hits;
+}
+
+/** The rendered DOM: visible text, title / aria-label / alt attributes and the 3D label layer. */
+export function hanScanDom() {
+  const hits = [];
+  if (HAN.test(document.body.innerText)) hits.push({ where: 'DOM innerText', line: 0, text: '' });
+  for (const e of document.querySelectorAll('[title], [aria-label], [alt]')) {
+    for (const a of ['title', 'aria-label', 'alt']) {
+      const v = e.getAttribute(a);
+      if (v && HAN.test(v)) hits.push({ where: `DOM @${a}`, line: 0, text: v });
+    }
+  }
+  const layer = document.querySelector('.label-layer');
+  if (layer && HAN.test(layer.textContent)) hits.push({ where: 'CSS2D labels', line: 0, text: layer.textContent.slice(0, 120) });
+  const icon = document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? '';
+  if (HAN.test(decodeRuns(icon))) hits.push({ where: 'favicon', line: 0, text: '' });
+  return hits;
+}
+
 /** Run every card beat on a fresh Gate(defaultPolicy); returns rows. */
 export function checkCards(policyText) {
   const rows = [];
@@ -67,14 +111,21 @@ export async function runSelftest(policyText) {
   console.log('dinner party', dinner.verdicts.join(','), dinner.ok ? 'OK' : `MISMATCH (want ${dinner.want.join(',')})`);
   for (const r of rows) if (!r.ok) console.error('selftest mismatch', r);
   if (!dinner.ok) console.error('selftest dinner mismatch', dinner);
-  const pass = rows.filter((r) => r.ok).length + (dinner.ok ? 1 : 0);
-  const total = rows.length + 1;
+  let han = await hanScan();
+  const report = () => {
+    for (const h of han) console.error('selftest: Han character found', h);
+    const pass = rows.filter((r) => r.ok).length + (dinner.ok ? 1 : 0) + (han.length ? 0 : 1);
+    const total = rows.length + 2;
+    panel.dataset.ok = String(pass === total);
+    panel.textContent = `selftest ${pass}/${total}${han.length ? ' · 한자 검사 실패' : ''}`;
+    window.__haetaeSelftest = { rows, dinner, han, pass, total };
+  };
   const panel = document.createElement('div');
   panel.className = 'selftest-panel';
-  panel.dataset.ok = String(pass === total);
   panel.setAttribute('role', 'status');
-  panel.textContent = `selftest ${pass}/${total}`;
   document.body.append(panel);
-  window.__haetaeSelftest = { rows, dinner, pass, total };
-  return { rows, dinner, pass, total };
+  report();
+  // Scan the DOM again once the attract teaser has put its tag and labels on screen.
+  setTimeout(() => { han = [...han, ...hanScanDom()]; report(); }, 4000);
+  return window.__haetaeSelftest;
 }

@@ -235,7 +235,7 @@ export class ScenarioPlayer {
           this.decisions.push(decision);
           const v = VERDICTS[decision.verdict];
           const why = decision.fired.length ? `: ${decision.fired.join(', ')}` : '';
-          this.api.caption(`${base} → ${v.glyph} ${decision.verdict} (${v.ko})${why}`, n, total);
+          this.api.caption(`${base} → ${v.sym} ${v.ko} (${decision.verdict})${why}`, n, total);
         } else {
           this.api.caption(`${base} → 엔진이 입력을 거부함 (로그 참조)`, n, total);
         }

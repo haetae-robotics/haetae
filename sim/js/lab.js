@@ -62,11 +62,7 @@ export class Lab {
       dir.scene.lab = { cursor: null, preview: null, grabbed: null };
       dir.scene.mode = this.gate.mode;
       dir.updateLadder(false);
-      const c = $('map');
-      c.setAttribute('role', 'application');
-      c.setAttribute('aria-roledescription', '지도');
-      c.setAttribute('aria-label', '실험실 지도: 화살표로 커서 이동(Shift는 1 m), Enter로 명령 보내기, H로 사람 잡기, Esc로 놓기');
-      c.tabIndex = 0;
+      this.applyCanvasRole();
       $('lab-chip').hidden = false;
       this.syncWorldUi();
       this.syncModeUi();
@@ -86,11 +82,23 @@ export class Lab {
     c.setAttribute('role', 'img');
     c.removeAttribute('aria-roledescription');
     c.tabIndex = -1;
+    this.app.stage.setLabMode(false);
     $('lab-chip').hidden = true;
     this.app.overlay.preview(null);
     this.app.director.scene.lab = null;
     this.app.director.showIntro();
     $('btn-lab').focus();
+  }
+
+  /** The map is an application while the lab is open (also after a stage swap). */
+  applyCanvasRole() {
+    const c = $('map');
+    const three = this.app.stage.kind === '3d';
+    c.setAttribute('role', 'application');
+    c.setAttribute('aria-roledescription', three ? '모형 집' : '지도');
+    c.setAttribute('aria-label', `실험실 ${three ? '모형 집' : '지도'}: 화살표로 커서 이동(Shift는 1 m${three ? ', 화면 방향 기준' : ''}), Enter로 명령 보내기, H로 사람 잡기, Esc로 놓기`);
+    c.tabIndex = 0;
+    this.app.stage.setLabMode(true);
   }
 
   // ───────────────────────── Clock & world ─────────────────────────
@@ -254,6 +262,8 @@ export class Lab {
 
   bindMapKeys() {
     const c = $('map');
+    if (this.boundCanvas === c) return;
+    this.boundCanvas = c;
     const sc = () => this.app.director.scene;
     const show = () => {
       this.cursorOn = true;
@@ -273,8 +283,10 @@ export class Lab {
       if (!this.active) return;
       if (!this.cursorOn) show();
       const step = e.shiftKey ? 1 : 0.25;
-      const delta = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] }[e.key];
       const stage = this.app.stage;
+      // Camera-relative in 3D ("up" is the world axis closest to the view direction).
+      const ax = stage.axisFor(e.key);
+      const delta = ax ? [ax.x * step, ax.y * step] : null;
       if (delta) {
         e.preventDefault();
         e.stopPropagation();

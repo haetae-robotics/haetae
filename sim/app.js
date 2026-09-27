@@ -15,6 +15,7 @@ import { CARDS } from './js/cards.js';
 
 const $ = (id) => document.getElementById(id);
 const PREFS_KEY = 'haetae.sim.prefs.v2';
+const STAGE_KEY = 'haetae.sim.stage.v1'; // '3d' | '2d' (the viewer's choice in 보기)
 const WATCHED_KEY = 'haetae.sim.watched.v3'; // { policy: hash, cards: { num: verdicts } }
 const params = new URLSearchParams(location.search);
 
@@ -41,6 +42,106 @@ const app = {
   policyText() { return app.policyTextValue; },
   policyModified() { return app.modified; },
 };
+
+// ───────────────────────── Stage selection (3D diorama or 2D map) ─────────────────────────
+
+/** Probe WebGL on a throwaway canvas (never on #map, which must stay context-free until chosen). */
+function probeWebGL() {
+  if (params.get('webgl') === '0') return { ok: false, soft: false };
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    if (!gl) return { ok: false, soft: false };
+    let soft = false;
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    if (ext) soft = /SwiftShader|llvmpipe|Software/i.test(String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? ''));
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return { ok: true, soft };
+  } catch {
+    return { ok: false, soft: false };
+  }
+}
+
+function createStage(kind) {
+  const canvas = $('map');
+  const wrap = $('map-wrap');
+  const three = kind === '3d' && app.Stage3D;
+  document.body.classList.toggle('stage-3d', !!three);
+  document.body.classList.toggle('stage-2d', !three);
+  if (three) {
+    try {
+      return new app.Stage3D(canvas, wrap, {
+        kiosk: app.kiosk,
+        onContextLost: () => onContextLost(),
+        hint: (key, text) => app.toastOnce(key, text),
+      });
+    } catch (e) {
+      console.warn('Haetae: 3D stage failed, using the 2D map', e);
+      freshCanvas();
+      document.body.classList.remove('stage-3d');
+      document.body.classList.add('stage-2d');
+    }
+  }
+  return new Stage($('map'), wrap);
+}
+
+/** Replace #map with a fresh canvas carrying the same id, role, label, tabindex and classes. */
+function freshCanvas() {
+  const old = $('map');
+  const c = document.createElement('canvas');
+  for (const a of ['id', 'role', 'aria-label', 'aria-roledescription', 'tabindex', 'class']) {
+    const v = old.getAttribute(a);
+    if (v != null) c.setAttribute(a, v);
+  }
+  old.replaceWith(c);
+  return c;
+}
+
+/** Runtime swap (보기 switch or WebGL context loss). */
+app.swapStage = async (kind, { lost = false } = {}) => {
+  if (kind === app.stage?.kind) return;
+  if (kind === '3d' && !app.Stage3D) {
+    try {
+      ({ Stage3D: app.Stage3D } = await import('./js/scene3d.js'));
+    } catch (e) {
+      console.warn('Haetae: could not load the 3D stage', e);
+      app.toast('3D 화면을 불러오지 못해 2D 지도로 보여 드려요.');
+      syncStageRadio();
+      return;
+    }
+  }
+  const old = app.stage;
+  old.dispose();
+  if (old.kind === '3d' && !lost) old.forceLoss?.();
+  freshCanvas();
+  app.stage = createStage(kind);
+  const st = app.stage;
+  app.overlay.setStage(st);
+  app.director.stage = st;
+  st.bindPointer(app.lab.pointerHandlers());
+  app.lab.bindMapKeys();
+  st.setPolicy(app.policyObj);
+  if (app.lab.active) app.lab.applyCanvasRole();
+  app.director.describeMap(app.director.scene.world);
+  app.overlay.relayout();
+  syncStageRadio();
+};
+
+function onContextLost() {
+  app.no3d = true; // for the rest of the session
+  setTimeout(() => {
+    app.swapStage('2d', { lost: true });
+    app.toast('3D 화면이 멈춰 2D 지도로 바꿨어요.');
+  }, 0);
+}
+
+function syncStageRadio() {
+  const k = app.stage?.kind ?? '2d';
+  const r = document.querySelector(`input[name="stage"][value="${k}"]`);
+  if (r) r.checked = true;
+  const three = document.querySelector('input[name="stage"][value="3d"]');
+  if (three) three.disabled = !app.webgl || !!app.no3d;
+}
 
 function fatal(message) {
   window.__haetaeFailed = true;
@@ -202,13 +303,27 @@ function closeView() {
 async function boot() {
   loadPrefs();
   applyPrefs();
+  // Choose the stage before anyone calls getContext on #map.
+  const asked = params.get('stage') ?? store.get(STAGE_KEY);
+  const probe = probeWebGL();
+  app.webgl = probe.ok;
+  let kind = '3d';
+  let noGlToast = false;
+  if (asked === '2d') kind = '2d';
+  else if (!probe.ok) { kind = '2d'; noGlToast = true; } else if (probe.soft && asked !== '3d') kind = '2d'; // software renderer: 보기 still offers 3D
+  document.body.classList.add(kind === '3d' ? 'stage-3d' : 'stage-2d');
+  // three.js is loaded only here, in parallel with the WASM engine.
+  const three = kind === '3d'
+    ? import('./js/scene3d.js').then((m) => m.Stage3D).catch((e) => { console.warn('Haetae: 3D modules failed, using the 2D map', e); return null; })
+    : Promise.resolve(null);
   let version;
   try {
-    ({ version } = await loadEngine());
+    [{ version }, app.Stage3D] = await Promise.all([loadEngine(), three]);
   } catch (e) {
     fatal(`WASM 판정 엔진을 불러오지 못했습니다: ${e.message}`);
     return;
   }
+  if (kind === '3d' && !app.Stage3D) kind = '2d';
   let policyText;
   try {
     const res = await fetch('./examples/policy.json', { cache: 'no-store' });
@@ -221,7 +336,7 @@ async function boot() {
   app.defaultPolicyText = policyText;
   $('intro-foot').textContent = `판정은 전부 실제 Rust 게이트(WebAssembly v${version})가 내립니다.`;
 
-  app.stage = new Stage($('map'), $('map-wrap'));
+  app.stage = createStage(kind);
   app.overlay = new Overlay(app.stage);
   app.strip = new Strip();
   app.log = new EventLog($('event-log'));
@@ -236,6 +351,8 @@ async function boot() {
   app.lab.validatePolicy();
 
   bindUi();
+  syncStageRadio();
+  if (noGlToast) app.toast('이 브라우저에서는 3D를 쓸 수 없어 2D 지도로 보여 드려요.');
   app.director.renderRail();
   darkMq.addEventListener('change', () => app.stage.readPalette());
   reduceMq.addEventListener('change', () => applyPrefs());
@@ -251,12 +368,14 @@ async function boot() {
     app.director.teaser(() => new Gate(policyText));
   }
   let last = performance.now();
+  let toolsAt = 0;
   const frame = (now) => {
     try {
       const dt = Math.min(100, now - last);
       last = now;
       app.lab.tick(dt);
       app.director.frame(now);
+      if (now - toolsAt > 500) { toolsAt = now; app.overlay.placeToolbar(); }
     } catch (e) {
       if (!frame.reported) { frame.reported = true; console.error('Haetae frame error:', e); }
     }
@@ -331,6 +450,11 @@ function bindUi() {
     savePrefs();
     applyPrefs();
   });
+  document.querySelectorAll('input[name="stage"]').forEach((r) => r.addEventListener('change', () => {
+    if (!r.checked) return;
+    store.set(STAGE_KEY, r.value);
+    app.swapStage(r.value);
+  }));
   $('pref-auto').addEventListener('change', () => {
     app.prefs.autoSet = $('pref-auto').checked;
     savePrefs();
@@ -367,6 +491,11 @@ function onKey(e) {
   else if (code === 'KeyH') d.ghostKey();
   else if (code === 'KeyL') app.lab.active ? app.lab.close() : app.openLab();
   else if (k === '?') { e.preventDefault(); $('help').showModal(); }
+  else if (k === '[') app.stage.viewCmd('left');
+  else if (k === ']') app.stage.viewCmd('right');
+  else if (k === '+' || k === '=') app.stage.viewCmd('in');
+  else if (k === '-' || k === '_') app.stage.viewCmd('out');
+  else if (code === 'KeyV') app.stage.viewCmd('home');
   else if (/^[1-8]$/.test(k)) app.pickCard(CARDS[Number(k) - 1]);
 }
 
@@ -377,7 +506,11 @@ function bindKiosk() {
     d.paused = true;
     d.syncPause();
     clearTimeout(idle);
-    idle = setTimeout(() => { d.paused = false; d.syncPause(); }, 60000);
+    idle = setTimeout(() => {
+      d.paused = false;
+      d.syncPause();
+      app.stage.resetView?.(); // hand the camera back to the scene after a visitor's drag
+    }, 60000);
   };
   ['pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, poke, { capture: true }));
 }

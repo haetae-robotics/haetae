@@ -47,7 +47,7 @@ export class EventLog {
     if (verdict && VERDICTS[verdict]) {
       const chip = document.createElement('span');
       chip.className = `vchip vchip-${verdict}`;
-      chip.textContent = `${VERDICTS[verdict].glyph} ${verdict}`;
+      chip.textContent = `${VERDICTS[verdict].sym} ${VERDICTS[verdict].ko} · ${verdict}`;
       li.append(chip, ' ');
     }
 

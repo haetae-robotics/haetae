@@ -4,11 +4,19 @@
 
 import { num, MODE_KO, pt, describeRule, explainFired } from './explain.js';
 
+// One vocabulary everywhere: a Korean word, a non-Han icon (SVG <symbol> in
+// index.html), a plain-text symbol for places markup cannot go, and a shape.
 export const VERDICT_UI = {
-  yun: { glyph: '允', word: '통과', ko: '통과' },
-  jeol: { glyph: '節', word: '줄임', ko: '줄임' },
-  bul: { glyph: '不', word: '막음', ko: '막음' },
+  yun: { icon: 'v-yun', sym: '✓', word: '통과', ko: '통과', title: '통과: 그대로 실행' },
+  jeol: { icon: 'v-jeol', sym: '⇊', word: '감속', ko: '감속', title: '감속: 속도를 줄여 실행' },
+  bul: { icon: 'v-bul', sym: '⊘', word: '차단', ko: '차단', title: '차단: 실행하지 않음' },
 };
+
+/** The verdict icon as inline SVG (always aria-hidden; the word carries the meaning). */
+export function verdictIcon(v, cls = '') {
+  if (!VERDICT_UI[v]) return '';
+  return `<svg class="vi vi-${v}${cls ? ` ${cls}` : ''}" aria-hidden="true" focusable="false"><use href="#v-${v}"/></svg>`;
+}
 
 export const ZONE_KO = { hall: '복도', 'child-room': '아이 방' };
 
@@ -41,11 +49,11 @@ export function josa(word, withBatchim, without) {
   return code % 28 ? withBatchim : without;
 }
 
-/** Glyph + word, the hanja hidden from screen readers. */
+/** Icon + word. */
 export function verdictHtml(v) {
   const u = VERDICT_UI[v];
   if (!u) return '';
-  return `<span aria-hidden="true">${u.glyph}</span> ${u.word}`;
+  return `${verdictIcon(v)} <span class="vw">${u.word}</span>`;
 }
 
 const rule = (policy, id) => policy?.rules?.find((r) => r.id === id);
@@ -157,8 +165,8 @@ export function label(name, ctx) {
 }
 
 /**
- * How a cap-kind sentence ends, keyed by what the gate returned: on 不 nothing
- * ran, so nothing was slowed; on 節 a lower limit may be the one applied.
+ * How a cap-kind sentence ends, keyed by what the gate returned: on bul (차단)
+ * nothing ran, so nothing was slowed; on jeol (감속) a lower limit may be the one applied.
  */
 function capEnd(limit, decision) {
   if (decision?.verdict === 'bul') return `${num(limit)} m/s 제한에도 걸렸지만, 다른 조건 때문에 명령 자체가 막혔어요.`;
