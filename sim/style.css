@@ -638,8 +638,8 @@ body[data-state="ghost"] .view-tools { margin-top: 34px; }
 }
 .intro h1 { margin: 0 0 6px; font-size: 20px; line-height: 1.3; letter-spacing: -.02em; }
 .intro p { margin: 0 0 10px; color: var(--ink); }
-.legend-chips { display: flex; gap: 6px; list-style: none; padding: 0; margin: 0 0 14px; }
-.legend-chips li { font-size: 13px; font-weight: 700; padding: 2px 10px; border-radius: 999px; border: 1.5px solid; }
+.legend-chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0 0 14px; }
+.legend-chips li { font-size: 13px; font-weight: 700; padding: 2px 10px; border-radius: 999px; border: 1.5px solid; white-space: nowrap; }
 .legend-chips .vi { width: 15px; height: 15px; }
 .legend-chips .v-yun, .v-yun { color: var(--yun-fg); }
 .legend-chips .v-jeol, .v-jeol { color: var(--jeol-fg); }
@@ -883,6 +883,17 @@ textarea[aria-invalid="true"] { border-color: var(--bul-fg); }
   .intro .btn-primary { width: auto; grid-column: 2; grid-row: 3 / 5; }
   .intro .intro-links { grid-column: 1; grid-row: 4; text-align: left; margin: 2px 0 0 !important; }
   .intro .foot-chip { grid-column: 1 / -1; margin-top: 4px !important; }
+  /* A narrow stage (portrait tablet): one column, the button full width under the chips. */
+  @container stage (max-width: 472px) {
+    .intro { grid-template-columns: minmax(0, 1fr); }
+    .intro .btn-primary { grid-column: 1; grid-row: 4; width: 100%; margin-top: 10px; }
+    .intro .intro-links { grid-row: 5; text-align: center; margin-top: 6px !important; }
+  }
+  /* The lab drawer sits beside the stage, not over it: while it is open the rail
+     column takes the drawer's width, so the map, its toolbar and the caption stay clear. */
+  :root { --lab-w: 340px; }
+  dialog.sheet.lab { width: var(--lab-w); }
+  body:has(#lab[open]) .app { grid-template-columns: minmax(0, 1fr) var(--lab-w); }
 }
 
 /* ───────────── < 720 px: stacked ───────────── */
@@ -930,6 +941,15 @@ textarea[aria-invalid="true"] { border-color: var(--bul-fg); }
   .vt-box { max-width: 220px; }
 }
 
+/* Short phones: the intro's links stay on the first screen. */
+@media (max-width: 719px) and (max-height: 700px) {
+  .intro { margin-top: 8px; padding: 14px 16px 12px; }
+  .intro h1 { margin-bottom: 4px; }
+  .intro > p:first-of-type { line-height: 1.45; margin-bottom: 8px; }
+  .legend-chips { margin-bottom: 10px; }
+  .intro-links { margin: 6px 0 4px !important; }
+}
+
 /* ───────────── Short landscape (phones on their side) ─────────────
    The map takes the full stage height on the left; title, strip, caption and
    transport (or the intro card) stack on the right; the rail goes below. */
@@ -943,6 +963,13 @@ textarea[aria-invalid="true"] { border-color: var(--bul-fg); }
     --lw: min(calc(var(--lh) * 4 / 3), calc(100vw - 44px - var(--side-w)));
   }
   body[data-state="intro"] { --side-w: 280px; }
+  /* Lab: the drawer takes the right side; the map and the caption stack left of it. */
+  body:has(#lab[open]) {
+    --lab-w: min(320px, 48vw);
+    --lh: max(160px, calc(100dvh - var(--hdr-h) - 16px - 76px));
+    --lw: min(calc(var(--lh) * 4 / 3), calc(100vw - 32px - var(--lab-w)));
+  }
+  body.stage-2d:has(#lab[open]) { --lw: min(var(--lh), calc(100vw - 32px - var(--lab-w))); }
   /* The 2D map stays square. */
   body.stage-2d { --lw: min(var(--lh), calc(100vw - 44px - var(--side-w))); }
   .legend, .lab-text, .pitch, .vw-text { display: none; }
@@ -968,6 +995,9 @@ textarea[aria-invalid="true"] { border-color: var(--bul-fg); }
   .node-motor { font-size: 0; gap: 0; }
   .node-motor > span { font-size: 13px; }
   .link { min-width: 8px; margin: 0 3px; }
+  /* The speed-cap chip sits on the gate-to-motor link: that link gets the chip's width. */
+  .cap-chip { font-size: 10px; padding: 0 4px; }
+  .strip[data-state="jeol"]:has(.cap-chip:not(:empty)) .link-out { min-width: 58px; }
   .caption { grid-row: 3; flex-wrap: wrap; gap: 4px 8px; padding: 6px 10px; height: auto; max-height: 100%; min-height: 0; overflow: hidden; }
   .progress { width: 100%; }
   .cap-main { font-size: 14px; }
@@ -1004,6 +1034,12 @@ textarea[aria-invalid="true"] { border-color: var(--bul-fg); }
     inset: var(--hdr-h) 0 0 auto; width: min(400px, 100vw); max-height: none;
     border-radius: 0; border-top: 0; border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0, 0, 0, .12);
   }
+  dialog.sheet.lab { width: var(--lab-w, 320px); }
+  body:has(#lab[open]) .app { padding-right: var(--lab-w); }
+  body:has(#lab[open]) .stage { grid-template-columns: var(--lw); grid-template-rows: var(--lh) minmax(0, 1fr); }
+  body:has(#lab[open]) .map-wrap { grid-row: 1; }
+  body:has(#lab[open]) .stage-head, body:has(#lab[open]) .strip { display: none; }
+  body:has(#lab[open]) .caption { grid-column: 1; grid-row: 2; align-self: start; }
 }
 
 /* ───────────── Reduced motion ───────────── */

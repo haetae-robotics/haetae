@@ -453,8 +453,10 @@ export class Stage3D {
       maxY: fin(Math.max(...rects.map((q) => q.max.y)), 10) + 0.4,
     };
     this.fx.setPolicy(policy);
+    const home = this.atHome();
     this.computeFit();
-    if (!this.userOwnsCamera && !this.tween) this.setView(this.defTarget, this.az(), this.polar(), this.fitD);
+    if (home) this.rehome();
+    else if (!this.userOwnsCamera && !this.tween) this.setView(this.defTarget, this.az(), this.polar(), this.fitD);
     this.dirty = true;
   }
 
@@ -474,7 +476,7 @@ export class Stage3D {
     this.labelLayer.classList.toggle('narrow', W < 560);
     this.computeFit();
     if (first) this.setView(this.defTarget, DEFAULT.az, DEFAULT.polar, this.fitD);
-    else if (home) this.setView(this.defTarget, this.az(), this.polar(), this.fitD);
+    else if (home) this.rehome();
     else if (!this.userOwnsCamera && !this.tween) this.setView(this.targetW(), this.az(), this.polar(), this.fitD * (this.lastDistK ?? 1));
     this.controls.minDistance = 0.45 * this.fitD;
     this.controls.maxDistance = 1.3 * this.fitD;
@@ -494,8 +496,22 @@ export class Stage3D {
     if (!this.cssW) return;
     const home = this.atHome();
     this.computeFit();
-    if (home) this.setView(this.defTarget, this.az(), this.polar(), this.fitD);
+    if (home) this.rehome();
     this.dirty = true;
+  }
+
+  /**
+   * Put a home camera back on the (re)computed default framing. A homing tween
+   * keeps running but now ends on the new fit, so a resize or keep-out that lands
+   * mid-tween (the first frames after load) is not lost.
+   */
+  rehome() {
+    if (this.tween?.home) {
+      this.tween.to.target = { ...this.defTarget };
+      this.tween.to.d = this.fitD;
+    } else {
+      this.setView(this.defTarget, this.az(), this.polar(), this.fitD);
+    }
   }
 
   reserveNdc() {
@@ -505,9 +521,13 @@ export class Stage3D {
     return (this.reserve ?? []).map((r) => ({ x0: (2 * r.x) / W - 1, x1: (2 * (r.x + r.w)) / W - 1, y0: 1 - (2 * (r.y + r.h)) / H, y1: 1 - (2 * r.y) / H }));
   }
 
-  /** True while the camera sits at the default framing (not owned, not tweening). */
+  /**
+   * True while the camera sits at the default framing, or is on its way there
+   * (a homing tween: resetView, card start, end card). Not while the viewer owns it.
+   */
   atHome() {
-    if (!this.defTarget || this.userOwnsCamera || this.tween) return false;
+    if (!this.defTarget || this.userOwnsCamera) return false;
+    if (this.tween) return !!this.tween.home;
     const t = this.targetW();
     return Math.hypot(t.x - this.defTarget.x, t.y - this.defTarget.y) < 1e-3 && Math.abs((this.lastDistK ?? 0) - 1) < 1e-3;
   }
@@ -652,7 +672,7 @@ export class Stage3D {
     const from = { target: this.targetW(), az: this.az(), polar: this.polar(), d: this.dist() };
     const end = { target: to.target ?? from.target, az: to.az ?? from.az, polar: to.polar ?? from.polar, d: to.d ?? from.d };
     if (this.reduced || dur <= 0) { this.tween = null; this.setView(end.target, end.az, end.polar, end.d); return; }
-    this.tween = { from, to: end, t0: performance.now(), dur, then: to.then ?? null };
+    this.tween = { from, to: end, t0: performance.now(), dur, then: to.then ?? null, home: !!to.home };
     this.dirty = true;
   }
 
@@ -677,7 +697,7 @@ export class Stage3D {
   frameBeat({ phase, points = [] }) {
     if (this.reduced || this.userOwnsCamera || this.disposed) return;
     if (phase === 'card' || phase === 'end') {
-      this.startTween({ target: this.defTarget, d: this.fitD }, 900);
+      this.startTween({ target: this.defTarget, d: this.fitD, home: true }, 900);
       return;
     }
     const pts = points.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
@@ -700,7 +720,7 @@ export class Stage3D {
 
   resetView() {
     this.releaseCamera();
-    this.startTween({ target: this.defTarget, az: DEFAULT.az, polar: DEFAULT.polar, d: this.fitD }, 350);
+    this.startTween({ target: this.defTarget, az: DEFAULT.az, polar: DEFAULT.polar, d: this.fitD, home: true }, 350);
   }
 
   viewCmd(cmd) {

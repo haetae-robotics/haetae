@@ -299,10 +299,12 @@ export class Overlay {
     bar.classList.toggle('compact', w.width < 440 || w.height < 340);
     bar.style.top = `${Math.round(w.top - s.top + 8)}px`;
     bar.style.right = `${Math.round(s.right - w.right + 8)}px`;
-    // The default framing keeps the house clear of the toolbar (map px, 6 px air).
+    // Up to 1099 px the default framing keeps the house clear of the toolbar
+    // (map px, 6 px air). Wider, the framing stays as it was: the house has corner room.
     const bw = bar.offsetWidth;
     const bh = bar.offsetHeight;
-    this.stage.setReserve?.(bw && this.is3d ? [{ x: Math.round(w.width) - 8 - bw - 6, y: 0, w: bw + 14, h: 8 + bh + 6 }] : []);
+    const keep = bw && this.is3d && this.tabletMq.matches;
+    this.stage.setReserve?.(keep ? [{ x: Math.round(w.width) - 8 - bw - 6, y: 0, w: bw + 14, h: 8 + bh + 6 }] : []);
   }
 
   place(e, x, y) {
@@ -437,9 +439,11 @@ export class Overlay {
         obs.push(...this.pathRects(robot, t, pathW));
       }
     }
-    if (slip && this.slip && !this.slipInfo?.mobile) {
-      const r = this.domRect(this.slip, 4);
-      if (r) obs.push({ ...r, wgt: 3 });
+    if (slip && this.slip) {
+      // 6 px air round the slip; the phone's small ✉ tab is avoided too.
+      const mob = !!this.slipInfo?.mobile;
+      const r = this.domRect(this.slip, mob ? 3 : 6);
+      if (r) obs.push({ ...r, wgt: mob ? 2 : 3 });
     }
     if (trail) obs.push(...this.trailRects(1));
     if (ladder) {
@@ -530,7 +534,17 @@ export class Overlay {
     const info = this.slipInfo;
     const r = this.stage.toScreen(info.robot, this.hFor('robot'));
     if (info.mobile) {
-      this.place(s, Math.max(14, Math.min(this.W - 14, r.x)), Math.max(12, Math.min(this.H - 12, r.y - (this.is3d ? 14 : 40))));
+      const x = Math.max(14, Math.min(this.W - 14, r.x));
+      let y = r.y - (this.is3d ? 14 : 40);
+      // Keep the ✉ tab (26×22, centred) off the verdict effect: above it, else below it.
+      if (this.is3d) {
+        for (const k of ['barrier', 'dome', 'arch']) {
+          const b = this.stage.screenBox?.(k);
+          if (!b || x + 13 < b.x || x - 13 > b.x + b.w || y + 11 < b.y || y - 11 > b.y + b.h) continue;
+          y = b.y - 14 >= 12 ? b.y - 14 : b.y + b.h + 14;
+        }
+      }
+      this.place(s, x, Math.max(12, Math.min(this.H - 12, y)));
       return;
     }
     const minX = 4;
@@ -630,6 +644,7 @@ export class Overlay {
     }
     item.layout = () => this.layoutTag(item);
     this.items.push(item);
+    if (this.slipInfo?.mobile) this.positionSlip(); // the ✉ tab steps off the new barrier first
     item.layout();
     this.seal = root;
     this.sealItem = item;
