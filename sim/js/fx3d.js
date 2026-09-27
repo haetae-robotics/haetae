@@ -318,6 +318,13 @@ export class Fx {
         item.chipText = zoneKo(z.id);
       }
       item.chip = this.ctx.makeLabel(item.chipText, `lbl-zone ${deny ? 'lbl-deny' : 'lbl-slow'}`, 6);
+      if (deny || z.speed_limit != null) {
+        // On a narrow map the zone name folds away (the room label names it): "0.3 m/s", "출입 금지".
+        const name = document.createElement('span');
+        name.className = 'lz-name';
+        name.textContent = `${zoneKo(z.id)} · `;
+        item.chip.element.replaceChildren(name, item.chipText.slice(name.textContent.length));
+      }
       if (item.chipAt) w2v(item.chipAt, 0.05, item.chip.position).sub(g.position);
       else item.chip.position.set(0, deny ? 0.55 : 0.05, 0);
       g.add(item.chip);

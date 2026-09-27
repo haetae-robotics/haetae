@@ -978,7 +978,7 @@ Existing tokens are reused unchanged: `--ink*`, `--line`, `--surface`, `--intent
 
 **Camera.**
 - `PerspectiveCamera`, fov 32°. A narrow fov gives a tabletop-miniature look with little distortion. Near 0.5, far 120.
-- **Fit distance `fitD`:** a 12-step binary search on distance so that the 8 projected corners of the plinth (bounds from the house ∪ policy zones, as in the 2D `setPolicy`) fit inside 92% of the viewport at the current angles. It is recomputed on resize and on policy apply.
+- **Fit distance `fitD`:** a 12-step binary search on distance so that the 8 projected corners of the plinth (bounds from the house ∪ policy zones, as in the 2D `setPolicy`) fit inside 92% of the viewport at the current angles. It is recomputed on resize and on policy apply. The default framing also keeps the house clear of the camera toolbar (v3.15).
 - **Default view:**
   - target = centre of the plinth top, `w2v({x: 5, y: 4.65}, 0.3)`
   - azimuth **+28°** (camera to the south-east)
@@ -1190,7 +1190,7 @@ The director sets `scene.fx = { decision, anchor, t0 }`:
 | `js/selftest.js` | kept, extended | Adds `hanScan()` (v3.9). The verdict checks are stage-independent and pass headless in both modes. |
 | `app.js` | edited | Stage selection and swap; the 보기 option. |
 | `index.html` | edited | The import map `<script type="importmap">{"imports": {"three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/"}}</script>`, placed **before** the module script; the SVG sprite (`#mark`, `#v-yun`, `#v-jeol`, `#v-bul`); the view toolbar; the 보기 radio; no Han characters. |
-| `style.css` | edited | `--d3-*` tokens; `#map-wrap` aspect **4:3 when the stage column is at least 820 px wide, otherwise 1:1** (the 2D fallback always forces 1:1 via `.stage-2d`); toolbar; tag and icon styles; `--font-seal` and its rules removed. |
+| `style.css` | edited | `--d3-*` tokens; `#map-wrap` aspect **4:3 when the stage column is at least 820 px wide, otherwise 1:1** (amended by v3.15) (the 2D fallback always forces 1:1 via `.stage-2d`); toolbar; tag and icon styles; `--font-seal` and its rules removed. |
 
 **Stage interface.** Both `Stage` (2D) and `Stage3D` implement it. The director, the overlay and the lab talk only to this:
 
@@ -1404,3 +1404,14 @@ Everything in the §9 reduced-motion list still applies. In 3D, additionally:
 10. No text is rendered in WebGL; every word is DOM. The QR tag is a pattern, and the badges are shapes.
 11. No Han code points exist in shipped sources or in the rendered DOM (`hanScan()` in `?selftest`).
 12. The site is still static and offline. `three` comes from `sim/vendor` through the import map. There are no model files, no fonts and no network requests. `sim/vendor`, `sim/pkg` and `sim/examples` are never edited.
+
+### v3.15 Small screens (layout pass)
+
+Checked at 800×600, 1024×768, 768×1024, 667×375, 375×812 and 360×640 (intro, and cards 1, 3 and 5 at the verdict moment); 1280×800 and wider are unchanged.
+
+- **Map shape (3D).** Beside the rail at 720–1099 px, a height-limited map may run up to **16:10** (it was 4:3). The house is height-fitted either way, so the extra width is side room for the toolbar and the tags. Below 720 px the map is **6:5** (it was 1:1): the house is width-fitted either way, and the saved height keeps the intro button, the caption and the primary button on the first screen. The 2D map stays square everywhere.
+- **Toolbar keep-out.** The overlay reports the toolbar's rect to `stage.setReserve(rects)` (map px). `computeFit` first fits and centres the plinth as before; if the projected hull of its 8 corners would touch a reserved rect, it shrinks the house (down to 0.6×) and slides it on screen to the largest placement that is clear, nearest the centre first. `resize`, `setReserve` and `showIntro` put a camera that sits at the default framing back on it. Beat framing is unchanged. The toolbar is compact (⟳ and ⌂ only) when the map is under 440 px wide **or under 340 px tall**.
+- **Labels.** The toolbar joins the label-priority pass as a priority-2 box, so zone chips, room labels and person tags under it step aside instead of being covered. When the map is under 560 px wide, zone chips drop the zone name: **0.3 m/s**, **출입 금지** (the room label names the room).
+- **Intro, 720–1099 px.** The stage title is hidden in the intro (the intro's own heading replaces it); the card puts the legend chips and the two links left of the button. The map gets `100dvh − 300px` of height (it was `− 430px`). Below 720 px the stage title is hidden in the intro as well.
+- **Short landscape (≤ 1099 × 500 px, landscape).** The rail moves below. The stage becomes two columns: the map on the left at the full stage height (up to 4:3), and on the right the title, a narrow strip (the motor keeps its icon; a flagged source shows only its flag; the ×배속 badge wraps to a second line), the caption (clamped to 3 lines; the full sentence stays in the live region and in 자세히) and the transport. The intro card and the end card take the right column. Sheets come in from the side.
+

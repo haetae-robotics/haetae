@@ -296,9 +296,13 @@ export class Overlay {
     const stage = $('stage');
     const w = this.wrap.getBoundingClientRect();
     const s = stage.getBoundingClientRect();
-    bar.classList.toggle('compact', w.width < 440);
+    bar.classList.toggle('compact', w.width < 440 || w.height < 340);
     bar.style.top = `${Math.round(w.top - s.top + 8)}px`;
     bar.style.right = `${Math.round(s.right - w.right + 8)}px`;
+    // The default framing keeps the house clear of the toolbar (map px, 6 px air).
+    const bw = bar.offsetWidth;
+    const bh = bar.offsetHeight;
+    this.stage.setReserve?.(bw && this.is3d ? [{ x: Math.round(w.width) - 8 - bw - 6, y: 0, w: bw + 14, h: 8 + bh + 6 }] : []);
   }
 
   place(e, x, y) {

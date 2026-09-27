@@ -167,6 +167,7 @@ export class Director {
     this.card = null;
     document.body.dataset.state = 'intro';
     $('intro').hidden = false;
+    this.stage.resetView(); // back to the default framing (clear of the camera toolbar)
     this.setWorld(CARDS[0].beats[0].world, false);
     this.scene.decor = {};
     this.scene.focus = null;

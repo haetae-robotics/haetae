@@ -470,8 +470,11 @@ export class Stage3D {
     this.css2d.setSize(W, H);
     this.camera.aspect = W / H;
     this.camera.updateProjectionMatrix();
+    const home = this.atHome();
+    this.labelLayer.classList.toggle('narrow', W < 560);
     this.computeFit();
     if (first) this.setView(this.defTarget, DEFAULT.az, DEFAULT.polar, this.fitD);
+    else if (home) this.setView(this.defTarget, this.az(), this.polar(), this.fitD);
     else if (!this.userOwnsCamera && !this.tween) this.setView(this.targetW(), this.az(), this.polar(), this.fitD * (this.lastDistK ?? 1));
     this.controls.minDistance = 0.45 * this.fitD;
     this.controls.maxDistance = 1.3 * this.fitD;
@@ -479,7 +482,37 @@ export class Stage3D {
     this.onResize?.();
   }
 
-  /** Distance at which the whole plinth (plus policy zones) fits 92% of the view. */
+  /**
+   * Keep-out rects over the map, in map px ({x, y, w, h}): chrome such as the
+   * camera toolbar. The default framing fits the house around them.
+   */
+  setReserve(rects = []) {
+    const key = JSON.stringify(rects);
+    if (key === this.reserveKey) return;
+    this.reserveKey = key;
+    this.reserve = rects;
+    if (!this.cssW) return;
+    const home = this.atHome();
+    this.computeFit();
+    if (home) this.setView(this.defTarget, this.az(), this.polar(), this.fitD);
+    this.dirty = true;
+  }
+
+  reserveNdc() {
+    const W = this.cssW;
+    const H = this.cssH;
+    if (!W || !H) return [];
+    return (this.reserve ?? []).map((r) => ({ x0: (2 * r.x) / W - 1, x1: (2 * (r.x + r.w)) / W - 1, y0: 1 - (2 * (r.y + r.h)) / H, y1: 1 - (2 * r.y) / H }));
+  }
+
+  /** True while the camera sits at the default framing (not owned, not tweening). */
+  atHome() {
+    if (!this.defTarget || this.userOwnsCamera || this.tween) return false;
+    const t = this.targetW();
+    return Math.hypot(t.x - this.defTarget.x, t.y - this.defTarget.y) < 1e-3 && Math.abs((this.lastDistK ?? 0) - 1) < 1e-3;
+  }
+
+  /** Distance at which the whole plinth (plus policy zones) fits 92% of the view, clear of the reserve. */
   computeFit(az = DEFAULT.az, polar = DEFAULT.polar) {
     const b = this.bounds;
     const x0 = Math.min(-0.9, b.minX) - 5;
@@ -497,12 +530,14 @@ export class Stage3D {
       this.placeCam(cam, target, az, polar, d);
       cam.updateMatrixWorld();
       let x0 = Infinity; let x1 = -Infinity; let y0 = Infinity; let y1 = -Infinity; let front = true;
+      const pts = [];
       for (const c of corners) {
         p.copy(c).project(cam);
         if (p.z >= 1) front = false;
+        pts.push({ x: p.x, y: p.y });
         x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
       }
-      return { x0, x1, y0, y1, front };
+      return { x0, x1, y0, y1, front, pts };
     };
     const search = () => {
       let lo = 4;
@@ -514,25 +549,58 @@ export class Stage3D {
       }
       return hi;
     };
-    // Centre the plinth on screen: move the target along the floor (forward / sideways), then fit again.
-    let d = search();
+    // Move the target along the floor (forward / sideways) so the plinth's box centre lands on `want` (NDC).
     const fwd = { x: -Math.sin(az), y: Math.cos(az) };
     const side = { x: fwd.y, y: -fwd.x };
-    for (let k = 0; k < 2; k++) {
-      const b0 = box(d);
-      const c0 = { x: (b0.x0 + b0.x1) / 2, y: (b0.y0 + b0.y1) / 2 };
+    const centre = (dist, want) => {
+      const b0 = box(dist);
+      const c0 = { x: (b0.x0 + b0.x1) / 2 - want.x, y: (b0.y0 + b0.y1) / 2 - want.y };
       const base = { ...tw };
       tw.x = base.x + fwd.x; tw.y = base.y + fwd.y;
-      const bf = box(d);
-      const dyF = (bf.y0 + bf.y1) / 2 - c0.y;
+      const bf = box(dist);
+      const dyF = (bf.y0 + bf.y1) / 2 - want.y - c0.y;
       tw.x = base.x + side.x; tw.y = base.y + side.y;
-      const bs = box(d);
-      const dxS = (bs.x0 + bs.x1) / 2 - c0.x;
+      const bs = box(dist);
+      const dxS = (bs.x0 + bs.x1) / 2 - want.x - c0.x;
       const mf = Math.abs(dyF) > 1e-4 ? -c0.y / dyF : 0;
       const ms = Math.abs(dxS) > 1e-4 ? -c0.x / dxS : 0;
       tw.x = base.x + fwd.x * mf + side.x * ms;
       tw.y = base.y + fwd.y * mf + side.y * ms;
+    };
+    // Centre the plinth on screen, then fit again.
+    let d = search();
+    for (let k = 0; k < 2; k++) {
+      centre(d, { x: 0, y: 0 });
       d = search();
+    }
+    // Chrome drawn over the map (the camera toolbar): when the fitted house would
+    // run under it, shrink and slide the house to the largest placement that is clear.
+    const keep = this.reserveNdc();
+    const hits = (P) => keep.some((r) => polyHitsRect(P, r));
+    if (keep.length && hits(hull2(box(d).pts))) {
+      const b = box(d);
+      const c = { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 };
+      const Q = hull2(b.pts).map((q) => ({ x: q.x - c.x, y: q.y - c.y }));
+      const at = (s, o) => Q.map((q) => ({ x: s * q.x + o.x, y: s * q.y + o.y }));
+      const place = (s) => FIT_OFFSETS.find((o) => at(s, o).every((q) => Math.abs(q.x) <= 0.92 && Math.abs(q.y) <= 0.92) && !hits(at(s, o)));
+      let lo = 0.6;
+      let hi = 1;
+      let best = place(lo) ? { s: lo, o: place(lo) } : null;
+      for (let i = 0; best && i < 9; i++) {
+        const m = (lo + hi) / 2;
+        const o = place(m);
+        if (o) { lo = m; best = { s: m, o }; } else hi = m;
+      }
+      if (best) {
+        // Size scales ~1/distance at this narrow fov; a final check absorbs the perspective error.
+        const d0 = d;
+        for (let s = best.s; s > 0.55; s *= 0.97) {
+          d = d0 / s;
+          centre(d, best.o);
+          centre(d, best.o);
+          if (!hits(hull2(box(d).pts))) break;
+        }
+      }
     }
     this.defTarget = { ...tw };
     const hi = d;
@@ -1100,6 +1168,10 @@ export class Stage3D {
         boxes.push({ r, prio });
       });
     }
+    // The camera toolbar is drawn over the map: labels under it (tags and below) step aside.
+    const bar = document.getElementById('view-tools');
+    const barR = bar?.getBoundingClientRect();
+    if (barR?.width) boxes.push({ r: barR, prio: 2 });
     const live = this.labels.filter((o) => o.element.isConnected && o.element.style.display !== 'none' && o.visible && isVisibleUp(o));
     live.sort((a, b) => a.userData.prio - b.userData.prio); // stable: creation order breaks ties
     const E = 3;
@@ -1171,6 +1243,47 @@ export class Stage3D {
   forceLoss() {
     try { this.renderer.forceContextLoss(); } catch { /* ignore */ }
   }
+}
+
+/** Screen offsets (NDC) tried by the keep-out fit, nearest the centre first. */
+const FIT_OFFSETS = (() => {
+  const out = [];
+  for (let i = -20; i <= 20; i++) for (let j = -20; j <= 20; j++) out.push({ x: i * 0.025, y: j * 0.025 });
+  return out.sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y));
+})();
+
+/** Convex hull (monotone chain) of 2D points. */
+function hull2(pts) {
+  const s = pts.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+  const cr = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const half = (list) => {
+    const h = [];
+    for (const p of list) {
+      while (h.length >= 2 && cr(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop();
+      h.push(p);
+    }
+    h.pop();
+    return h;
+  };
+  return half(s).concat(half(s.slice().reverse()));
+}
+
+/** Does a convex polygon touch an axis-aligned rect {x0, x1, y0, y1}? (separating axes) */
+function polyHitsRect(P, r) {
+  const xs = P.map((p) => p.x);
+  const ys = P.map((p) => p.y);
+  if (Math.max(...xs) <= r.x0 || Math.min(...xs) >= r.x1 || Math.max(...ys) <= r.y0 || Math.min(...ys) >= r.y1) return false;
+  const R = [{ x: r.x0, y: r.y0 }, { x: r.x1, y: r.y0 }, { x: r.x1, y: r.y1 }, { x: r.x0, y: r.y1 }];
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i];
+    const b = P[(i + 1) % P.length];
+    const n = { x: b.y - a.y, y: a.x - b.x };
+    const proj = (q) => q.x * n.x + q.y * n.y;
+    const pp = P.map(proj);
+    const rp = R.map(proj);
+    if (Math.max(...pp) <= Math.min(...rp) || Math.max(...rp) <= Math.min(...pp)) return false;
+  }
+  return true;
 }
 
 function overlaps(a, b, pad) {

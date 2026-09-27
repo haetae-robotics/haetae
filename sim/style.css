@@ -445,6 +445,8 @@ body.stage-3d[data-state="loading"] .map-wrap::after {
   transition: opacity .15s;
 }
 .lbl-room { background: none; border: 0; color: var(--ink-2); font-weight: 600; text-shadow: 0 0 3px var(--surface), 0 0 3px var(--surface); }
+/* Narrow map: zone chips drop the zone name ("0.3 m/s", "출입 금지"); the room label names the room. */
+.label-layer.narrow .lz-name { display: none; }
 .lbl-robot { font-size: 12px; color: var(--ink-2); padding: 0 5px; }
 .lbl-child { color: var(--child); border-color: color-mix(in srgb, var(--child) 45%, var(--line)); }
 .lbl-adult { color: var(--adult); border-color: color-mix(in srgb, var(--adult) 45%, var(--line)); }
@@ -859,18 +861,28 @@ textarea[aria-invalid="true"] { border-color: var(--bul-fg); }
 /* 720-1099 px: the intro sits under the map (in the caption/transport slot)
    so the attract teaser's real verdict on the map stays uncovered. */
 @media (min-width: 720px) and (max-width: 1099px) {
-  body[data-state="intro"] { --map: clamp(240px, min(520px, calc(100dvh - 430px)), 100%); --map-hh: max(240px, min(520px, calc(100dvh - 430px))); }
+  /* The intro's own heading replaces the stage title, and the card is compact
+     (chips and links left of the button), so the house gets the height. */
+  body[data-state="intro"] { --map: clamp(240px, min(520px, calc(100dvh - 300px)), 100%); --map-hh: max(240px, min(520px, calc(100dvh - 300px))); }
+  body[data-state="intro"] .stage-head { display: none; }
+  /* Beside the rail the 3D map may run up to 16:10 when height-limited: the
+     house is height-fitted anyway, and the camera toolbar gets the side room. */
+  body.stage-3d .map-wrap { --w3d: min(100cqw, calc(var(--map-hh) * 16 / 10)); }
+  body.stage-3d .stage-head, body.stage-3d .strip, body.stage-3d .caption, body.stage-3d .transport {
+    max-width: max(min(100%, calc(var(--map-hh) * 16 / 10)), 640px);
+  }
   .intro {
     position: static; width: 100%; max-width: max(var(--map), 560px); margin-top: 8px;
     padding: 10px 16px 8px; box-shadow: none;
     display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; align-items: center;
   }
-  .intro h1 { font-size: 18px; grid-column: 1 / -1; }
+  body.stage-3d .intro { max-width: max(min(100%, calc(var(--map-hh) * 16 / 10)), 560px); }
+  .intro h1 { font-size: 18px; margin-bottom: 4px; grid-column: 1 / -1; }
   .intro > p:first-of-type { font-size: 14px; grid-column: 1 / -1; margin-bottom: 8px; }
-  .intro .legend-chips { margin: 0; }
-  .intro .btn-primary { width: auto; grid-column: 2; grid-row: 3; }
-  .intro .intro-links, .intro .foot-chip { grid-column: 1 / -1; }
-  .intro .intro-links { margin: 6px 0 2px !important; }
+  .intro .legend-chips { margin: 0; grid-column: 1; grid-row: 3; }
+  .intro .btn-primary { width: auto; grid-column: 2; grid-row: 3 / 5; }
+  .intro .intro-links { grid-column: 1; grid-row: 4; text-align: left; margin: 2px 0 0 !important; }
+  .intro .foot-chip { grid-column: 1 / -1; margin-top: 4px !important; }
 }
 
 /* ───────────── < 720 px: stacked ───────────── */
@@ -888,6 +900,11 @@ textarea[aria-invalid="true"] { border-color: var(--bul-fg); }
   .node { padding: 3px 7px; }
   .src-log { display: none; }
   .map-wrap { width: 100%; }
+  /* 3D: 6:5, not square. The house is width-fitted either way (6:5 still leaves the
+     camera toolbar its corner); the saved height keeps the intro button, the caption
+     and the primary button on the first screen. */
+  body.stage-3d .map-wrap { aspect-ratio: 6 / 5; }
+  body[data-state="intro"] .stage-head { display: none; }
   .intro { position: static; width: 100%; margin-top: 12px; box-shadow: none; }
   .endcard { position: static; transform: none; width: 100%; margin-top: 12px; animation: none; }
   .caption { flex-wrap: wrap; }
@@ -911,6 +928,82 @@ textarea[aria-invalid="true"] { border-color: var(--bul-fg); }
   .vt-wide { display: none; }
   .view-tools { gap: 2px; padding: 2px; }
   .vt-box { max-width: 220px; }
+}
+
+/* ───────────── Short landscape (phones on their side) ─────────────
+   The map takes the full stage height on the left; title, strip, caption and
+   transport (or the intro card) stack on the right; the rail goes below. */
+
+@media (max-width: 1099px) and (max-height: 500px) and (orientation: landscape) {
+  /* Declared on body (not :root) so the intro's wider side column feeds --lw. */
+  body {
+    --map: 100%;
+    --side-w: 240px;
+    --lh: max(220px, calc(100dvh - var(--hdr-h) - 16px));
+    --lw: min(calc(var(--lh) * 4 / 3), calc(100vw - 44px - var(--side-w)));
+  }
+  body[data-state="intro"] { --side-w: 280px; }
+  /* The 2D map stays square. */
+  body.stage-2d { --lw: min(var(--lh), calc(100vw - 44px - var(--side-w))); }
+  .legend, .lab-text, .pitch, .vw-text { display: none; }
+  .hdr-actions { margin-left: auto; gap: 6px; }
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .rail { position: static; height: auto; border-left: 0; border-top: 1px solid var(--line); padding: 16px; }
+  .stage {
+    display: grid; align-items: start; align-content: start;
+    grid-template-columns: var(--lw) minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    column-gap: 12px; row-gap: 6px; padding: 8px 16px;
+    height: max(236px, calc(100dvh - var(--hdr-h)));
+  }
+  .stage-head, .strip, .caption, .transport { grid-column: 2; max-width: none; }
+  .stage-head { grid-row: 1; min-width: 0; }
+  #stage-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+  /* A narrow strip: the motor keeps its icon, and a flagged source shows its flag, not its name. */
+  .strip { grid-row: 2; font-size: 11px; padding: 3px 5px; min-height: 34px; flex-wrap: wrap; row-gap: 2px; border-radius: 17px; }
+  .speed-badge { margin-left: auto; font-size: 11px; padding: 0 6px; }
+  .node { padding: 2px 6px; gap: 4px; }
+  .src-log { display: none; }
+  .node-src:has(.src-note:not([hidden])) .src-name { display: none; }
+  .node-motor { font-size: 0; gap: 0; }
+  .node-motor > span { font-size: 13px; }
+  .link { min-width: 8px; margin: 0 3px; }
+  .caption { grid-row: 3; flex-wrap: wrap; gap: 4px 8px; padding: 6px 10px; height: auto; max-height: 100%; min-height: 0; overflow: hidden; }
+  .progress { width: 100%; }
+  .cap-main { font-size: 14px; }
+  #cap-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+  .cap-cmd { font-size: 13px; }
+  .cap-cmd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .transport { grid-row: 4; display: grid; grid-template-columns: 1fr auto; grid-template-areas: "prim pause" "ghost ghost"; gap: 6px; }
+  #btn-primary { grid-area: prim; min-height: 44px; }
+  #btn-pause { grid-area: pause; min-height: 44px; }
+  #btn-ghost { grid-area: ghost; min-height: 40px; }
+  .map-area { display: contents; }
+  .map-wrap, body.stage-3d .map-wrap { grid-column: 1; grid-row: 1 / -1; width: var(--lw); height: var(--lh); aspect-ratio: auto; }
+  body.stage-2d .map-wrap { height: var(--lw); }
+  body[data-state="intro"] .stage-head, body[data-state="intro"] .strip { display: none; }
+  .intro, body.stage-3d .intro {
+    grid-column: 2; grid-row: 1 / -1; position: static; display: block; width: auto; max-width: none; margin: 0; box-shadow: none;
+    padding: 10px 12px 8px;
+  }
+  .intro .btn-primary { width: 100%; }
+  .intro .intro-links { text-align: center; }
+  .intro h1 { font-size: 16px; margin-bottom: 4px; }
+  .intro > p:first-of-type { font-size: 13px; line-height: 1.45; margin-bottom: 8px; }
+  .legend-chips { margin-bottom: 8px; }
+  .legend-chips li { font-size: 12px; padding: 1px 8px; }
+  .intro .btn-primary.big { min-height: 44px; font-size: 15px; padding: 8px 12px; }
+  .intro-links { font-size: 13px; margin: 4px 0 2px !important; }
+  .endcard { grid-column: 2; grid-row: 3; position: static; transform: none; width: auto; max-height: 100%; overflow: auto; margin: 0; animation: none; }
+  body[data-state="done"] .caption { display: none; }
+  .vt-wide { display: none; }
+  .view-tools { gap: 2px; padding: 2px; }
+  .vt-box { max-width: 220px; }
+  /* Sheets come in from the side, as beside the rail: a bottom sheet would cover the whole map. */
+  dialog.sheet, dialog.sheet.lab {
+    inset: var(--hdr-h) 0 0 auto; width: min(400px, 100vw); max-height: none;
+    border-radius: 0; border-top: 0; border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0, 0, 0, .12);
+  }
 }
 
 /* ───────────── Reduced motion ───────────── */
