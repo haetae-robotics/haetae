@@ -188,6 +188,9 @@ def run(root, binary):
     model = root / "reference_bot.urdf"
     model.write_text(command(["xacro", str(HERE / "reference_bot.urdf.xacro"),
                               "controllers_file:=" + str(controllers)], root))
+    description_params = root / "robot_description.yaml"
+    description_params.write_text(json.dumps({"robot_state_publisher": {"ros__parameters": {
+        "robot_description": model.read_text(), "use_sim_time": True}}}))
 
     processes = {}
     logs = []
@@ -205,6 +208,10 @@ def run(root, binary):
         _, log = start(["ros2", "run", "ros_gz_bridge", "parameter_bridge",
                         "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
                        root, "clock_bridge", processes)
+        logs.append(log)
+        _, log = start(["ros2", "run", "robot_state_publisher", "robot_state_publisher",
+                        "--ros-args", "--params-file", str(description_params)],
+                       root, "robot_state_publisher", processes)
         logs.append(log)
         world = GazeboWorld()
         executor = MultiThreadedExecutor(num_threads=3)

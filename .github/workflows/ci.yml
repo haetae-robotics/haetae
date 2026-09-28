@@ -262,7 +262,7 @@ jobs:
           apt-get update
           apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp \
             ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
-            ros-jazzy-controller-manager ros-jazzy-xacro
+            ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
           python3 ros/gazebo/run_reference.py bin/haetae --out artifacts/gazebo-reference

@@ -27,7 +27,7 @@ The [CI job](../.github/workflows/ci.yml) uses the same package set:
 sudo apt-get update
 sudo apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp \
   ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
-  ros-jazzy-controller-manager ros-jazzy-xacro
+  ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
 source /opt/ros/jazzy/setup.bash
 cargo build --release --locked -p haetae
 export ROS_DOMAIN_ID=81 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
