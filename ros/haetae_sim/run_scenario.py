@@ -124,7 +124,13 @@ class Harness:
             self.pump(expected_exit=expected_exit)
             if predicate():
                 return time.monotonic()
-        raise AssertionError("scenario timed out: " + (self.root / "gate.stderr").read_text())
+        raise AssertionError(json.dumps({
+            "last_state": self.node.states[-1][1] if self.node.states else None,
+            "last_outcome": self.node.outcomes[-1][1] if self.node.outcomes else None,
+            "x": self.node.base.x,
+            "recent_commands": self.node.commands[-5:],
+            "gate_stderr": (self.root / "gate.stderr").read_text(),
+        }, default=str))
 
     def command_since(self, at, predicate):
         return next((t for t, value in self.node.commands if t >= at and predicate(value)), None)
@@ -155,8 +161,8 @@ class Harness:
             self.move(2.0)
             self.until(lambda: any("decision" in outcome and outcome["decision"]["verdict"] == "jeol"
                                    for _, outcome in self.node.outcomes))
-            self.until(lambda: any("decision" in outcome and outcome["decision"]["verdict"] == "bul"
-                                   for _, outcome in self.node.outcomes), timeout=4)
+            self.until(lambda: any(status["stop"] == "revoked"
+                                   for _, status in self.node.states), timeout=4)
             self.until(lambda: self.node.base.speed == 0.0, timeout=3)
             assert not any(row["zone_entry"] for row in self.node.trace), "base entered exclusion zone"
             self.metrics["max_command"] = max(v for _, v in self.node.commands)
