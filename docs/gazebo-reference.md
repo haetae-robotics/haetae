@@ -48,6 +48,11 @@ headless server to keep its evidence reproducible.
 The result labels wall time and Gazebo simulation time separately. A hosted
 runner may simulate more slowly than real time, so wall-clock stop latency in
 this test is not a physical robot's stop deadline.
+The [browser replay](../sim/gazebo-replay.html) uses a sealed snapshot from a
+successful CI run to show Gazebo odometry and joint feedback alongside the ROS
+gate's decisions. It is a recorded data visualization, not a Gazebo GUI video
+or a live simulator session. The [evidence note](../sim/evidence/README.md)
+identifies the exact source run and verification key.
 
 ## Boundaries
 

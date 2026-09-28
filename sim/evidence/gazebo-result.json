@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "controller": "Gazebo Harmonic gz_ros2_control",
+  "base_moved_m": 0.039,
+  "human_to_zero_wall_ms": 55.4,
+  "human_to_zero_sim_ms": 57,
+  "base_stop_distance_m": 0.037,
+  "arm_out_of_bounds_denied": true,
+  "arm_cancelled_at_rad": 0.0297,
+  "gate_kill_to_base_stop_wall_ms": 831.6,
+  "gate_kill_to_base_stop_sim_ms": 832,
+  "sillok_incident_snapshot_fully_sealed": true
+}
