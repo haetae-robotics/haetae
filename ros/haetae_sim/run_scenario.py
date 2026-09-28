@@ -31,7 +31,7 @@ def public(seed):
         Encoding.Raw, PublicFormat.Raw).hex()
 
 
-def fixture(root, binary):
+def fixture(root, binary, arm=False):
     policy = {
         "allowed_sources": ["vla"],
         "freshness": {"world_max_age_ms": 200, "proposal_max_age_ms": 1000,
@@ -45,6 +45,13 @@ def fixture(root, binary):
         "rules": [{"id": "person", "when": {"human_within": {"distance": 0.3}},
                    "then": "bul"}],
     }
+    if arm:
+        policy["arm"] = {"joints": [{"name": "shoulder", "min_position": -1.0,
+                                    "max_position": 1.0, "max_velocity": 2.0,
+                                    "max_acceleration": 40.0}],
+                         "max_points": 8, "max_duration_ms": 1000,
+                         "max_start_error": 0.01, "max_tracking_error": 0.05,
+                         "min_confidence": 0.9}
     policy_bytes = json.dumps(policy, separators=(",", ":")).encode()
     (root / "policy.json").write_bytes(policy_bytes)
     for name, seed in (("world", 2), ("fault", 3), ("vla", 4), ("log", 9)):
@@ -69,6 +76,7 @@ def fixture(root, binary):
         "keys_json": json.dumps({name: str(root / (name + ".key"))
                                  for name in ("world", "fault", "vla")}),
         "inputs_json": json.dumps([{"topic": "/vla/cmd_vel", "source": "vla", "ttl_ms": 200}]),
+        "arm_inputs_json": json.dumps([{"topic": "/vla/arm", "source": "vla"}]) if arm else "[]",
         "response_timeout_ms": 150,
     }}}
     (root / "params.yaml").write_text(json.dumps(params))
@@ -95,6 +103,11 @@ class Harness:
                                      stderr=self.stderr)
 
     def stop(self, force=False):
+        children = []
+        if self.gate and self.gate.poll() is None:
+            child_file = Path(f"/proc/{self.gate.pid}/task/{self.gate.pid}/children")
+            if child_file.exists():
+                children = [int(pid) for pid in child_file.read_text().split()]
         if self.gate and self.gate.poll() is None:
             if force:
                 self.gate.kill()
@@ -105,6 +118,18 @@ class Harness:
             except subprocess.TimeoutExpired:
                 self.gate.kill()
                 self.gate.wait()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            living = []
+            for pid in children:
+                stat = Path(f"/proc/{pid}/stat")
+                if stat.exists() and stat.read_text().split()[2] != "Z":
+                    living.append(pid)
+            if not living:
+                break
+            time.sleep(0.01)
+        if living:
+            raise AssertionError("orphaned Rust gate did not exit after bridge death")
         if self.stderr:
             self.stderr.close()
             self.stderr = None

@@ -501,8 +501,9 @@ fn enforce_stdio(
         output.flush()?; // publish zero before any seal or state fsync
         gate.commit(last_t)?;
     }
-    gate.close(last_t)?;
-    Ok(())
+    // The transport has no authenticated clean-shutdown command. EOF may mean
+    // the ROS bridge was killed, so never clear the running marker here.
+    Err("enforcement transport closed; offline reset required".into())
 }
 
 fn read_bounded_line(input: &mut impl BufRead) -> io::Result<Option<(Vec<u8>, bool)>> {

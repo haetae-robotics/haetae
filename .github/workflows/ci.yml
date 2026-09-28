@@ -188,3 +188,25 @@ jobs:
           name: ros-e2e-evidence
           path: artifacts/ros-e2e
           if-no-files-found: warn
+
+  ros-arm-e2e:
+    name: ROS 2 arm action reference
+    needs: build-linux
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 78
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: haetae-linux
+          path: bin
+      - name: Signed arm action, cancellation and deadman
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
+          source /opt/ros/jazzy/setup.bash
+          chmod +x bin/haetae
+          python3 ros/haetae_sim/arm_smoke.py bin/haetae

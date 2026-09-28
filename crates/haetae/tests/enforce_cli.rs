@@ -164,6 +164,9 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
     let after: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(after["status"]["mode"], "hold");
     assert_eq!(after["cmd"]["linear"], 0.0);
-    child.kill().unwrap();
-    child.wait().unwrap();
+    drop(input); // a killed bridge closes stdin; this is never a clean reset
+    assert!(!child.wait().unwrap().success());
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(path("state.json")).unwrap()).unwrap();
+    assert_eq!(state["running"], true);
 }
