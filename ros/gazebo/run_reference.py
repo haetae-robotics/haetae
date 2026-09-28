@@ -264,9 +264,11 @@ def run(root, binary):
                  8, processes, "approved base motion", action=lambda: world.propose_base(0.2))
         moving_x = world.pose()[0]
         revoked_at = time.monotonic()
+        revoked_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         world.human = (moving_x + 0.1, world.pose()[1])
         zero_at = wait_for(lambda: any(t >= revoked_at and value == 0 for t, value in world.commands),
                            3, processes, "world-triggered zero base command")
+        zero_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         wait_for(lambda: abs(world.speed()) < 0.03, 3, processes, "base stopped after human")
         base_stop_x = world.pose()[0]
         world.human = None
@@ -314,16 +316,20 @@ def run(root, binary):
         wait_for(lambda: world.speed() > 0.08, 8, processes, "second base motion",
                  action=lambda: world.propose_base(0.2))
         killed_at = time.monotonic()
+        killed_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         stop(processes.pop("gate"), force=True)
         stopped_at = wait_for(lambda: abs(world.speed()) < 0.03, 3, processes,
                               "controller deadman after gate kill")
+        stopped_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         result = {"ok": True, "controller": "Gazebo Harmonic gz_ros2_control",
                   "base_moved_m": round(moving_x - start_x, 3),
-                  "human_to_zero_ms": round((zero_at - revoked_at) * 1000, 1),
+                  "human_to_zero_wall_ms": round((zero_at - revoked_at) * 1000, 1),
+                  "human_to_zero_sim_ms": zero_sim_ms - revoked_sim_ms,
                   "base_stop_distance_m": round(base_stop_x - moving_x, 3),
                   "arm_out_of_bounds_denied": True,
                   "arm_cancelled_at_rad": round(arm_cancel_position, 4),
-                  "gate_kill_to_base_stop_ms": round((stopped_at - killed_at) * 1000, 1),
+                  "gate_kill_to_base_stop_wall_ms": round((stopped_at - killed_at) * 1000, 1),
+                  "gate_kill_to_base_stop_sim_ms": stopped_sim_ms - killed_sim_ms,
                   "sillok_incident_snapshot_fully_sealed": True}
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result))

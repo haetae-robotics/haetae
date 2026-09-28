@@ -45,6 +45,9 @@ may end with an unsealed world update. For a visual
 inspection, the generated `reference_bot.urdf` can be spawned in the Gazebo GUI
 with the same `controllers.yaml`, but the CI runner intentionally uses the
 headless server to keep its evidence reproducible.
+The result labels wall time and Gazebo simulation time separately. A hosted
+runner may simulate more slowly than real time, so wall-clock stop latency in
+this test is not a physical robot's stop deadline.
 
 ## Boundaries
 

@@ -43,8 +43,11 @@ base. A compromised bridge or privileged host can still command the robot.
 ## Current implementation limits
 
 - The Rust core, subprocess and signed ROS bridge smoke tests run in CI on
-  Jazzy. The reference base simulator and mock arm action server are software
-  models; neither substitutes for a differential controller or a real arm.
+  Jazzy. The kinematic base simulator and mock arm action server are software
+  models. The Gazebo Harmonic reference also exercises a differential-drive
+  controller and a one-joint trajectory controller under physics, including
+  base timeout after gate death. It still cannot measure hardware stopping or
+  prove an independent arm stop after gate death.
 - The arm check covers joint space. It does not compute 3D link geometry,
   self-collision, singularities, torque, force, payload or contact. Arm motion
   is denied when any human is present in the current world, but absence of a
@@ -85,11 +88,13 @@ All of these are required before claiming that Haetae protects a robot from
 untrusted or compromised AI commands:
 
 1. The hosted Jazzy/Fast DDS reference runs the eight base scenarios five
-   times with logs and traces. Repeat this on the selected real controller and
-   measure its stop distance, latency and minimum human gap.
+   times with logs and traces. Gazebo also exercises a differential controller
+   and its timeout. Repeat this on the selected real controller and measure
+   its stop distance, latency and minimum human gap.
 2. The mock arm action server covers replacement, cancellation, kill and
-   tracking faults. A configured real arm controller and independent stop path
-   must pass those tests with measured latency and position error. A
+   tracking faults; Gazebo exercises one-joint action cancellation. A
+   configured real arm controller and independent stop path must pass those
+   tests with measured latency and position error. A
    robot-specific 3D collision model is required before claiming spatial arm
    protection.
 3. The hosted reference graph passes an SROS2 `Enforce` negative test. Repeat
