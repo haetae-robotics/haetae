@@ -38,6 +38,9 @@ CI builds the locked Rust workspace, then runs these jobs under Jazzy with
   enclave attempts to publish directly to `/cmd_vel`, world and fault and call
   the arm action. The test requires authorized paths to work and protected
   receivers to reject the attempts.
+- `Gazebo physics base and arm reference`: drives a Gazebo Harmonic mobile
+  manipulator through `gz_ros2_control`, with controller feedback used as the
+  world. See [the Gazebo runbook](gazebo-reference.md) for its test and limits.
 
 The [CI workflow](../.github/workflows/ci.yml) uploads the base evidence as
 `ros-e2e-evidence` and summarizes measurements in the job summary. Local Rust

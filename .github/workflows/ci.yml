@@ -240,3 +240,35 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
           python3 ros/haetae_sim/arm_smoke.py bin/haetae
+
+  gazebo-reference:
+    name: Gazebo physics base and arm reference
+    needs: build-linux
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 81
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: haetae-linux
+          path: bin
+      - name: Gazebo Harmonic with ros2_control controllers
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp \
+            ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
+            ros-jazzy-controller-manager ros-jazzy-xacro
+          source /opt/ros/jazzy/setup.bash
+          chmod +x bin/haetae
+          python3 ros/gazebo/run_reference.py bin/haetae --out artifacts/gazebo-reference
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gazebo-reference-evidence
+          path: artifacts/gazebo-reference
+          if-no-files-found: warn
