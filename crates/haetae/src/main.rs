@@ -358,6 +358,10 @@ enum EnforceLine {
         t: u64,
         data: String,
     },
+    Reject {
+        t: u64,
+        reason: String,
+    },
 }
 
 impl EnforceLine {
@@ -368,7 +372,8 @@ impl EnforceLine {
             | Self::Proposal { t, .. }
             | Self::Twist { t, .. }
             | Self::Tick { t }
-            | Self::Signed { t, .. } => *t,
+            | Self::Signed { t, .. }
+            | Self::Reject { t, .. } => *t,
         }
     }
 }
@@ -415,7 +420,12 @@ fn enforce_stdio(
                 let t = msg.time();
                 last_t = t;
                 if verifier.is_some()
-                    && !matches!(msg, EnforceLine::Signed { .. } | EnforceLine::Tick { .. })
+                    && !matches!(
+                        msg,
+                        EnforceLine::Signed { .. }
+                            | EnforceLine::Tick { .. }
+                            | EnforceLine::Reject { .. }
+                    )
                 {
                     gate.reject(
                         "unsigned input refused in authenticated mode".into(),
@@ -425,6 +435,7 @@ fn enforce_stdio(
                 } else {
                     match msg {
                         EnforceLine::Tick { .. } => gate.tick(t),
+                        EnforceLine::Reject { reason, .. } => gate.reject(reason, &line, t),
                         EnforceLine::Signed { data, .. } => match &mut verifier {
                             Some(v) => match v.verify(data.as_bytes()) {
                                 Ok(input) => {

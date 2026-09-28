@@ -75,8 +75,10 @@ def run(binary):
             test = rclpy.create_node("haetae_e2e")
             commands = []
             states = []
+            outcomes = []
             test.create_subscription(TwistStamped, "/cmd_vel", lambda m: commands.append((time.monotonic(), m.twist.linear.x)), 10)
             test.create_subscription(String, "/haetae_gate/state", lambda m: states.append(json.loads(m.data)), 10)
+            test.create_subscription(String, "/haetae_gate/outcome", lambda m: outcomes.append(json.loads(m.data)), 10)
             world_pub = test.create_publisher(String, "/haetae_gate/world", 10)
             fault_pub = test.create_publisher(String, "/haetae_gate/fault", 10)
             twist_pub = test.create_publisher(TwistStamped, "/vla/cmd_vel", 10)
@@ -116,6 +118,19 @@ def run(binary):
                 until(lambda: states and states[-1]["mode"] == "normal" and commands)
                 until(lambda: states and states[-1]["armed"], action=lambda: twist(0.0))
                 until(lambda: any(v > 0.1 for _, v in commands), action=lambda: twist(0.5))
+                malformed_at = time.monotonic()
+                bad = TwistStamped()
+                bad.twist.linear.y = 1.0
+                for _ in range(20):
+                    twist_pub.publish(bad)
+                    rclpy.spin_once(test, timeout_sec=0.01)
+                until(lambda: any(ts >= malformed_at and v == 0.0 for ts, v in commands)
+                      and any("rejected" in o for o in outcomes))
+                assert gate.poll() is None, "malformed proposals killed the gate"
+                until(lambda: states and states[-1]["armed"], action=lambda: twist(0.0))
+                moving_at = time.monotonic()
+                until(lambda: any(ts >= moving_at and v > 0.1 for ts, v in commands),
+                      action=lambda: twist(0.5))
                 triggered = time.monotonic()
                 people.append({"id": "person", "class": "adult", "pos": {"x": 5.9, "y": 5.0}})
                 until(lambda: any(ts >= triggered and v == 0.0 for ts, v in commands), timeout=2,

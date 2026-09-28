@@ -155,3 +155,36 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
           python3 ros/smoke/enforce_roundtrip.py bin/haetae
+
+  ros-sim-e2e:
+    name: ROS 2 reference scenarios
+    needs: build-linux
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 77
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: haetae-linux
+          path: bin
+      - name: Run eight scenarios five times
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
+          source /opt/ros/jazzy/setup.bash
+          chmod +x bin/haetae
+          python3 -m unittest discover -s ros/haetae_sim -p 'test_*.py' -v
+          for repeat in 1 2 3 4 5; do
+            for scenario in 1 2 3 4 5 6 7 8; do
+              python3 ros/haetae_sim/run_scenario.py bin/haetae "$scenario" --repeat "$repeat" --out "artifacts/ros-e2e/$scenario-$repeat"
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ros-e2e-evidence
+          path: artifacts/ros-e2e
+          if-no-files-found: warn

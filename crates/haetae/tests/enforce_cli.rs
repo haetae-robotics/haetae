@@ -124,6 +124,22 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
     let motion = signed(Role::Vla, 2, move_cmd, [4; 32]);
     let answer = exchange(&mut input, &mut output, 1000, "signed", &motion);
     assert_eq!(answer["cmd"]["linear"], 0.5);
+    writeln!(
+        input,
+        "{}",
+        serde_json::json!({"t":1001,"k":"reject","reason":"malformed source command"})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    let mut rejection = String::new();
+    output.read_line(&mut rejection).unwrap();
+    let rejected: serde_json::Value = serde_json::from_str(&rejection).unwrap();
+    assert_eq!(rejected["cmd"]["linear"], 0.0);
+    assert_eq!(rejected["stop"], "denied");
+    assert_eq!(
+        rejected["outcome"]["rejected"]["error"],
+        "malformed source command"
+    );
     let unsigned = exchange(&mut input, &mut output, 1001, "world", "{}");
     assert_eq!(unsigned["cmd"]["linear"], 0.0);
     assert!(unsigned["outcome"]["rejected"]["error"]

@@ -6,8 +6,10 @@ only from this node's SROS2 enclave, and independently stop when it dies.
 """
 
 import json
+import math
 import os
 import sys
+import time
 
 import rclpy
 from control_msgs.action import FollowJointTrajectory
@@ -20,6 +22,10 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from bridge import Bridge, BridgeFailure
 from signing import Signer
+
+
+class InvalidProposal(ValueError):
+    """A malformed command from an untrusted source; stop without exiting."""
 
 
 class HaetaeGate(Node):
@@ -56,6 +62,8 @@ class HaetaeGate(Node):
         self.arm_goal = None
         self.arm_goal_future = None
         self.cancel_requested = False
+        self.failed = False
+        self.abort_deadline = None
         self.seq = {role: 0 for role in ("vla", "planner", "teleop", "peer")}
         reliable = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         best_effort = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -141,17 +149,44 @@ class HaetaeGate(Node):
             self.arm_goal.cancel_goal_async()
 
     def _abort(self, exc):
+        if self.failed:
+            return
+        self.failed = True
         self.get_logger().error("Haetae bridge failed: " + str(exc))
+        self._publish_zero()
+        try:
+            self._cancel_arm()
+        except Exception as cancel_exc:
+            self.get_logger().error("Arm cancel request failed: " + str(cancel_exc))
+        try:
+            self.bridge.close()
+        except Exception as close_exc:
+            self.get_logger().error("Bridge close failed: " + str(close_exc))
+        self.abort_deadline = time.monotonic() + 0.25
+        self.create_timer(0.02, self._abort_tick)
+
+    def _publish_zero(self):
         zero = TwistStamped()
         zero.header.stamp = self.get_clock().now().to_msg()
         self.command_pub.publish(zero)
-        self._cancel_arm()
-        self.bridge.close()
-        os._exit(2)
+
+    def _abort_tick(self):
+        self._publish_zero()
+        if time.monotonic() >= self.abort_deadline:
+            os._exit(2)
 
     def _receive(self, callback):
+        if self.failed:
+            return
         try:
             self._publish(callback())
+        except InvalidProposal as exc:
+            try:
+                self.get_logger().warning("Rejected malformed proposal: " + str(exc))
+                self._publish(self.bridge.request({"k": "reject", "t": self._now(),
+                                                   "reason": str(exc)}))
+            except Exception as bridge_exc:
+                self._abort(bridge_exc)
         except Exception as exc:
             self._abort(exc)
 
@@ -164,7 +199,9 @@ class HaetaeGate(Node):
     def _twist(self, msg, role, ttl):
         def send():
             if any((msg.twist.linear.y, msg.twist.linear.z, msg.twist.angular.x, msg.twist.angular.y)):
-                raise ValueError("unsupported TwistStamped component")
+                raise InvalidProposal("unsupported TwistStamped component")
+            if not all(math.isfinite(v) for v in (msg.twist.linear.x, msg.twist.angular.z)):
+                raise InvalidProposal("nonfinite TwistStamped component")
             self.seq[role] += 1
             linear, angular = msg.twist.linear.x, msg.twist.angular.z
             action = {"type": "stop"} if linear == 0.0 and angular == 0.0 else {
@@ -176,7 +213,7 @@ class HaetaeGate(Node):
     def _arm(self, msg, role):
         def send():
             if list(msg.joint_names) != self.arm_joints:
-                raise ValueError("wrong arm joint names")
+                raise InvalidProposal("wrong arm joint names")
             if not msg.points:
                 self.seq[role] += 1
                 payload = {"id": self.seq[role], "source": role,
@@ -185,7 +222,13 @@ class HaetaeGate(Node):
             points = []
             for p in msg.points:
                 if p.velocities or p.accelerations or p.effort:
-                    raise ValueError("only positions are accepted")
+                    raise InvalidProposal("only positions are accepted")
+                if len(p.positions) != len(self.arm_joints) or not all(
+                    math.isfinite(v) for v in p.positions
+                ):
+                    raise InvalidProposal("invalid arm positions")
+                if p.time_from_start.sec < 0 or p.time_from_start.nanosec >= 1_000_000_000:
+                    raise InvalidProposal("invalid arm time")
                 millis = p.time_from_start.sec * 1000 + p.time_from_start.nanosec // 1_000_000
                 points.append({"time_from_start_ms": millis, "positions": list(p.positions)})
             self.seq[role] += 1
