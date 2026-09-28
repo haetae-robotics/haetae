@@ -508,7 +508,10 @@ fn enforce_stdio(
         gate.commit(last_t)?;
     }
     // The transport has no authenticated clean-shutdown command. EOF may mean
-    // the ROS bridge was killed, so never clear the running marker here.
+    // the ROS bridge was killed. Record and seal that stop while retaining the
+    // running marker so restart still enters Hold.
+    gate.reject("enforcement transport closed".into(), b"", last_t);
+    gate.commit(last_t)?;
     Err("enforcement transport closed; offline reset required".into())
 }
 

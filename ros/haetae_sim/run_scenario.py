@@ -90,6 +90,7 @@ class Harness:
         self.node = SimNode(start_x=5.0)
         self.gate = None
         self.stderr = None
+        self.log_paths = []
         self.stream = None
         self.last_proposal = 0.0
         self.events = {}
@@ -97,9 +98,16 @@ class Harness:
 
     def start(self):
         repo = Path(__file__).resolve().parents[2]
+        params_path = self.root / "params.yaml"
+        params = json.loads(params_path.read_text())
+        log_path = self.root / ("sillok.jsonl" if not self.log_paths else
+                                f"sillok-{len(self.log_paths) + 1}.jsonl")
+        params["haetae_gate"]["ros__parameters"]["sillok_path"] = str(log_path)
+        params_path.write_text(json.dumps(params))
+        self.log_paths.append(log_path)
         self.stderr = (self.root / "gate.stderr").open("ab")
         self.gate = subprocess.Popen([sys.executable, str(repo / "ros/haetae_gate/node.py"),
-                                      "--ros-args", "--params-file", str(self.root / "params.yaml")],
+                                      "--ros-args", "--params-file", str(params_path)],
                                      stderr=self.stderr)
 
     def stop(self, force=False):
@@ -285,19 +293,22 @@ class Harness:
             raise ValueError("scenario must be 1..8")
 
     def verify_log(self):
-        log = self.root / "sillok.jsonl"
-        if not log.exists():
-            if self.scenario == 1:
-                return {"present": False}
-            raise AssertionError("missing sillok log")
-        report = subprocess.run([self.binary, "sillok", "verify", "--log", str(log),
-                                 "--pubkey", public(9)], capture_output=True, text=True)
-        if report.returncode:
-            raise AssertionError("sillok verification failed: " + report.stdout + report.stderr)
-        result = json.loads(report.stdout)
-        if not result["fully_sealed"]:
-            raise AssertionError("sillok is not fully sealed: " + report.stdout)
-        return result
+        results = []
+        for log in self.log_paths:
+            if not log.exists():
+                results.append({"path": log.name, "present": False})
+                continue
+            report = subprocess.run([self.binary, "sillok", "verify", "--log", str(log),
+                                     "--pubkey", public(9)], capture_output=True, text=True)
+            if report.returncode:
+                raise AssertionError("sillok verification failed: " + report.stdout + report.stderr)
+            result = json.loads(report.stdout)
+            if not result["fully_sealed"]:
+                raise AssertionError("sillok is not fully sealed: " + report.stdout)
+            results.append({"path": log.name, **result})
+        if not any(log.get("fully_sealed") for log in results) and self.scenario != 1:
+            raise AssertionError("no sealed sillok log")
+        return results
 
 
 def write_artifacts(out, harness, result):
@@ -319,9 +330,9 @@ def write_artifacts(out, harness, result):
     stderr = harness.root / "gate.stderr"
     if stderr.exists():
         shutil.copy2(stderr, out / "gate.stderr")
-    log = harness.root / "sillok.jsonl"
-    if log.exists():
-        shutil.copy2(log, out / "sillok.jsonl")
+    for log in harness.log_paths:
+        if log.exists():
+            shutil.copy2(log, out / log.name)
 
 
 def main():

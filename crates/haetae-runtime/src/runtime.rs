@@ -313,7 +313,7 @@ impl Runtime {
 
     pub fn stop_record(&mut self, reason: &str, now_ms: u64) {
         self.record(now_ms, "stop", Ok(serde_json::json!({ "reason": reason })));
-        self.finish_step(false, false);
+        self.finish_step(true, false);
     }
 
     pub fn world_max_age_ms(&self) -> u64 {

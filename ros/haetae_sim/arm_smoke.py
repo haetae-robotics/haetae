@@ -32,6 +32,7 @@ class ArmWorld(Node):
     def __init__(self):
         super().__init__("arm_world")
         self.human = False
+        self.position = 0.0
         self.states = []
         self.outcomes = []
         self.heartbeat = time.monotonic()
@@ -51,7 +52,7 @@ class ArmWorld(Node):
         stamp = self.get_clock().now().nanoseconds // 1_000_000
         people = [{"id": "child", "class": "child", "pos": {"x": 7.0, "y": 5.0}}] if self.human else []
         payload = {"stamp_ms": stamp, "robot": {"pose": {"x": 5.0, "y": 5.0},
-                   "joints": [{"name": "shoulder", "position": 0.0, "velocity": 0.0}]},
+                   "joints": [{"name": "shoulder", "position": self.position, "velocity": 0.0}]},
                    "humans": people, "confidence": 1.0}
         self.world_pub.publish(String(data=json.dumps(payload)))
 
@@ -158,6 +159,10 @@ def main(binary):
                     until(lambda: any(t >= sent and "vla" in state["armed"]
                                       for t, state in world.states), gate)
 
+                def settled_after(reset_at):
+                    until(lambda: any(t >= reset_at + 0.15 and not state["arm_cancelling"]
+                                      for t, state in world.states), gate)
+
                 until(lambda: world.states and world.states[-1][1]["mode"] == "normal", gate)
                 arm_source()
                 world.propose((0.0, 0.04, 0.04), names=("wrong",))
@@ -173,16 +178,30 @@ def main(binary):
                 arm_source()
                 world.propose((0.0, 0.04, 0.04))
                 until(lambda: len(server.accepted) == 1, gate)
-                trigger = time.monotonic()
-                world.human = True
-                until(lambda: any(reason == "cancel" for _, reason in server.stops), gate)
-                first_cancel = next(t for t, reason in server.stops if reason == "cancel")
-                assert first_cancel - trigger <= 0.3
-                world.human = False
-                until(lambda: world.states and not world.states[-1][1]["arm_cancelling"], gate)
+                world.propose((0.0, 0.04, 0.04))
+                until(lambda: len(server.stops) == 1 and server.stops[-1][1] == "cancel", gate)
+                assert len(server.accepted) == 1, "arm replacement reached the controller"
+                settled_after(time.monotonic())
                 arm_source()
                 world.propose((0.0, 0.04, 0.04))
                 until(lambda: len(server.accepted) == 2, gate)
+                world.position = 0.2
+                until(lambda: len(server.stops) == 2 and server.stops[-1][1] == "cancel", gate)
+                world.position = 0.0
+                settled_after(time.monotonic())
+                arm_source()
+                world.propose((0.0, 0.04, 0.04))
+                until(lambda: len(server.accepted) == 3, gate)
+                trigger = time.monotonic()
+                world.human = True
+                until(lambda: len(server.stops) == 3 and server.stops[-1][1] == "cancel", gate)
+                first_cancel = server.stops[-1][0]
+                assert first_cancel - trigger <= 0.3
+                world.human = False
+                settled_after(time.monotonic())
+                arm_source()
+                world.propose((0.0, 0.04, 0.04))
+                until(lambda: len(server.accepted) == 4, gate)
                 killed = time.monotonic()
                 kill_gate(gate)
                 deadline = time.monotonic() + 1
@@ -197,7 +216,8 @@ def main(binary):
                                          "--pubkey", public(9)], capture_output=True, text=True)
                 assert report.returncode == 0 and json.loads(report.stdout)["fully_sealed"]
                 print(json.dumps({"ok": True, "malformed_rejected": True,
-                                  "bounds_denied": True,
+                                  "bounds_denied": True, "replacement_cancelled": True,
+                                  "tracking_cancelled": True,
                                   "human_cancel_ms": round((first_cancel-trigger)*1000, 1),
                                   "kill_deadman_ms": round((deadman-killed)*1000, 1)}))
             finally:
