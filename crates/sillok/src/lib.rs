@@ -1,5 +1,5 @@
 //! sillok (실록, "veritable records") — the tamper-evident recorder of the
-//! Haetae robot safety stack.
+//! Haetae supervisory policy gate.
 //!
 //! A sillok log is a JSON Lines file where every line is an [`Entry`]. Each
 //! entry carries the SHA-256 hash of its canonical body plus the hash of its
@@ -27,7 +27,7 @@ pub use entry::{hash_body, Entry, SEAL_KIND, ZERO_HASH};
 pub use error::Error;
 pub use keys::Keypair;
 pub use sacho::Sacho;
-pub use verify::{verify, VerifyError, VerifyReport};
+pub use verify::{verify, verify_reader, VerifyError, VerifyReport};
 pub use writer::SillokWriter;
 
 /// Result of key, writer and sacho operations.

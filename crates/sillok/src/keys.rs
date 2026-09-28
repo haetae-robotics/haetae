@@ -13,6 +13,15 @@ use crate::Result;
 ///
 /// Derive persistence formats with [`Keypair::seed_hex`] (secret) and
 /// [`Keypair::verifying_key_hex`] (public, handed to [`crate::verify`]).
+///
+/// `Clone` copies the `SigningKey`; it exists so a recorder can retry
+/// [`crate::SillokWriter::create`] after a failed attempt without losing
+/// the key. Every `SigningKey` copy is zeroized on drop (ed25519-dalek's
+/// `zeroize` feature). Not zeroized: the temporary seed buffers in
+/// [`Keypair::generate`] / [`Keypair::from_seed_hex`], the `String`
+/// returned by [`Keypair::seed_hex`], and whatever the caller read the
+/// seed from.
+#[derive(Clone)]
 pub struct Keypair {
     signing: SigningKey,
 }

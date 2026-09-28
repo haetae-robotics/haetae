@@ -93,11 +93,26 @@ Status after W2: freshness, trusted time, per-message isolation and the reset ex
   but they are not an error. `VerifyReport::fully_sealed()` is
   `seals > 0 && unsealed_tail == 0` — a log with zero seals verifies on hashes alone
   and proves nothing about who wrote it.
+- **Durability.** `seal()` flushes and fsyncs (`sync_data`) before it returns, so
+  every entry up to and including the latest seal survives a crash or power loss.
+  Plain `append()`s stay in a userspace buffer until the next seal (cheap; no fsync
+  per entry), so a crash can lose the unsealed tail or leave a **torn** final line
+  (§2.3). `create()` makes the file with mode `0o600` on unix — logs hold people's
+  positions — and fsyncs the parent directory so the new file's directory entry is
+  durable too. The directory fsync is skipped where it cannot be done at all (the
+  directory is not readable, e.g. mode `0o300`, or the filesystem rejects fsync on a
+  directory); any other directory-fsync failure fails `create()` **after removing the
+  empty file it just made**, so a retry is never blocked by `AlreadyExists`.
+  Non-unix platforms get default permissions and no directory fsync (std cannot open
+  a directory for syncing there).
+- A writer that returned an error may have written a partial line; callers must
+  discard it and never append through it again.
 
 ### 2.3 API (as implemented; lib name `sillok`)
 
 ```rust
-pub struct Keypair;            // wraps ed25519 SigningKey
+pub struct Keypair;            // wraps ed25519 SigningKey; Clone (each copy zeroized on drop via
+                               // ed25519-dalek `zeroize`; temp seed buffers / seed_hex() String are not)
 impl Keypair {
     pub fn generate() -> Result<Self>;                 // 32-byte seed from getrandom
     pub fn from_seed(seed: [u8; 32]) -> Self;
@@ -119,9 +134,11 @@ pub fn hash_body(seq, ts_ms, kind, payload, prev) -> String;  // the §2.1 hash
 
 pub struct SillokWriter;       // append-only JSONL file
 impl SillokWriter {
-    pub fn create(path, Keypair, seal_every: usize) -> Result<Self>;   // fails if file exists; seal_every==0 errors
-    pub fn append(&mut self, ts_ms: u64, kind: &str, payload: Value) -> Result<Entry>; // rejects kind "seal"
-    pub fn seal(&mut self) -> Result<()>;
+    pub fn create(path, Keypair, seal_every: usize) -> Result<Self>;   // fails if file exists; seal_every==0 errors;
+                                                                       // unix: mode 0o600 + parent dir fsync
+                                                                       // (best-effort; see §2.2)
+    pub fn append(&mut self, ts_ms: u64, kind: &str, payload: Value) -> Result<Entry>; // rejects kind "seal"; buffered
+    pub fn seal(&mut self) -> Result<()>;                              // flush + sync_data before returning
     pub fn close(self) -> Result<()>;   // final seal unless the last entry already is one; then fsyncs
     pub fn next_seq(&self) -> u64;      // total lines written so far
     pub fn last_hash(&self) -> String;  // chain tip hex (ZERO_HASH when empty)
@@ -139,14 +156,38 @@ impl Sacho {
 }
 
 pub fn verify(path, verifying_key_hex: &str) -> Result<VerifyReport, VerifyError>;
-pub struct VerifyReport { pub entries: u64, pub seals: u64, pub unsealed_tail: u64, pub last_hash: String }
-impl VerifyReport { pub fn fully_sealed(&self) -> bool; }  // seals > 0 && unsealed_tail == 0
+pub fn verify_reader(reader: impl BufRead, verifying_key_hex: &str)
+    -> Result<VerifyReport, VerifyError>;          // same rules, e.g. over `&bytes[..]`
+pub struct VerifyReport {
+    pub entries: u64, pub seals: u64, pub unsealed_tail: u64, pub last_hash: String,
+    pub torn_tail: bool,       // file ended in an unterminated line whose JSON ends early
+}
+impl VerifyReport {
+    pub fn fully_sealed(&self) -> bool;   // seals > 0 && unsealed_tail == 0
+    pub fn is_complete(&self) -> bool;    // fully_sealed() && !torn_tail
+}
 ```
 
 - `Error` is the single fallible-op enum (`Io`, `AlreadyExists`, `Random`, `BadSeed`, `InvalidSealInterval`, `ReservedKind`, `Json`); `sillok::Result<T>` aliases it.
 - `VerifyError` variants: `Io`, `BadKey`, `Malformed{seq,detail}`, `SeqGap{expected,found}`, `PrevMismatch{seq,expected,found}`, `HashMismatch{seq,expected,found}`, `BadSeal{seq,detail}`.
 - Entry lines are parsed strictly: unknown top-level fields are rejected, since the hash does not cover them.
-- An empty-but-existing file verifies: `{entries:0, seals:0, unsealed_tail:0, last_hash:ZERO_HASH}`.
+- `verify` checks **chain integrity** of what is there. An intact log can still be
+  incomplete; callers that need "signed through the end" must check `is_complete()`:
+  - An empty-but-existing file verifies:
+    `{entries:0, seals:0, unsealed_tail:0, last_hash:ZERO_HASH, torn_tail:false}`. It is
+    not fully sealed and not complete (e.g. the writer was killed right after `create`).
+  - An unsealed tail verifies (§2.2) but is not complete.
+  - **Torn tail**: if the file does not end in `\n` and its last line does not parse
+    because it **ends early** (serde reports EOF: a strict prefix of an entry, as a
+    write cut short leaves it, possibly mid-UTF-8), verification stops there with
+    `torn_tail: true`; everything before it is verified normally and the torn bytes are
+    not counted. A final unterminated line that *does* parse is verified like any
+    other. Any other malformed line — terminated, not the last, or unterminated but
+    complete-and-invalid (garbage, an extra field) — is still `Malformed`. A torn
+    tail therefore cannot hide anything: it only makes the log incomplete. It can
+    also come from truncation mid-line, so the CLI calls it an unverified partial
+    line, not proof of a crash. (A zero-filled tail after power loss is `Malformed`;
+    no special case yet.)
 
 ### 2.4 `verify` must detect (each one needs a test)
 
@@ -159,8 +200,31 @@ impl VerifyReport { pub fn fully_sealed(&self) -> bool; }  // seals > 0 && unsea
 7. A malformed line (not JSON, missing fields)
 8. A re-dated last seal: editing a seal's own `ts_ms` and recomputing its `hash` still fails, because the signature covers `seq`/`ts_ms` (§2.2). A seal signed over the bare prev hash (no domain tag) also fails.
 
+Must **not** fail (reported instead, each tested): an empty file, an unsealed tail, and a
+torn final line (§2.3).
+
 `VerifyError` must say **which seq** failed and **why**.
 
-### 2.5 Out of scope for W1
+### 2.5 CLI: `haetae sillok verify` / `replay`
+
+- `verify` prints the report as JSON with `"ok": true` (chain integrity; a broken chain
+  is an error instead) and `"complete"` (`is_complete()`), plus `fully_sealed`,
+  `entries`, `seals`, `unsealed_tail`, `torn_tail`, `last_hash`.
+- Exit codes (both commands): `0` intact and complete; `3` intact but incomplete (empty,
+  no seal, unsealed tail, or torn tail), with a `warning:` on stderr naming the reason;
+  `1` verification or other error; `2` usage error.
+- `replay` verifies first, prints the same warnings, marks unsealed entries `UNSEALED`
+  and ends with a `TORN` line for a torn tail. It prints only verified entries: the
+  file is read into memory **once**, and the timeline is printed from the same bytes
+  that `verify_reader` checked, so swapping or rewriting the file mid-replay cannot
+  put unverified lines under the "verified" header.
+- Everything taken from a log is untrusted. Before printing, replay (and every error
+  message, which can quote log bytes such as a claimed `key_id`) escapes C0 controls
+  except tab, DEL, C1 controls, all Unicode `Bidi_Control` characters (U+061C,
+  U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) and the line/paragraph separators
+  U+2028/U+2029 as `\u{..}`, so ESC/CSI/OSC sequences cannot drive the operator's
+  terminal and bidi marks cannot reorder what is shown.
+
+### 2.6 Out of scope for W1
 
 TPM/secure element keys, split-key encryption, external anchoring (RFC 3161 / Sigsum), privacy masking. Leave `// TODO(W4)` markers where they will plug in.

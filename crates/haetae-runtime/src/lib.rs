@@ -1,5 +1,5 @@
-//! haetae-runtime — the transport-agnostic gate loop of the Haetae robot
-//! safety stack.
+//! haetae-runtime — the transport-agnostic gate loop of the Haetae
+//! supervisory policy gate.
 //!
 //! The runtime owns a [`haetae_core::Gate`], the latest trusted
 //! [`haetae_core::WorldSnapshot`], a replay detector and the dashcam
@@ -21,7 +21,9 @@
 //! Recording is dashcam-style: every message goes into the `sacho` ring;
 //! the first incident (a `Bul` decision, or a fault raising the mode into
 //! stop-only) creates the sillok log, drains the backlog and seals it, then
-//! records `post_window` more proposals/faults before sealing again.
+//! records `post_window` more proposals/faults before sealing again. A
+//! recording failure never withholds an outcome: it is latched in
+//! [`Runtime::recorder_fault`] and counted in [`Runtime::recorder_failures`].
 //!
 //! There is no clock inside: `recv_ms` is the only time source, and it must
 //! share a domain with `WorldSnapshot::stamp_ms` (see
