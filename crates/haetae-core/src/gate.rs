@@ -18,7 +18,8 @@ pub struct Decision {
     /// The action to execute: as proposed for `yun`, clamped for `jeol`, `None` for `bul`.
     pub action: Option<ActionKind>,
     /// Speed limit (m/s) the executor must apply to *all* motion for this
-    /// action, arm included. Set whenever a `jeol` check matched.
+    /// action, arm included: the envelope maximum, or lower if a `jeol` check
+    /// matched. Always set when an action is allowed, except for `stop`.
     pub speed_cap: Option<f64>,
     pub mode: Mode,
 }
@@ -81,7 +82,15 @@ impl Gate {
     }
 
     /// Judge one proposal against the policy using trusted world facts.
-    pub fn judge(&self, proposal: &ActionProposal, world: &WorldSnapshot) -> Decision {
+    ///
+    /// `now_ms` comes from the runtime's trusted clock, in the same domain as
+    /// `world.stamp_ms`. Never pass the proposal's own timestamp.
+    pub fn judge_at(
+        &self,
+        proposal: &ActionProposal,
+        world: &WorldSnapshot,
+        now_ms: u64,
+    ) -> Decision {
         let action = &proposal.action;
         let decide = |verdict, fired, action, speed_cap| Decision {
             proposal_id: proposal.id,
@@ -107,6 +116,19 @@ impl Gate {
         }
         if !world.is_valid() {
             return deny("invalid:world");
+        }
+        // Stale perception makes every later check meaningless, so these return early.
+        let fresh = &self.policy.freshness;
+        let future = |stamp: u64| stamp > now_ms.saturating_add(fresh.future_tolerance_ms);
+        let age = |stamp: u64| now_ms.saturating_sub(stamp);
+        if future(world.stamp_ms) || future(proposal.timestamp_ms) {
+            return deny("invalid:timestamp");
+        }
+        if age(world.stamp_ms) > fresh.world_max_age_ms {
+            return deny("stale:world");
+        }
+        if age(proposal.timestamp_ms) > fresh.proposal_max_age_ms {
+            return deny("stale:proposal");
         }
 
         let envelope = &self.policy.envelope;
@@ -165,17 +187,18 @@ impl Gate {
         if j.deny {
             return decide(Verdict::Bul, j.fired, None, None);
         }
+        // The envelope bounds every allowed action, including arm motion for
+        // grasp and place, so the executor always receives a cap.
         if j.speed_cap.is_infinite() {
-            return decide(Verdict::Yun, j.fired, Some(action.clone()), None);
+            let cap = Some(envelope.max_speed);
+            return decide(Verdict::Yun, j.fired, Some(action.clone()), cap);
         }
-        let cap = Some(j.speed_cap);
+        let limit = j.speed_cap.min(envelope.max_speed);
+        let cap = Some(limit);
         match action.speed() {
-            Some(v) if v > j.speed_cap => decide(
-                Verdict::Jeol,
-                j.fired,
-                Some(action.with_speed(j.speed_cap)),
-                cap,
-            ),
+            Some(v) if v > limit => {
+                decide(Verdict::Jeol, j.fired, Some(action.with_speed(limit)), cap)
+            }
             Some(_) => decide(Verdict::Yun, j.fired, Some(action.clone()), cap),
             // No speed field to clamp (grasp, place): the cap still binds, and
             // the executor enforces it through `speed_cap`.

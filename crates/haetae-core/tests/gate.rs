@@ -25,12 +25,27 @@ const POLICY: &str = r#"{
   ]
 }"#;
 
+/// Runtime clock for every test; world and proposals are stamped at this time.
+const NOW: u64 = 10_000;
+
+/// Judge at `NOW`, so the scenario tests read like plain `judge` calls.
+trait JudgeNow {
+    fn judge(&self, p: &ActionProposal, w: &WorldSnapshot) -> Decision;
+}
+
+impl JudgeNow for Gate {
+    fn judge(&self, p: &ActionProposal, w: &WorldSnapshot) -> Decision {
+        self.judge_at(p, w, NOW)
+    }
+}
+
 fn gate() -> Gate {
     Gate::new(Policy::from_json(POLICY).expect("policy parses")).expect("policy is valid")
 }
 
 fn world() -> WorldSnapshot {
     WorldSnapshot {
+        stamp_ms: NOW,
         robot: RobotState {
             pose: Point2::new(1.0, 1.0),
             holding: None,
@@ -62,7 +77,7 @@ fn propose(source: Source, action: ActionKind) -> ActionProposal {
     ActionProposal {
         id: 1,
         source,
-        timestamp_ms: 0,
+        timestamp_ms: NOW,
         action,
     }
 }
@@ -295,9 +310,26 @@ fn cap_on_speedless_action_is_jeol_with_speed_cap() {
     assert_eq!(d.speed_cap, Some(0.5));
 }
 
+/// W2 review M5: the envelope bounds every allowed action, so the executor
+/// always receives a cap, including for speedless actions like grasp.
 #[test]
-fn uncapped_decisions_carry_no_speed_cap() {
+fn allowed_decisions_always_carry_the_envelope_cap() {
     let d = gate().judge(&move_to(3.0, 1.0, 0.5), &world());
+    assert_eq!(d.verdict, Verdict::Yun);
+    assert_eq!(d.speed_cap, Some(1.0));
+
+    let grasp = propose(
+        Source::Vla,
+        ActionKind::Grasp {
+            object: "cup".into(),
+            at: Point2::new(1.5, 1.0),
+        },
+    );
+    let d = gate().judge(&grasp, &world());
+    assert_eq!(d.verdict, Verdict::Yun);
+    assert_eq!(d.speed_cap, Some(1.0));
+
+    let d = gate().judge(&propose(Source::Vla, ActionKind::Stop), &world());
     assert_eq!(d.speed_cap, None);
 }
 
@@ -309,4 +341,78 @@ fn pose_outside_workspace_is_bul() {
     let d = gate().judge(&move_to(3.0, 1.0, 0.5), &w);
     assert_eq!(d.verdict, Verdict::Bul);
     assert!(d.fired.contains(&"envelope:pose".to_string()));
+}
+
+// --- W2: freshness ----------------------------------------------------------
+
+#[test]
+fn stale_world_is_bul() {
+    let mut w = world();
+    w.stamp_ms = NOW - 501;
+    let d = gate().judge(&move_to(3.0, 1.0, 0.5), &w);
+    assert_eq!(d.verdict, Verdict::Bul);
+    assert_eq!(d.fired, ["stale:world"]);
+
+    w.stamp_ms = NOW - 500;
+    assert_eq!(
+        gate().judge(&move_to(3.0, 1.0, 0.5), &w).verdict,
+        Verdict::Yun
+    );
+}
+
+#[test]
+fn stale_proposal_is_bul() {
+    let mut p = move_to(3.0, 1.0, 0.5);
+    p.timestamp_ms = NOW - 2001;
+    let d = gate().judge(&p, &world());
+    assert_eq!(d.fired, ["stale:proposal"]);
+}
+
+#[test]
+fn stamps_from_the_future_are_invalid() {
+    let mut w = world();
+    w.stamp_ms = NOW + 101;
+    assert_eq!(
+        gate().judge(&move_to(3.0, 1.0, 0.5), &w).fired,
+        ["invalid:timestamp"]
+    );
+
+    let mut p = move_to(3.0, 1.0, 0.5);
+    p.timestamp_ms = NOW + 101;
+    assert_eq!(gate().judge(&p, &world()).fired, ["invalid:timestamp"]);
+
+    // Within the skew tolerance is fine.
+    p.timestamp_ms = NOW + 100;
+    assert_eq!(gate().judge(&p, &world()).verdict, Verdict::Yun);
+}
+
+#[test]
+fn stop_ignores_freshness() {
+    let mut w = world();
+    w.stamp_ms = 0;
+    let d = gate().judge(&propose(Source::Vla, ActionKind::Stop), &w);
+    assert_eq!(d.verdict, Verdict::Yun);
+}
+
+#[test]
+fn freshness_is_configurable_and_validated() {
+    let tight = POLICY.replacen(
+        r#""allowed_sources""#,
+        r#""freshness": { "world_max_age_ms": 50, "future_tolerance_ms": 20 }, "allowed_sources""#,
+        1,
+    );
+    let g = Gate::new(Policy::from_json(&tight).unwrap()).unwrap();
+    let mut w = world();
+    w.stamp_ms = NOW - 51;
+    assert_eq!(g.judge(&move_to(3.0, 1.0, 0.5), &w).fired, ["stale:world"]);
+
+    let zero = POLICY.replacen(
+        r#""allowed_sources""#,
+        r#""freshness": { "world_max_age_ms": 0 }, "allowed_sources""#,
+        1,
+    );
+    assert!(matches!(
+        Policy::from_json(&zero),
+        Err(PolicyError::Invalid(_))
+    ));
 }

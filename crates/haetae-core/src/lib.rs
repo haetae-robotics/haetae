@@ -16,7 +16,10 @@ mod world;
 pub use gate::{Decision, Gate};
 pub use geom::{Point2, Rect};
 pub use mode::Mode;
-pub use policy::{Condition, Effect, Envelope, HumanWithin, Policy, PolicyError, Rule, Zone};
+pub use policy::{
+    Condition, Effect, Envelope, Freshness, HumanWithin, Policy, PolicyError, Rule, Zone,
+    MAX_FRESHNESS_BUDGET_MS,
+};
 pub use proposal::{ActionKind, ActionProposal, Source};
 pub use verdict::Verdict;
 pub use world::{Human, HumanClass, RobotState, WorldSnapshot};

@@ -4,6 +4,16 @@
 //! well-formedness, `seq` continuity, the `prev` link, hash recomputation,
 //! and — for `kind: "seal"` entries — `key_id` plus the Ed25519 signature
 //! over the domain-separated seal message (contract §2.2).
+//!
+//! A crash while the writer is mid-line can leave a *torn* final line: no
+//! trailing newline, and bytes that are a cut-short prefix of an entry
+//! (the JSON ends early). Exactly that case is tolerated and reported as
+//! [`VerifyReport::torn_tail`], so the sealed evidence before it stays
+//! verifiable; any other malformed line — including an unterminated final
+//! line that is complete but invalid JSON — is an error.
+//!
+//! [`verify_reader`] verifies bytes already in memory, so a caller can
+//! print exactly what was verified without reading the file twice.
 
 use std::fmt;
 use std::fs::File;
@@ -17,9 +27,13 @@ use crate::entry::{seal_message, Entry, ZERO_HASH};
 use crate::keys::key_id_of;
 
 /// Summary of a successfully verified log.
+///
+/// "Verified" means chain integrity only. Whether the log is also
+/// *complete* — signed through its last byte — is [`VerifyReport::is_complete`].
 #[derive(Debug)]
 pub struct VerifyReport {
-    /// Total lines in the file, seals included.
+    /// Verified entries in the file, seals included (a torn final line is
+    /// not an entry and is not counted).
     pub entries: u64,
     /// Lines with `kind == "seal"`.
     pub seals: u64,
@@ -27,6 +41,11 @@ pub struct VerifyReport {
     pub unsealed_tail: u64,
     /// `hash` of the last entry — the chain tip ([`ZERO_HASH`] if empty).
     pub last_hash: String,
+    /// The file ends in an unterminated line whose JSON ends early — a
+    /// strict prefix of an entry, as left by a write interrupted by a crash
+    /// (or by truncation mid-line). Everything before it was verified; the
+    /// torn bytes themselves were ignored.
+    pub torn_tail: bool,
 }
 
 impl VerifyReport {
@@ -39,6 +58,15 @@ impl VerifyReport {
     pub fn fully_sealed(&self) -> bool {
         self.seals > 0 && self.unsealed_tail == 0
     }
+
+    /// `true` when every byte of the file is covered by a signature:
+    /// [`VerifyReport::fully_sealed`] and no [`VerifyReport::torn_tail`].
+    ///
+    /// An empty file, an unsealed tail and a torn final line all verify
+    /// (the chain that is there is intact) but are *not* complete.
+    pub fn is_complete(&self) -> bool {
+        self.fully_sealed() && !self.torn_tail
+    }
 }
 
 /// Why verification failed. Per-entry failures name the offending `seq`.
@@ -49,7 +77,9 @@ pub enum VerifyError {
     Io(std::io::Error),
     /// The `verifying_key_hex` argument was not a valid Ed25519 key.
     BadKey(String),
-    /// A line is not valid JSON or not a well-formed entry.
+    /// A line is not valid JSON or not a well-formed entry. (A torn final
+    /// line — no trailing newline, JSON cut short — is reported via
+    /// [`VerifyReport::torn_tail`] instead.)
     Malformed { seq: u64, detail: String },
     /// `entry.seq` did not continue the chain (deleted or reordered entries).
     SeqGap { expected: u64, found: u64 },
@@ -120,7 +150,16 @@ impl std::error::Error for VerifyError {
 /// [`crate::Keypair::verifying_key_hex`]).
 ///
 /// Returns a [`VerifyReport`] on success — including when entries follow the
-/// last seal: such an *unsealed tail* is reported, not an error.
+/// last seal (an *unsealed tail*), when the file is empty, and when the
+/// file ends in a torn line: all three are reported, not errors, so check
+/// [`VerifyReport::is_complete`] before treating the log as fully signed.
+///
+/// Torn tail: if the file does not end with `\n` and its last line fails
+/// to parse because the JSON ends early (a strict prefix of an entry, as a
+/// torn write leaves it), verification stops there with `torn_tail: true`.
+/// A final unterminated line that *does* parse is verified like any other;
+/// one that is complete but invalid (garbage, an unknown field) is
+/// [`VerifyError::Malformed`], as is a malformed line anywhere else.
 ///
 /// Local detection limits (contract §2.4.6): truncation that removes whole
 /// sealed sections — seals included — still verifies cleanly, because the
@@ -132,9 +171,19 @@ pub fn verify(
     path: impl AsRef<Path>,
     verifying_key_hex: &str,
 ) -> std::result::Result<VerifyReport, VerifyError> {
+    let file = File::open(path).map_err(VerifyError::Io)?;
+    verify_reader(BufReader::new(file), verifying_key_hex)
+}
+
+/// [`verify`] over any buffered reader — e.g. `&bytes[..]` for a log read
+/// into memory once, so the verified bytes are exactly the bytes a caller
+/// goes on to display. Same rules and report as [`verify`].
+pub fn verify_reader(
+    mut reader: impl BufRead,
+    verifying_key_hex: &str,
+) -> std::result::Result<VerifyReport, VerifyError> {
     let key = parse_key(verifying_key_hex)?;
     let key_id = key_id_of(&key);
-    let reader = BufReader::new(File::open(path).map_err(VerifyError::Io)?);
 
     let mut entries = 0u64;
     let mut seals = 0u64;
@@ -143,14 +192,37 @@ pub fn verify(
     let mut sealed_through = 0u64;
     let mut expected_prev = ZERO_HASH.to_owned();
     let mut last_hash = ZERO_HASH.to_owned();
+    let mut torn_tail = false;
+    let mut line = Vec::new();
 
-    for line in reader.lines() {
-        let line = line.map_err(VerifyError::Io)?;
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(VerifyError::Io)?
+            == 0
+        {
+            break;
+        }
+        // Only the last chunk of a file can lack its newline.
+        let terminated = line.pop_if(|b| *b == b'\n').is_some();
         let seq = entries;
-        let entry: Entry = serde_json::from_str(&line).map_err(|e| VerifyError::Malformed {
-            seq,
-            detail: e.to_string(),
-        })?;
+        // Parse bytes, not `str`: a torn write can split a UTF-8 sequence.
+        let entry: Entry = match serde_json::from_slice(&line) {
+            Ok(entry) => entry,
+            // A torn write is a strict prefix of an entry, so serde reports
+            // EOF; complete-but-invalid bytes are not a crash artifact.
+            Err(e) if !terminated && e.is_eof() => {
+                torn_tail = true;
+                break;
+            }
+            Err(e) => {
+                return Err(VerifyError::Malformed {
+                    seq,
+                    detail: e.to_string(),
+                })
+            }
+        };
 
         if entry.seq != seq {
             return Err(VerifyError::SeqGap {
@@ -189,6 +261,7 @@ pub fn verify(
         seals,
         unsealed_tail: entries - sealed_through,
         last_hash,
+        torn_tail,
     })
 }
 

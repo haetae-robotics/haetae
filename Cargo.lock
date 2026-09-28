@@ -242,8 +242,8 @@ version = "0.0.2"
 dependencies = [
  "clap",
  "haetae-core",
+ "haetae-runtime",
  "haetae-sillok",
- "serde",
  "serde_json",
  "tempfile",
 ]
@@ -254,6 +254,17 @@ version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "haetae-runtime"
+version = "0.0.2"
+dependencies = [
+ "haetae-core",
+ "haetae-sillok",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

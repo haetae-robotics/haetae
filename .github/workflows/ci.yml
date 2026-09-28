@@ -73,3 +73,15 @@ jobs:
       - run: |
           pip install python/dist/*.whl
           python -c "from haetae import Verdict as V; assert V.YUN.stricter(V.BUL) is V.BUL"
+
+  ros-smoke:
+    name: ROS 2 Jazzy smoke
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    steps:
+      - uses: actions/checkout@v7
+      - name: JSON over std_msgs/String, node-clock recv_ms
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          python3 ros/smoke/json_roundtrip.py

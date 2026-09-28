@@ -17,9 +17,39 @@ pub struct Policy {
     /// forgetting it must not mean "allow everyone".
     pub allowed_sources: Vec<Source>,
     #[serde(default)]
+    pub freshness: Freshness,
+    #[serde(default)]
     pub zones: Vec<Zone>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+}
+
+/// Upper bound for every freshness budget: one minute.
+pub const MAX_FRESHNESS_BUDGET_MS: u64 = 60_000;
+
+/// How old (or how far in the future) inputs may be, relative to the
+/// runtime clock passed to [`crate::Gate::judge_at`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Freshness {
+    /// Maximum age of the world snapshot. Older: `stale:world`.
+    pub world_max_age_ms: u64,
+    /// Maximum age of the proposal's claimed timestamp. Older: `stale:proposal`.
+    /// The claim is untrusted, so this only stops naive replays; the runtime's
+    /// duplicate-id check covers the rest.
+    pub proposal_max_age_ms: u64,
+    /// Allowed clock skew into the future. Further: `invalid:timestamp`.
+    pub future_tolerance_ms: u64,
+}
+
+impl Default for Freshness {
+    fn default() -> Self {
+        Freshness {
+            world_max_age_ms: 500,
+            proposal_max_age_ms: 2000,
+            future_tolerance_ms: 100,
+        }
+    }
 }
 
 /// Hard limits that apply regardless of rules.
@@ -120,6 +150,25 @@ impl Policy {
         }
         if !self.envelope.workspace.is_valid() {
             return invalid("envelope.workspace is not a valid rectangle".into());
+        }
+        let f = &self.freshness;
+        let budgets = [
+            f.world_max_age_ms,
+            f.proposal_max_age_ms,
+            f.future_tolerance_ms,
+        ];
+        if f.world_max_age_ms == 0 || f.proposal_max_age_ms == 0 {
+            return invalid("freshness budgets must be positive".into());
+        }
+        // A huge budget would saturate the clock arithmetic and switch the
+        // checks off, so it is a policy error, not a lenient setting.
+        if budgets.iter().any(|&b| b > MAX_FRESHNESS_BUDGET_MS) {
+            return invalid(format!(
+                "freshness budgets must not exceed {MAX_FRESHNESS_BUDGET_MS} ms"
+            ));
+        }
+        if f.future_tolerance_ms > f.world_max_age_ms {
+            return invalid("future_tolerance_ms must not exceed world_max_age_ms".into());
         }
 
         let mut ids = HashSet::new();

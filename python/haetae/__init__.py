@@ -11,9 +11,9 @@ __version__ = "0.0.1"
 class Verdict(IntEnum):
     """Result of judging an action proposal. Higher is stricter."""
 
-    YUN = 0   # 允 allow as proposed
-    JEOL = 1  # 節 allow with tightened limits
-    BUL = 2   # 不 deny
+    YUN = 0   # 통과: allow as proposed
+    JEOL = 1  # 감속: allow with a tighter speed cap
+    BUL = 2   # 차단: deny
 
     def stricter(self, other: "Verdict") -> "Verdict":
         """Combine two verdicts; the stricter one wins (tighten-only)."""

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/haetae", "crates/haetae-core", "crates/sillok"]
+members = ["crates/haetae", "crates/haetae-core", "crates/haetae-runtime", "crates/sillok"]
 
 [workspace.package]
 version = "0.0.2"
@@ -10,4 +10,5 @@ repository = "https://github.com/haetae-robotics/haetae"
 
 [workspace.dependencies]
 haetae-core = { path = "crates/haetae-core", version = "0.0.2" }
+haetae-runtime = { path = "crates/haetae-runtime", version = "0.0.2" }
 sillok = { path = "crates/sillok", version = "0.0.2", package = "haetae-sillok" }
