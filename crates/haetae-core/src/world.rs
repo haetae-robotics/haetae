@@ -20,9 +20,38 @@ pub struct WorldSnapshot {
 #[serde(deny_unknown_fields)]
 pub struct RobotState {
     pub pose: Point2,
+    /// Heading in the world frame, required for velocity commands.
+    #[serde(default)]
+    pub yaw: Option<f64>,
+    /// Measured body-frame twist for compensating a delayed world snapshot.
+    #[serde(default)]
+    pub twist: Option<Twist2>,
+    #[serde(default)]
+    pub joints: Option<Vec<JointSample>>,
     /// Object currently in the gripper, if any.
     #[serde(default)]
     pub holding: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointSample {
+    pub name: String,
+    pub position: f64,
+    pub velocity: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Twist2 {
+    pub linear: f64,
+    pub angular: f64,
+}
+
+impl Twist2 {
+    pub fn is_finite(self) -> bool {
+        self.linear.is_finite() && self.angular.is_finite()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -44,6 +73,13 @@ impl WorldSnapshot {
     /// Finite pose and positions, confidence within 0..=1.
     pub fn is_valid(&self) -> bool {
         self.robot.pose.is_finite()
+            && self.robot.yaw.is_none_or(f64::is_finite)
+            && self.robot.twist.is_none_or(Twist2::is_finite)
+            && self.robot.joints.as_ref().is_none_or(|joints| {
+                joints
+                    .iter()
+                    .all(|j| j.position.is_finite() && j.velocity.is_finite())
+            })
             && (0.0..=1.0).contains(&self.confidence)
             && self.humans.iter().all(|h| h.pos.is_finite())
     }

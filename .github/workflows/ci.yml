@@ -102,3 +102,56 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           python3 ros/smoke/json_roundtrip.py
+      - name: Gate transport imports
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
+          source /opt/ros/jazzy/setup.bash
+          PYTHONPATH=ros/haetae_gate python3 -c 'import node; import bridge; import signing'
+
+  gate-python:
+    name: ROS bridge and signing core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: python -m pip install cryptography
+      - run: python -m unittest discover -s ros/haetae_gate -p 'test_*.py' -v
+
+  build-linux:
+    name: Linux gate binary
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p haetae
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haetae-linux
+          path: target/release/haetae
+
+  ros-gate-e2e:
+    name: ROS 2 signed gate smoke
+    needs: build-linux
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 76
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: haetae-linux
+          path: bin
+      - name: Signed world and VLA through ROS to base output
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
+          source /opt/ros/jazzy/setup.bash
+          chmod +x bin/haetae
+          python3 ros/smoke/enforce_roundtrip.py bin/haetae

@@ -7,7 +7,10 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use haetae::runtime::{Inbound, Outcome, RecorderConfig, Runtime, RuntimeConfig};
 use haetae::sillok::{self, Keypair, VerifyReport};
-use haetae::{ActionKind, Policy, Verdict, WorldSnapshot};
+use haetae::{ActionKind, ActionProposal, Mode, Policy, Source, Verdict, WorldSnapshot};
+use haetae_enforce::auth::{self, AuthVerifier, SignedInput};
+use haetae_enforce::{Enforcer, EnforcerConfig};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -30,6 +33,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build signed trust and input fixtures for authenticated enforcement.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
+    /// Run the monitored command gate over a JSONL subprocess protocol.
+    Enforce {
+        #[arg(long)]
+        policy: PathBuf,
+        #[arg(long, conflicts_with = "ephemeral")]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        ephemeral: bool,
+        #[arg(long, requires = "key")]
+        sillok: Option<PathBuf>,
+        #[arg(long, requires = "sillok")]
+        key: Option<PathBuf>,
+        #[arg(long)]
+        stdio: bool,
+        #[arg(long, requires = "root_pubkey")]
+        trust: Option<PathBuf>,
+        #[arg(long, requires = "trust")]
+        root_pubkey: Option<String>,
+    },
+    /// Inspect or change persistent mode while the gate is stopped.
+    State {
+        #[command(subcommand)]
+        command: StateCommand,
+    },
     /// Generate a sillok signing key. Writes the secret seed, prints the public key.
     Keygen {
         #[arg(long)]
@@ -61,6 +93,48 @@ enum Command {
     Sillok {
         #[command(subcommand)]
         command: SillokCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCommand {
+    PolicyHash {
+        #[arg(long)]
+        policy: PathBuf,
+    },
+    SignBundle {
+        #[arg(long)]
+        body: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    SignInput {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum StateCommand {
+    Show {
+        #[arg(long)]
+        state: PathBuf,
+    },
+    Set {
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long)]
+        mode: String,
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -102,6 +176,75 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
+        Command::Auth { command } => {
+            match command {
+                AuthCommand::PolicyHash { policy } => {
+                    use sha2::{Digest, Sha256};
+                    println!("{}", hex::encode(Sha256::digest(fs::read(policy)?)));
+                }
+                AuthCommand::SignBundle { body, key, out } => {
+                    let body = fs::read_to_string(body)?;
+                    let signed = auth::sign_bundle(body.trim(), fs::read_to_string(key)?.trim())?;
+                    create_json(&out, &signed)?;
+                }
+                AuthCommand::SignInput { input, key, out } => {
+                    let input: SignedInput = serde_json::from_slice(&fs::read(input)?)?;
+                    let signed = auth::sign_input(input, fs::read_to_string(key)?.trim())?;
+                    create_json(&out, &signed)?;
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Enforce {
+            policy,
+            state,
+            ephemeral,
+            sillok,
+            key,
+            stdio,
+            trust,
+            root_pubkey,
+        } => {
+            if !stdio || (!ephemeral && state.is_none()) {
+                return Err("enforce needs --stdio and either --state or --ephemeral".into());
+            }
+            if state.is_some() && trust.is_none() {
+                return Err("persistent enforcement requires --trust and --root-pubkey".into());
+            }
+            if state.is_some() && sillok.is_none() {
+                return Err("persistent enforcement requires --sillok and --key".into());
+            }
+            let recorder = match (sillok, key) {
+                (Some(path), Some(key)) => Some(RecorderConfig::new(path, read_key(&key)?)),
+                _ => None,
+            };
+            enforce_stdio(
+                &policy,
+                state,
+                recorder,
+                trust.as_deref(),
+                root_pubkey.as_deref(),
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::State { command } => {
+            match command {
+                StateCommand::Show { state } => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&haetae_enforce::show_state(&state)?)?
+                ),
+                StateCommand::Set {
+                    state,
+                    mode,
+                    by,
+                    reason,
+                } => {
+                    let mode: Mode = serde_json::from_value(Value::String(mode))?;
+                    haetae_enforce::set_state(&state, mode, &by, &reason, unix_ms())?;
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Keygen { out } => keygen(&out).map(|()| ExitCode::SUCCESS),
         Command::Judge {
             policy,
@@ -139,6 +282,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
+fn create_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    serde_json::to_writer(&mut f, value)?;
+    writeln!(f)?;
+    f.sync_all()?;
+    Ok(())
+}
+
 fn keygen(out: &Path) -> Result<()> {
     let key = Keypair::generate()?;
     write_secret(out, &key.seed_hex())?;
@@ -170,6 +324,214 @@ fn write_secret(path: &Path, contents: &str) -> Result<()> {
 
 fn read_key(path: &Path) -> Result<Keypair> {
     Ok(Keypair::from_seed_hex(fs::read_to_string(path)?.trim())?)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case", deny_unknown_fields)]
+enum EnforceLine {
+    World {
+        t: u64,
+        data: String,
+    },
+    Fault {
+        t: u64,
+        data: String,
+    },
+    Proposal {
+        t: u64,
+        data: String,
+    },
+    Twist {
+        t: u64,
+        source: Source,
+        seq: u64,
+        linear: f64,
+        angular: f64,
+        ttl_ms: u64,
+        #[serde(default)]
+        stamp_ms: Option<u64>,
+    },
+    Tick {
+        t: u64,
+    },
+    Signed {
+        t: u64,
+        data: String,
+    },
+}
+
+impl EnforceLine {
+    fn time(&self) -> u64 {
+        match self {
+            Self::World { t, .. }
+            | Self::Fault { t, .. }
+            | Self::Proposal { t, .. }
+            | Self::Twist { t, .. }
+            | Self::Tick { t }
+            | Self::Signed { t, .. } => *t,
+        }
+    }
+}
+
+fn enforce_stdio(
+    policy_path: &Path,
+    state: Option<PathBuf>,
+    recorder: Option<RecorderConfig>,
+    trust: Option<&Path>,
+    root_pubkey: Option<&str>,
+) -> Result<()> {
+    let policy_bytes = fs::read(policy_path)?;
+    let policy = Policy::from_json(std::str::from_utf8(&policy_bytes)?)?;
+    let mut verifier = match (trust, root_pubkey) {
+        (Some(path), Some(key)) => Some(AuthVerifier::load(path, key, &policy_bytes)?),
+        _ => None,
+    };
+    let cfg = EnforcerConfig {
+        runtime: RuntimeConfig {
+            recorder,
+            ..RuntimeConfig::default()
+        },
+        state_path: state,
+        tick_ms: 50,
+    };
+    let mut gate = Enforcer::open(policy, cfg, unix_ms())?;
+    if let Some(v) = &mut verifier {
+        let (epoch, counters) = gate.auth_checkpoint();
+        v.restore(epoch, counters)?;
+    }
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    let mut last_t = 0;
+    while let Some((line, oversized)) = read_bounded_line(&mut input)? {
+        let parsed = if oversized {
+            Err("input line exceeds 1 MiB".to_string())
+        } else {
+            serde_json::from_slice::<EnforceLine>(&line).map_err(|e| e.to_string())
+        };
+        let step = match parsed {
+            Ok(msg) if msg.time() >= last_t => {
+                let t = msg.time();
+                last_t = t;
+                if verifier.is_some()
+                    && !matches!(msg, EnforceLine::Signed { .. } | EnforceLine::Tick { .. })
+                {
+                    gate.reject(
+                        "unsigned input refused in authenticated mode".into(),
+                        &line,
+                        t,
+                    )
+                } else {
+                    match msg {
+                        EnforceLine::Tick { .. } => gate.tick(t),
+                        EnforceLine::Signed { data, .. } => match &mut verifier {
+                            Some(v) => match v.verify(data.as_bytes()) {
+                                Ok(input) => {
+                                    gate.set_auth_checkpoint(v.epoch(), v.counters().clone());
+                                    gate.handle(input, t)
+                                }
+                                Err(error) => gate.reject(error, data.as_bytes(), t),
+                            },
+                            None => gate.reject("signed input requires --trust".into(), &line, t),
+                        },
+                        EnforceLine::World { data, .. } => {
+                            let raw: std::result::Result<Value, _> = serde_json::from_str(&data);
+                            match raw {
+                                Ok(w) => gate.handle_bytes(
+                                    serde_json::to_string(&json!({"world":w}))?.as_bytes(),
+                                    t,
+                                ),
+                                Err(_) => gate.handle_bytes(data.as_bytes(), t),
+                            }
+                        }
+                        EnforceLine::Fault { data, .. } => {
+                            let raw: std::result::Result<Value, _> = serde_json::from_str(&data);
+                            match raw {
+                                Ok(f) => gate.handle_bytes(
+                                    serde_json::to_string(&json!({"fault":f}))?.as_bytes(),
+                                    t,
+                                ),
+                                Err(_) => gate.handle_bytes(data.as_bytes(), t),
+                            }
+                        }
+                        EnforceLine::Proposal { data, .. } => gate.handle_bytes(data.as_bytes(), t),
+                        EnforceLine::Twist {
+                            source,
+                            seq,
+                            linear,
+                            angular,
+                            ttl_ms,
+                            stamp_ms,
+                            ..
+                        } => {
+                            let _ = stamp_ms; // untrusted claim, never the receive clock
+                            gate.handle(
+                                Inbound::Proposal(ActionProposal {
+                                    id: seq,
+                                    source,
+                                    timestamp_ms: t,
+                                    action: ActionKind::Velocity {
+                                        linear,
+                                        angular,
+                                        ttl_ms,
+                                    },
+                                }),
+                                t,
+                            )
+                        }
+                    }
+                }
+            }
+            Ok(_) => gate.reject("transport time moved backwards".into(), &line, last_t),
+            Err(error) => gate.reject(error, &line, last_t),
+        };
+        writeln!(output, "{}", serde_json::to_string(&step)?)?;
+        output.flush()?; // publish zero before any seal or state fsync
+        gate.commit(last_t)?;
+    }
+    gate.close(last_t)?;
+    Ok(())
+}
+
+fn read_bounded_line(input: &mut impl BufRead) -> io::Result<Option<(Vec<u8>, bool)>> {
+    const MAX: usize = 1024 * 1024;
+    let mut line = Vec::new();
+    let mut oversized = false;
+    let mut read_any = false;
+    loop {
+        let buf = input.fill_buf()?;
+        if buf.is_empty() {
+            return if read_any {
+                Ok(Some((line, oversized)))
+            } else {
+                Ok(None)
+            };
+        }
+        read_any = true;
+        let end = buf.iter().position(|&b| b == b'\n');
+        let consumed = end.map_or(buf.len(), |i| i + 1);
+        let data = &buf[..end.unwrap_or(buf.len())];
+        if line.len() + data.len() > MAX {
+            oversized = true;
+        }
+        if !oversized {
+            line.extend_from_slice(data);
+        }
+        input.consume(consumed);
+        if end.is_some() {
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            return Ok(Some((line, oversized)));
+        }
+    }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// File transport for the runtime: one JSON line in, one outcome out.

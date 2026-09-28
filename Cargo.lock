@@ -248,9 +248,13 @@ version = "0.0.2"
 dependencies = [
  "clap",
  "haetae-core",
+ "haetae-enforce",
  "haetae-runtime",
  "haetae-sillok",
+ "hex",
+ "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
@@ -260,6 +264,20 @@ version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "haetae-enforce"
+version = "0.0.2"
+dependencies = [
+ "ed25519-dalek",
+ "haetae-core",
+ "haetae-runtime",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

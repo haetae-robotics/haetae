@@ -32,6 +32,10 @@ pub struct RuntimeConfig {
     pub dedup_capacity: usize,
     /// Incident recording; `None` disables the dashcam entirely.
     pub recorder: Option<RecorderConfig>,
+    /// Initial mode loaded from the operator's persistent state.
+    pub start_mode: Mode,
+    /// Return decisions before flushing incident records to disk.
+    pub defer_seal: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -40,6 +44,8 @@ impl Default for RuntimeConfig {
             sacho_capacity: 256,
             dedup_capacity: 4096,
             recorder: None,
+            start_mode: Mode::Normal,
+            defer_seal: false,
         }
     }
 }
@@ -106,6 +112,8 @@ pub struct Runtime {
     recorder_fault: Option<RuntimeError>,
     /// Steps whose recording failed.
     recorder_failures: usize,
+    defer_seal: bool,
+    pending: Option<(bool, bool)>,
 }
 
 /// `"proposal"` record payload (w2-contract §5).
@@ -160,7 +168,7 @@ impl Runtime {
             }
         }
         Ok(Runtime {
-            gate: Gate::new(policy)?,
+            gate: Gate::with_mode(policy, cfg.start_mode)?,
             world: initial_world,
             sacho: Sacho::new(cfg.sacho_capacity),
             dedup: Dedup::new(cfg.dedup_capacity),
@@ -168,6 +176,8 @@ impl Runtime {
             incidents: 0,
             recorder_fault: None,
             recorder_failures: 0,
+            defer_seal: cfg.defer_seal,
+            pending: None,
         })
     }
 
@@ -185,10 +195,16 @@ impl Runtime {
             Ok(msg) => self.handle(msg, recv_ms),
             Err(error) => {
                 self.reject(recv_ms, &error, bytes);
-                self.after_step(false, false);
+                self.finish_step(false, false);
                 Ok(Outcome::Rejected { error })
             }
         }
+    }
+
+    pub fn reject_input(&mut self, error: String, bytes: &[u8], recv_ms: u64) -> Outcome {
+        self.reject(recv_ms, &error, bytes);
+        self.finish_step(false, false);
+        Outcome::Rejected { error }
     }
 
     /// Handle one already-parsed message.
@@ -248,8 +264,82 @@ impl Runtime {
                 (Outcome::Decision(d), incident, true)
             }
         };
-        self.after_step(incident, counts);
+        self.finish_step(incident, counts);
         Ok(outcome)
+    }
+
+    /// Re-evaluate an already admitted command against the current world.
+    /// This does not consume another replay id. The original timestamp is
+    /// replaced by the trusted check time; the caller owns its TTL.
+    pub fn rejudge(&mut self, p: &ActionProposal, recv_ms: u64) -> Decision {
+        let mut current = p.clone();
+        current.timestamp_ms = recv_ms;
+        let d = match &self.world {
+            Some(world) => self.gate.judge_at(&current, world, recv_ms),
+            None => self.synthetic_bul(p, "missing:world"),
+        };
+        let kind = if d.verdict == Verdict::Bul {
+            "revoke"
+        } else {
+            "rejudge"
+        };
+        self.record(recv_ms, kind, serde_json::to_value(&d));
+        self.finish_step(d.verdict == Verdict::Bul, false);
+        d
+    }
+
+    pub fn world_age_ms(&self, now_ms: u64) -> Option<u64> {
+        self.world
+            .as_ref()
+            .map(|w| now_ms.saturating_sub(w.stamp_ms))
+    }
+
+    pub fn world(&self) -> Option<&WorldSnapshot> {
+        self.world.as_ref()
+    }
+
+    pub fn policy(&self) -> &Policy {
+        self.gate.policy()
+    }
+
+    pub fn revoke_record(&mut self, reason: &str, now_ms: u64) {
+        self.record(
+            now_ms,
+            "revoke",
+            Ok(serde_json::json!({ "reason": reason })),
+        );
+        self.finish_step(true, false);
+    }
+
+    pub fn stop_record(&mut self, reason: &str, now_ms: u64) {
+        self.record(now_ms, "stop", Ok(serde_json::json!({ "reason": reason })));
+        self.finish_step(false, false);
+    }
+
+    pub fn world_max_age_ms(&self) -> u64 {
+        self.gate.policy().freshness.world_max_age_ms
+    }
+
+    /// Flush the records deferred by `defer_seal`.
+    pub fn commit(&mut self) {
+        if let Some((incident, counts)) = self.pending.take() {
+            self.after_step(incident, counts);
+        }
+    }
+
+    fn finish_step(&mut self, incident: bool, counts: bool) {
+        if self.defer_seal {
+            // Enforcers commit after each output. Combining before commit is
+            // conservative: any incident still opens and seals the log.
+            self.pending = Some(match self.pending.take() {
+                Some((old_incident, old_counts)) => {
+                    (old_incident || incident, old_counts || counts)
+                }
+                None => (incident, counts),
+            });
+        } else {
+            self.after_step(incident, counts);
+        }
     }
 
     /// The gate's position on the mode ladder.
@@ -286,6 +376,7 @@ impl Runtime {
     /// not shut down looking clean. `failures` and `last` are then
     /// [`Runtime::recorder_failures`] and [`Runtime::recorder_fault`].
     pub fn close(mut self) -> Result<(), RuntimeError> {
+        self.commit();
         if let Some(r) = self.recorder.take() {
             if let Err(e) = r.close() {
                 self.recorder_failed(e.into());
@@ -385,6 +476,7 @@ impl Runtime {
             action: None,
             speed_cap: None,
             mode: self.gate.mode(),
+            expires_ms: None,
         }
     }
 
@@ -404,6 +496,7 @@ impl Runtime {
             action: Some(ActionKind::Stop),
             speed_cap: None,
             mode: self.gate.mode(),
+            expires_ms: None,
         }
     }
 

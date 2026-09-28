@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+use crate::arm::check_trajectory;
 use crate::geom::{point_segment_distance, Point2};
 use crate::mode::Mode;
 use crate::policy::{Condition, Effect, Policy, PolicyError};
 use crate::proposal::{ActionKind, ActionProposal};
+use crate::velocity::swept_path;
 use crate::verdict::Verdict;
 use crate::world::WorldSnapshot;
 
@@ -22,6 +24,8 @@ pub struct Decision {
     /// matched. Always set when an action is allowed, except for `stop`.
     pub speed_cap: Option<f64>,
     pub mode: Mode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_ms: Option<u64>,
 }
 
 /// Policy enforcement point between untrusted proposals and the actuators.
@@ -52,11 +56,12 @@ impl Judgement {
 
 impl Gate {
     pub fn new(policy: Policy) -> Result<Gate, PolicyError> {
+        Self::with_mode(policy, Mode::Normal)
+    }
+
+    pub fn with_mode(policy: Policy, mode: Mode) -> Result<Gate, PolicyError> {
         policy.validate()?;
-        Ok(Gate {
-            policy,
-            mode: Mode::Normal,
-        })
+        Ok(Gate { policy, mode })
     }
 
     pub fn policy(&self) -> &Policy {
@@ -92,24 +97,27 @@ impl Gate {
         now_ms: u64,
     ) -> Decision {
         let action = &proposal.action;
-        let decide = |verdict, fired, action, speed_cap| Decision {
+        let decide = |verdict, fired, action, speed_cap, expires_ms| Decision {
             proposal_id: proposal.id,
             verdict,
             fired,
             action,
             speed_cap,
             mode: self.mode,
+            expires_ms,
         };
-        let deny = |check: &str| decide(Verdict::Bul, vec![check.to_string()], None, None);
+        let deny = |check: &str| decide(Verdict::Bul, vec![check.to_string()], None, None, None);
         let source_allowed = self.policy.allowed_sources.contains(&proposal.source);
 
         // Stopping is always allowed, whoever asks; an unvetted source is noted.
-        if *action == ActionKind::Stop {
+        if *action == ActionKind::Stop
+            || matches!(action, ActionKind::Velocity { linear, angular, .. } if *linear == 0.0 && *angular == 0.0)
+        {
             let fired = match source_allowed {
                 true => Vec::new(),
                 false => vec!["stop:unvetted-source".into()],
             };
-            return decide(Verdict::Yun, fired, Some(ActionKind::Stop), None);
+            return decide(Verdict::Yun, fired, Some(ActionKind::Stop), None, None);
         }
         if !action.is_finite() {
             return deny("invalid:proposal");
@@ -129,6 +137,56 @@ impl Gate {
         }
         if age(proposal.timestamp_ms) > fresh.proposal_max_age_ms {
             return deny("stale:proposal");
+        }
+
+        if let ActionKind::Velocity {
+            linear,
+            angular,
+            ttl_ms,
+        } = action
+        {
+            return self.judge_velocity(proposal, world, now_ms, *linear, *angular, *ttl_ms);
+        }
+        if let ActionKind::JointTrajectory { points, ttl_ms } = action {
+            let check = if !self.policy.allowed_sources.contains(&proposal.source) {
+                Err("source:not-allowed")
+            } else if self.mode.stop_only() {
+                Err("mode:arm-stop")
+            } else if !world.humans.is_empty() {
+                Err("arm:human-present")
+            } else if let Some(arm) = &self.policy.arm {
+                if world.confidence < arm.min_confidence {
+                    Err("arm:low-confidence")
+                } else {
+                    check_trajectory(arm, world, points, *ttl_ms)
+                }
+            } else {
+                Err("policy:no-arm")
+            };
+            if let Err(fired) = check {
+                return deny(fired);
+            }
+            for rule in &self.policy.rules {
+                if self.matches(
+                    &rule.when,
+                    proposal,
+                    world,
+                    &[world.robot.pose, world.robot.pose],
+                    0.0,
+                ) {
+                    return match rule.then {
+                        Effect::Bul => deny(&rule.id),
+                        Effect::Jeol { .. } => deny("arm:cannot-clamp-rule"),
+                    };
+                }
+            }
+            return decide(
+                Verdict::Yun,
+                Vec::new(),
+                Some(action.clone()),
+                None,
+                Some(now_ms.saturating_add(*ttl_ms)),
+            );
         }
 
         let envelope = &self.policy.envelope;
@@ -175,7 +233,7 @@ impl Gate {
         }
 
         for rule in &self.policy.rules {
-            if !self.matches(&rule.when, proposal, world, from, to) {
+            if !self.matches(&rule.when, proposal, world, &[from, to], 0.0) {
                 continue;
             }
             match rule.then {
@@ -185,24 +243,144 @@ impl Gate {
         }
 
         if j.deny {
-            return decide(Verdict::Bul, j.fired, None, None);
+            return decide(Verdict::Bul, j.fired, None, None, None);
         }
         // The envelope bounds every allowed action, including arm motion for
         // grasp and place, so the executor always receives a cap.
         if j.speed_cap.is_infinite() {
             let cap = Some(envelope.max_speed);
-            return decide(Verdict::Yun, j.fired, Some(action.clone()), cap);
+            return decide(Verdict::Yun, j.fired, Some(action.clone()), cap, None);
         }
         let limit = j.speed_cap.min(envelope.max_speed);
         let cap = Some(limit);
         match action.speed() {
-            Some(v) if v > limit => {
-                decide(Verdict::Jeol, j.fired, Some(action.with_speed(limit)), cap)
-            }
-            Some(_) => decide(Verdict::Yun, j.fired, Some(action.clone()), cap),
+            Some(v) if v > limit => decide(
+                Verdict::Jeol,
+                j.fired,
+                Some(action.with_speed(limit)),
+                cap,
+                None,
+            ),
+            Some(_) => decide(Verdict::Yun, j.fired, Some(action.clone()), cap, None),
             // No speed field to clamp (grasp, place): the cap still binds, and
             // the executor enforces it through `speed_cap`.
-            None => decide(Verdict::Jeol, j.fired, Some(action.clone()), cap),
+            None => decide(Verdict::Jeol, j.fired, Some(action.clone()), cap, None),
+        }
+    }
+
+    fn judge_velocity(
+        &self,
+        p: &ActionProposal,
+        world: &WorldSnapshot,
+        now_ms: u64,
+        linear: f64,
+        angular: f64,
+        ttl_ms: u64,
+    ) -> Decision {
+        let denied = |check: String| Decision {
+            proposal_id: p.id,
+            verdict: Verdict::Bul,
+            fired: vec![check],
+            action: None,
+            speed_cap: None,
+            mode: self.mode,
+            expires_ms: None,
+        };
+        let Some(base) = &self.policy.base else {
+            return denied("policy:no-base".into());
+        };
+        if ttl_ms == 0 || ttl_ms > base.max_ttl_ms {
+            return denied("envelope:ttl".into());
+        }
+        if linear < 0.0 && !base.allow_reverse {
+            return denied("envelope:reverse".into());
+        }
+        let Some(yaw) = world.robot.yaw else {
+            return denied("invalid:world".into());
+        };
+        if self.mode.stop_only() {
+            return denied(format!("mode:{}", mode_name(self.mode)));
+        }
+        let mut fired = Vec::new();
+        if !self.policy.allowed_sources.contains(&p.source) {
+            return denied("source:not-allowed".into());
+        }
+        let mut factor = 1.0_f64;
+        let mut cap = self.policy.envelope.max_speed;
+        if self.mode == Mode::Caution {
+            cap *= 0.5;
+            fired.push("mode:caution".into());
+        }
+        if linear.abs() > cap {
+            factor = factor.min(cap / linear.abs());
+            fired.push("envelope:max_speed".into());
+        }
+        if angular.abs() > base.max_angular {
+            factor = factor.min(base.max_angular / angular.abs());
+            fired.push("envelope:max_angular".into());
+        }
+        let mut cmd_linear = linear * factor;
+        let mut cmd_angular = angular * factor;
+        // A zone or semantic cap scales the whole twist, preserving curvature.
+        for _ in 0..2 {
+            let path = match swept_path(world, yaw, cmd_linear, cmd_angular, ttl_ms, now_ms, base) {
+                Ok(path) => path,
+                Err(check) => return denied(check.into()),
+            };
+            if !path.inside(&self.policy.envelope.workspace) {
+                return denied("envelope:workspace".into());
+            }
+            let mut tighter = cap;
+            for zone in &self.policy.zones {
+                if path.intersects(&zone.area) {
+                    if zone.no_entry {
+                        return denied(format!("zone:{}", zone.id));
+                    }
+                    if let Some(limit) = zone.speed_limit {
+                        tighter = tighter.min(limit);
+                        fired.push(format!("zone:{}", zone.id));
+                    }
+                }
+            }
+            for rule in &self.policy.rules {
+                if self.matches(&rule.when, p, world, &path.points, path.inflation) {
+                    match rule.then {
+                        Effect::Bul => return denied(rule.id.clone()),
+                        Effect::Jeol { max_speed } => {
+                            tighter = tighter.min(max_speed);
+                            fired.push(rule.id.clone());
+                        }
+                    }
+                }
+            }
+            if cmd_linear.abs() <= tighter {
+                break;
+            }
+            let next = tighter / cmd_linear.abs();
+            cmd_linear *= next;
+            cmd_angular *= next;
+            cap = cap.min(tighter);
+        }
+        let verdict = if factor < 1.0
+            || (cmd_linear - linear).abs() > f64::EPSILON
+            || (cmd_angular - angular).abs() > f64::EPSILON
+        {
+            Verdict::Jeol
+        } else {
+            Verdict::Yun
+        };
+        Decision {
+            proposal_id: p.id,
+            verdict,
+            fired,
+            action: Some(ActionKind::Velocity {
+                linear: cmd_linear,
+                angular: cmd_angular,
+                ttl_ms,
+            }),
+            speed_cap: Some(cap),
+            mode: self.mode,
+            expires_ms: Some(now_ms.saturating_add(ttl_ms)),
         }
     }
 
@@ -211,8 +389,8 @@ impl Gate {
         c: &Condition,
         proposal: &ActionProposal,
         world: &WorldSnapshot,
-        from: Point2,
-        to: Point2,
+        path: &[Point2],
+        inflation: f64,
     ) -> bool {
         if let Some(objects) = &c.object_any {
             let grasping = match &proposal.action {
@@ -228,7 +406,9 @@ impl Gate {
         if let Some(hw) = &c.human_within {
             let near = world.humans.iter().any(|h| {
                 hw.class.is_none_or(|class| class == h.class)
-                    && point_segment_distance(h.pos, from, to) <= hw.distance
+                    && path.windows(2).any(|p| {
+                        point_segment_distance(h.pos, p[0], p[1]) <= hw.distance + inflation
+                    })
             });
             if !near {
                 return false;
