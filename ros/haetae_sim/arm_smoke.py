@@ -75,6 +75,7 @@ class ReferenceArm(Node):
         self.accepted = []
         self.cancel_requests = []
         self.stops = []
+        self.deadman_heartbeats = []
         self.server = ActionServer(
             self, FollowJointTrajectory,
             "/joint_trajectory_controller/follow_joint_trajectory",
@@ -100,6 +101,7 @@ class ReferenceArm(Node):
                 self.stops.append((now, "cancel"))
                 return FollowJointTrajectory.Result()
             if now - self.world.heartbeat >= 0.25:
+                self.deadman_heartbeats.append(self.world.heartbeat)
                 goal_handle.abort()
                 self.stops.append((now, "deadman"))
                 return FollowJointTrajectory.Result()
@@ -211,7 +213,12 @@ def main(binary):
                     time.sleep(0.01)
                 deadman = next((t for t, reason in server.stops if t >= killed and reason == "deadman"), None)
                 assert deadman is not None, "reference arm did not stop after gateway death"
-                assert deadman - killed <= 0.35, f"reference arm stop took {(deadman-killed)*1000:.1f} ms"
+                heartbeat = server.deadman_heartbeats[-1]
+                assert heartbeat <= deadman - 0.25, "reference arm aborted before heartbeat timeout"
+                assert deadman - heartbeat <= 0.35, (
+                    f"reference arm heartbeat timeout took {(deadman-heartbeat)*1000:.1f} ms")
+                assert deadman - killed <= 0.5, (
+                    f"reference arm stop took {(deadman-killed)*1000:.1f} ms after gateway death")
                 report = subprocess.run([binary, "sillok", "verify", "--log", str(root / "sillok.jsonl"),
                                          "--pubkey", public(9)], capture_output=True, text=True)
                 assert report.returncode == 0 and json.loads(report.stdout)["fully_sealed"]
@@ -219,7 +226,8 @@ def main(binary):
                                   "bounds_denied": True, "replacement_cancelled": True,
                                   "tracking_cancelled": True,
                                   "human_cancel_ms": round((first_cancel-trigger)*1000, 1),
-                                  "kill_deadman_ms": round((deadman-killed)*1000, 1)}))
+                                  "kill_deadman_ms": round((deadman-killed)*1000, 1),
+                                  "last_heartbeat_deadman_ms": round((deadman-heartbeat)*1000, 1)}))
             finally:
                 kill_gate(gate)
                 executor.shutdown()

@@ -14,7 +14,7 @@ import time
 import rclpy
 from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist, TwistStamped
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
@@ -37,7 +37,7 @@ class HaetaeGate(Node):
             "sillok_path": "", "key_path": "", "trust_path": "", "root_pubkey": "",
             "keys_json": "{}", "inputs_json": "[]", "arm_inputs_json": "[]",
             "arm_action": "/joint_trajectory_controller/follow_joint_trajectory",
-            "response_timeout_ms": 20, "tick_hz": 20.0,
+            "response_timeout_ms": 20, "tick_hz": 20.0, "output_stamped": True,
         }
         for key, value in defaults.items():
             self.declare_parameter(key, value)
@@ -53,7 +53,11 @@ class HaetaeGate(Node):
                 "--key", param("key_path"), "--trust", param("trust_path"),
                 "--root-pubkey", param("root_pubkey")]
         self.bridge = Bridge(argv, int(param("response_timeout_ms")))
-        self.command_pub = self.create_publisher(TwistStamped, "/cmd_vel", 1)
+        self.output_stamped = param("output_stamped")
+        if not isinstance(self.output_stamped, bool):
+            raise ValueError("output_stamped must be a bool")
+        self.command_pub = self.create_publisher(
+            TwistStamped if self.output_stamped else Twist, "/cmd_vel", 1)
         self.state_pub = self.create_publisher(String, "~/state", QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -100,11 +104,7 @@ class HaetaeGate(Node):
                                     "data": json.dumps(signed, separators=(",", ":"))})
 
     def _publish(self, step):
-        cmd = TwistStamped()
-        cmd.header.stamp = self.get_clock().now().to_msg()
-        cmd.twist.linear.x = float(step["cmd"]["linear"])
-        cmd.twist.angular.z = float(step["cmd"]["angular"])
-        self.command_pub.publish(cmd)
+        self._publish_command(float(step["cmd"]["linear"]), float(step["cmd"]["angular"]))
         if step.get("arm"):
             arm = step["arm"]
             if isinstance(arm, dict) and "execute" in arm:
@@ -198,10 +198,20 @@ class HaetaeGate(Node):
         self.abort_deadline = time.monotonic() + 0.25
         self.create_timer(0.02, self._abort_tick)
 
+    def _publish_command(self, linear, angular):
+        if self.output_stamped:
+            command = TwistStamped()
+            command.header.stamp = self.get_clock().now().to_msg()
+            twist = command.twist
+        else:
+            command = Twist()
+            twist = command
+        twist.linear.x = linear
+        twist.angular.z = angular
+        self.command_pub.publish(command)
+
     def _publish_zero(self):
-        zero = TwistStamped()
-        zero.header.stamp = self.get_clock().now().to_msg()
-        self.command_pub.publish(zero)
+        self._publish_command(0.0, 0.0)
 
     def _abort_tick(self):
         self._publish_zero()

@@ -12,8 +12,11 @@ def main(root):
     expected = {(scenario, repeat) for scenario in range(1, 9) for repeat in range(1, 6)}
     if pairs != expected or len(rows) != 40 or not all(row["ok"] for row in rows):
         raise SystemExit("incomplete or failed reference scenario matrix")
-    if not all(all(log.get("fully_sealed", False) for log in row["sillok"])
-               for row in rows):
+    if not all(row["sillok"] and all(
+        log.get("fully_sealed", False) or
+        (row["scenario"] == 1 and log.get("present") is False)
+        for log in row["sillok"]
+    ) for row in rows):
         raise SystemExit("reference scenario has an unsealed log")
     print("### Haetae ROS 2 reference scenarios")
     print()

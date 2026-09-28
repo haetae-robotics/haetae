@@ -181,6 +181,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
           python3 ros/smoke/enforce_roundtrip.py bin/haetae
+          ROS_DOMAIN_ID=80 python3 ros/smoke/enforce_roundtrip.py bin/haetae --unstamped
 
   ros-sim-e2e:
     name: ROS 2 reference scenarios

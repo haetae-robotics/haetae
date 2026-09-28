@@ -86,6 +86,10 @@ python3 ros/security/secure_probe.py orchestrate "$HAETAE_KEYSTORE"
 Run each real node with its assigned `--ros-args -e /haetae/<role>` enclave.
 The bridge requires a ROS parameter file with the policy, persistent state,
 fresh sillok path, log key, trust bundle, root public key and role key paths.
+Its `output_stamped` parameter defaults to `true` for `TwistStamped` on
+`/cmd_vel`; set it to `false` only when the selected base controller expects
+plain `Twist`. CI exercises both output types. The controller must accept the
+chosen type directly, without an unaudited command forwarding node.
 `ros/haetae_sim/run_scenario.py` creates a disposable example. Never reuse a
 sillok path after a process restart; the log writer refuses to overwrite an
 existing log. The persistent state path is deliberately reused so an unclean

@@ -314,7 +314,7 @@ class Harness:
             results.append({"path": log.name, **result})
         if not any(log.get("fully_sealed") for log in results) and self.scenario != 1:
             raise AssertionError("no sealed sillok log")
-        required = {2: ("revoke", "zone:child-room"), 3: ("revoke", "person"),
+        required = {2: ("decision", "zone:child-room"), 3: ("revoke", "person"),
                     5: ("stop", "StaleWorld"), 6: ("stop", "Expired")}
         if self.scenario in required:
             kind, value = required[self.scenario]

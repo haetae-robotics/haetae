@@ -17,7 +17,7 @@ from pathlib import Path
 import rclpy
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist, TwistStamped
 from std_msgs.msg import String
 
 
@@ -26,7 +26,7 @@ def public(seed):
         Encoding.Raw, PublicFormat.Raw).hex()
 
 
-def run(binary):
+def run(binary, output_stamped=True):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         policy = {
@@ -64,6 +64,7 @@ def run(binary):
             "keys_json": json.dumps({name: str(root / (name + ".key")) for name in ("world", "fault", "vla")}),
             "inputs_json": json.dumps([{"topic": "/vla/cmd_vel", "source": "vla", "ttl_ms": 200}]),
             "response_timeout_ms": 100,
+            "output_stamped": output_stamped,
         }}}
         (root / "params.yaml").write_text(json.dumps(params))
         repo = Path(__file__).resolve().parents[2]
@@ -76,7 +77,9 @@ def run(binary):
             commands = []
             states = []
             outcomes = []
-            test.create_subscription(TwistStamped, "/cmd_vel", lambda m: commands.append((time.monotonic(), m.twist.linear.x)), 10)
+            output_type = TwistStamped if output_stamped else Twist
+            test.create_subscription(output_type, "/cmd_vel", lambda m: commands.append((
+                time.monotonic(), (m.twist if output_stamped else m).linear.x)), 10)
             test.create_subscription(String, "/haetae_gate/state", lambda m: states.append(json.loads(m.data)), 10)
             test.create_subscription(String, "/haetae_gate/outcome", lambda m: outcomes.append(json.loads(m.data)), 10)
             world_pub = test.create_publisher(String, "/haetae_gate/world", 10)
@@ -143,7 +146,7 @@ def run(binary):
                 until(lambda: states and states[-1]["mode"] == "hold")
                 assert commands[-1][1] == 0.0
                 print(json.dumps({"ok": True, "revoke_latency_ms": round(latency * 1000),
-                                  "commands": len(commands)}))
+                                  "commands": len(commands), "output_stamped": output_stamped}))
             finally:
                 gate.terminate()
                 try:
@@ -161,4 +164,4 @@ def run(binary):
 
 
 if __name__ == "__main__":
-    run(os.path.abspath(sys.argv[1]))
+    run(os.path.abspath(sys.argv[1]), output_stamped="--unstamped" not in sys.argv[2:])

@@ -22,18 +22,18 @@ controller, safety-rated monitored stop, speed and separation monitoring). It
 adds defense in depth; it does not replace that layer.
 
 Haetae is **not** a certified safety function and must not be the only thing
-between a model and a person. Not done yet:
+between a model and a person. Current limits:
 
-- **No enforcement point.** There is no ROS 2 node or driver integration yet;
-  something else must actually refuse to execute what Haetae denies.
-- **2D point robot model.** Positions, paths, zones and the workspace are 2D;
-  arm geometry, reach and 3D obstacles are not modeled.
-- **Judged only at admission.** A command is checked once, when it arrives.
-  An approved action is not re-evaluated while it runs, even if the world changes.
-- **Unauthenticated inputs.** Proposal `source` fields and world snapshots are
-  taken at face value; nothing verifies who sent them.
-- **Mode is not persisted.** A raised mode (`caution`, `hold`, E-stop) resets
-  when the process restarts.
+- **Reference enforcement only.** A Rust watchdog and ROS 2 bridge can command
+  a simulated differential base and a mock arm action server. No real robot
+  controller or target ROS graph has been validated.
+- **Incomplete physical model.** The base model uses a 2D footprint and
+  braking horizon. The arm checks short joint trajectories and tracking,
+  without 3D link geometry, contact, force or torque protection.
+- **Deployment boundary still required.** The Rust enforcer verifies role-bound
+  signed inputs, rechecks active commands and persists raised modes. A real
+  deployment still needs isolated keys and SROS2 permissions tested against its
+  actual controllers and graph.
 
 ## This crate
 
@@ -45,6 +45,11 @@ the gate loop (`haetae::runtime`) and the incident recorder (`haetae::sillok`):
   incidents are recorded into a hash-chained, Ed25519-sealed `sillok` log.
 - `haetae sillok verify` / `haetae sillok replay`: check a log's chain and seals, and
   print a verified, terminal-safe timeline.
+- `haetae enforce --stdio`: run the signed-input watchdog behind a trusted
+  transport such as the reference ROS 2 bridge.
+
+Security scope and release blockers:
+[`docs/security-release.md`](https://github.com/haetae-robotics/haetae/blob/main/docs/security-release.md).
 
 Planned: `maek` (self-diagnosis), `jangseung` (physical-space consent),
 `amhaeng` (red-team harness).
@@ -92,7 +97,7 @@ sim/build.sh
 python3 -m http.server -d sim 8000                  # then open http://localhost:8000/
 ```
 
-Layout: `crates/haetae-core` (gate), `crates/haetae-runtime` (gate loop), `crates/sillok` (recorder), `crates/haetae-wasm` (simulator bindings), `crates/haetae` (CLI).
+Layout: `crates/haetae-core` (gate), `crates/haetae-runtime` (gate loop), `crates/haetae-enforce` (watchdog), `crates/sillok` (recorder), `crates/haetae-wasm` (simulator bindings), `crates/haetae` (CLI).
 Design contracts: [`docs/w1-contract.md`](https://github.com/haetae-robotics/haetae/blob/main/docs/w1-contract.md) (gate, sillok),
 [`docs/w2-contract.md`](https://github.com/haetae-robotics/haetae/blob/main/docs/w2-contract.md) (runtime).
 
