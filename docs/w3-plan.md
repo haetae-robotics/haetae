@@ -105,11 +105,12 @@ Blocker coverage at the end of W3:
    and tested on macOS. The rclpy node stays under about 150 lines: it converts
    callbacks, stamps `recv_ms` at callback entry, forwards each input over stdio, and
    publishes exactly what comes back.
-2. **Stop first, then record.** The stdio loop writes and flushes the output line
-   *before* `Enforcer::commit()` seals and fsyncs the log and persists the state
-   file, so an fsync never delays a zero.
-   - This deviates from w2 §5, which fsyncs before `handle` returns. W3 still
-     guarantees durability before the next input is read.
+2. **Stop first, persist before motion.** The stdio loop writes and flushes zero
+   or arm cancel before `Enforcer::commit()`, so an fsync never delays a stop.
+   Nonzero base commands and arm execution are committed before output, making
+   their signed replay counters durable before an actuator can move.
+   - This deviates from w2 §5 for stop outputs. Their state is committed before
+     the next input is read; an unclean restart enters Hold.
 3. **Latched stops need a re-arm.** Any stop caused by the world, a denial or the
    mode clears the arming of every source. After that, a source's non-zero command
    is not judged until that source sends one zero twist.
@@ -273,7 +274,8 @@ base's deadman watches.
 ### 4.5 `haetae enforce --stdio` (the process protocol)
 
 The child's arguments are `--policy`, `--state`, `--sillok` and `--key`. Every input
-line gets exactly one output line, then the child calls `commit()`.
+line gets exactly one output line. The child commits before an actuating output
+and after a zero or cancel output.
 
 ```text
 in : {"t":u64,"k":"world"|"proposal"|"fault","data":"<raw JSON string>"}
@@ -417,7 +419,7 @@ Thursday for as many pushes as needed; Friday for the repeat run.
 | tick | 50 ms |
 | world stale | 200 ms |
 | default TTL | 200 ms (≤ `max_ttl_ms` ≤ `proposal_max_age_ms`) |
-| node response timeout | 20 ms |
+| node response timeout | 500 ms for durable positive-command checkpoints |
 | base deadman | 250 ms, about 5 missed ticks |
 
 The policy's `max_decel` and `latency_ms` must equal the real base controller's
@@ -430,11 +432,11 @@ and the contract.
 |---|---|
 | Slow CI loops: no local ROS, so every ROS check needs a push and a CI run | All logic in Rust plus pure-Python cores, all tested locally; the rclpy glue stays small; the push budget in §7 |
 | Timing flakes on shared runners | Sim time; thresholds from physics plus a margin; 5× repeat on Friday |
-| stdio hop latency or a hung child | 20 ms response timeout, then zero, then exit; the deadman is the backstop; latency measured in the step summary. A native r2r node is W4. |
+| stdio hop latency or a hung child | 500 ms response timeout, then zero and exit; the independent 250 ms controller deadman stops earlier. Measure checkpoint latency on the deployment host. A native r2r node is W4. |
 | Devin's unbuilt code fails to compile | Signatures fixed in the contract; no new dependencies; Claude compiles it the same day |
 | Arc sampling skips a thin zone | `Δs ≤ r/2`, sagitta inflation, a dedicated thin-zone test |
 | The re-arm rule surprises integrators whose upstream never sends zero | Documented in the contract and README; the scenario planners send one zero first; the rule fails closed |
-| fsync on an incident delays the tick | Output first, then `commit` (§3.2); jitter measured; a recorder thread is W4 |
+| fsync delays a command | Persist before nonzero base or arm execute output to protect replay counters; send zero/cancel before fsync. The independent controller deadman covers a stalled checkpoint; measure storage latency on the deployment host. |
 | Overclaiming "sole writer" | Claim topology plus detection only; prevention needs SROS2 or a base-side input filter (W4) |
 | Wrong ROS facts (TwistStamped default, `count_publishers`) | The Monday `ros-probe` job settles them before the contract is frozen; the output type is a parameter |
 | Lost or corrupt state file | Starts in `Hold`; lowering the mode is offline only; an unsigned state file is documented (anyone with filesystem access already controls the robot) |
