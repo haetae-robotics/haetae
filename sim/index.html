@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>해태가 막는다 · Haetae 시뮬레이터</title>
+  <meta name="description" content="해킹된 AI의 로봇 명령을 실제 Rust 안전 게이트(WebAssembly)가 모터 앞에서 막는 공격 데모">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%231D1A16'/%3E%3Cpath d='M10.5 5.2L12 0.9L13.5 5.2Z' fill='%23fff'/%3E%3Cpath d='M5 5H10.2L12 6.6L13.8 5H19V10.5Q18.6 17.5 12 22.5Q5.4 17.5 5 10.5Z' fill='%23fff'/%3E%3Ccircle cx='9.5' cy='11.4' r='1.5' fill='%231D1A16'/%3E%3Ccircle cx='14.5' cy='11.4' r='1.5' fill='%231D1A16'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body data-state="loading">
+  <!-- Icons: the Haetae mark (a shield with one horn) and the three verdict icons. No Han characters anywhere. -->
+  <svg class="sprite" aria-hidden="true" focusable="false" width="0" height="0">
+    <symbol id="mark" viewBox="0 0 24 24">
+      <path d="M10.5 5.2L12 0.9L13.5 5.2Z" fill="currentColor"/>
+      <path d="M5 5H10.2L12 6.6L13.8 5H19V10.5Q18.6 17.5 12 22.5Q5.4 17.5 5 10.5Z" fill="currentColor"/>
+      <circle cx="9.5" cy="11.4" r="1.5" style="fill: var(--mark-eye, #fff)"/>
+      <circle cx="14.5" cy="11.4" r="1.5" style="fill: var(--mark-eye, #fff)"/>
+    </symbol>
+    <symbol id="v-yun" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="11" style="fill: var(--yun-fill)"/>
+      <path d="M6.6 12.4l3.6 3.6 7.3-7.9" fill="none" style="stroke: var(--yun-ink)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="v-jeol" viewBox="0 0 24 24">
+      <rect x="4.3" y="4.3" width="15.4" height="15.4" rx="3.2" transform="rotate(45 12 12)" style="fill: var(--jeol-fill)"/>
+      <path d="M8 7.6l4 3.6 4-3.6M8 12.2l4 3.6 4-3.6" fill="none" style="stroke: var(--jeol-ink)" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="v-bul" viewBox="0 0 24 24">
+      <path d="M7.4 1h9.2L23 7.4v9.2L16.6 23H7.4L1 16.6V7.4Z" style="fill: var(--bul-fill)"/>
+      <rect x="5.8" y="10.2" width="12.4" height="3.6" rx="1" style="fill: var(--bul-ink)"/>
+    </symbol>
+  </svg>
+  <a class="skip-link" href="#stage">무대로 건너뛰기</a>
+
+  <header class="hdr">
+    <div class="brand">
+      <svg class="mark" aria-hidden="true" focusable="false"><use href="#mark"/></svg>
+      <span class="name">해태</span>
+      <span class="pitch">AI의 로봇 명령을 모터 앞에서 심사합니다</span>
+    </div>
+    <ul class="legend" aria-label="판정 종류">
+      <li class="lg lg-yun" title="통과: 그대로 실행" aria-label="통과: 그대로 실행"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-yun"/></svg><span class="lg-word">통과</span></li>
+      <li class="lg lg-jeol" title="감속: 속도를 줄여 실행" aria-label="감속: 속도를 줄여 실행"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-jeol"/></svg><span class="lg-word">감속</span></li>
+      <li class="lg lg-bul" title="차단: 실행하지 않음" aria-label="차단: 실행하지 않음"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-bul"/></svg><span class="lg-word">차단</span></li>
+    </ul>
+    <div class="hdr-actions">
+      <button type="button" class="badge-mod" id="policy-badge" hidden>정책 수정됨</button>
+      <button type="button" class="icon-btn" id="btn-help" aria-label="도움말과 단축키" aria-haspopup="dialog">?</button>
+      <div class="view-wrap">
+        <button type="button" class="icon-btn wide" id="btn-view" aria-label="보기 설정" aria-expanded="false" aria-controls="view-pop"><span class="vw-text" aria-hidden="true">보기 </span><span aria-hidden="true">◐</span></button>
+        <div class="view-pop" id="view-pop" hidden role="group" aria-label="보기 설정">
+          <fieldset>
+            <legend>화면</legend>
+            <label><input type="radio" name="stage" value="3d"> 3D 모형</label>
+            <label><input type="radio" name="stage" value="2d"> 2D 지도</label>
+          </fieldset>
+          <fieldset>
+            <legend>테마</legend>
+            <label><input type="radio" name="theme" value="system" checked> 시스템</label>
+            <label><input type="radio" name="theme" value="light"> 밝게</label>
+            <label><input type="radio" name="theme" value="dark"> 어둡게</label>
+          </fieldset>
+          <label class="check"><input type="checkbox" id="pref-reduce"> 움직임 줄이기</label>
+          <label class="check"><input type="checkbox" id="pref-auto"> 자동 진행</label>
+        </div>
+      </div>
+      <button type="button" class="icon-btn wide" id="btn-lab" aria-label="실험실" aria-expanded="false" aria-controls="lab"><span aria-hidden="true">⚙</span><span class="lab-text" aria-hidden="true"> 실험실</span></button>
+    </div>
+  </header>
+
+  <div class="fatal" id="fatal" role="alert" hidden></div>
+
+  <div class="app">
+    <main id="main">
+      <section class="stage" id="stage" aria-labelledby="stage-title" tabindex="-1">
+        <div class="stage-head">
+          <h2 id="stage-title">해태가 막는다</h2>
+        </div>
+
+        <div class="strip" id="strip" data-state="idle" role="img" aria-label="AI 모델의 명령은 해태의 심사를 거쳐야 모터에 닿습니다">
+          <span class="node node-src" id="strip-src"><span class="src-icon"></span><span class="src-name">AI 모델</span><span class="src-note" hidden></span><span class="src-log" hidden>기록됨</span></span>
+          <span class="link link-in"><span class="packet"></span></span>
+          <span class="node node-gate"><svg class="gate-mark" aria-hidden="true" focusable="false"><use href="#mark"/></svg> 해태</span>
+          <span class="link link-out"><span class="cap-chip" id="strip-cap"></span><span class="cut" aria-hidden="true">✕</span></span>
+          <span class="node node-motor"><span aria-hidden="true">⚙</span> 모터</span>
+          <span class="bypass-line" aria-hidden="true"></span>
+          <span class="speed-badge" id="speed-badge" hidden></span>
+        </div>
+
+        <div class="map-area" id="map-area">
+          <div class="map-wrap" id="map-wrap">
+            <canvas id="map" role="img" aria-label="모형 집" tabindex="-1"></canvas>
+            <div class="fx fx-haze" id="fx-haze" aria-hidden="true"></div>
+            <div class="fx fx-vignette" id="fx-vignette" aria-hidden="true"></div>
+            <div class="ctx-chips" id="ctx-chips" aria-hidden="true"></div>
+            <ol class="ladder" id="ladder" hidden aria-label="안전 모드 단계"></ol>
+            <div class="ghost-banner" id="ghost-banner" hidden>⚠ 비교 재생 · 해태 없음 — 모델의 원래 명령을 필터 없이 실행하면 (판정 없음)</div>
+            <div class="lab-chip" id="lab-chip" hidden>실험실 모드</div>
+            <div class="overlay" id="overlay" aria-hidden="true"></div>
+          </div>
+
+          <div class="intro" id="intro" hidden>
+            <h1>AI가 해킹당해 위험한 명령을 내리면?</h1>
+            <p>해태는 AI가 로봇에게 내린 모든 명령을 <strong>모터에 닿기 전에</strong> 심사합니다. 옳고 그름을 가리는 상상의 동물, 해태처럼.</p>
+            <ul class="legend-chips" aria-label="판정 종류">
+              <li class="v-yun"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-yun"/></svg> 통과</li>
+              <li class="v-jeol"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-jeol"/></svg> 감속</li>
+              <li class="v-bul"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-bul"/></svg> 차단</li>
+            </ul>
+            <button type="button" class="btn-primary big" id="intro-cta">▶ 첫 공격 보기 — 칼 든 로봇</button>
+            <p class="intro-links"><button type="button" class="linkbtn" id="intro-list">공격 목록 보기</button> · <button type="button" class="linkbtn" id="intro-lab">직접 해 보기 (실험실)</button></p>
+            <p class="foot-chip" id="intro-foot">판정은 전부 실제 Rust 게이트(WebAssembly)가 내립니다.</p>
+          </div>
+
+          <div class="endcard" id="endcard" hidden></div>
+        </div>
+
+        <div class="caption" id="caption">
+          <div class="progress" id="progress"></div>
+          <div class="cap-lines">
+            <p class="cap-main"><span id="cap-text"></span> <button type="button" class="linkbtn" id="btn-detail" hidden>자세히 ▸</button></p>
+            <p class="cap-cmd" id="cap-cmd"></p>
+          </div>
+        </div>
+
+        <div class="transport" id="transport">
+          <button type="button" class="btn-secondary" id="btn-ghost" hidden>해태 없이 보기</button>
+          <button type="button" class="icon-btn" id="btn-pause" aria-label="일시정지" aria-pressed="false">❚❚</button>
+          <button type="button" class="btn-primary" id="btn-primary"><span class="label">다음 ▶</span><span class="ring" aria-hidden="true"></span></button>
+        </div>
+
+        <!-- Camera toolbar: drawn in the map's top-right corner, after the transport in tab order. -->
+        <div class="view-tools" id="view-tools" role="toolbar" aria-label="시점">
+          <button type="button" class="icon-btn vt-btn vt-wide" data-view="left" aria-label="왼쪽으로 돌리기" title="왼쪽으로 돌리기 ([)"><span aria-hidden="true">⟲</span></button>
+          <button type="button" class="icon-btn vt-btn" data-view="right" aria-label="오른쪽으로 돌리기" title="오른쪽으로 돌리기 (])"><span aria-hidden="true">⟳</span></button>
+          <button type="button" class="icon-btn vt-btn vt-wide" data-view="in" aria-label="확대" title="확대 (+)"><span aria-hidden="true">＋</span></button>
+          <button type="button" class="icon-btn vt-btn vt-wide" data-view="out" aria-label="축소" title="축소 (-)"><span aria-hidden="true">－</span></button>
+          <button type="button" class="icon-btn vt-btn" data-view="home" aria-label="시점 초기화" title="시점 초기화 (V)"><span aria-hidden="true">⌂</span><span class="owned-dot" aria-hidden="true"></span></button>
+        </div>
+      </section>
+    </main>
+
+    <nav class="rail" aria-label="공격 고르기">
+      <div class="rail-head"><h2 id="rail-title">공격 고르기</h2><span class="watched" id="watched">본 0/8</span></div>
+      <ol class="cards" id="cards"></ol>
+    </nav>
+  </div>
+
+  <div class="sr-only" role="status" aria-live="polite" aria-atomic="true" id="live"></div>
+  <div class="sr-only" role="status" aria-live="polite" id="cursor-live"></div>
+  <ul class="sr-only" id="entities" aria-label="지도에 있는 것"></ul>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <!-- 자세히: every fired check, request → execution, raw JSON, transcript -->
+  <dialog class="sheet modal" id="detail" aria-labelledby="detail-title">
+    <div class="sheet-head"><h2 id="detail-title">자세히</h2><button type="button" class="icon-btn" id="detail-close" aria-label="닫기">✕</button></div>
+    <div class="sheet-body" id="detail-body"></div>
+  </dialog>
+
+  <!-- 도움말 -->
+  <dialog class="sheet modal" id="help" aria-labelledby="help-title">
+    <div class="sheet-head"><h2 id="help-title">해태 시뮬레이터 쓰는 법</h2><button type="button" class="icon-btn" id="help-close" aria-label="닫기">✕</button></div>
+    <div class="sheet-body">
+      <p>AI 모델(VLA)이 로봇에게 내리는 명령은 <strong>믿을 수 없는 입력</strong>입니다. 해태는 모델과 모터 사이의 관문에서 모든 명령을 심사해 <b>통과</b>, <b>감속</b>(예: 더 느리게), <b>차단</b> 가운데 하나로 판정합니다.</p>
+      <p>오른쪽(모바일은 아래) 공격 카드를 고르면, 해킹된 명령이 로봇에게 닿는 순간과 해태가 그것을 막는 장면이 모형 집 위에서 펼쳐집니다. 모든 판정은 실제 Rust 게이트를 WebAssembly로 돌린 결과입니다.</p>
+      <p>시점: 드래그로 돌리기 · Ctrl(⌘)+스크롤로 확대 · 두 손가락으로 돌리고 확대 · V 시점 초기화</p>
+      <p><button type="button" class="btn-secondary" id="help-intro">처음 소개 다시 보기</button></p>
+      <h3>단축키</h3>
+      <dl class="keys">
+        <dt><kbd>Space</kbd></dt><dd>일시정지 / 계속</dd>
+        <dt><kbd>→</kbd> <kbd>N</kbd></dt><dd>다음 (판정 공개, 그다음 진행)</dd>
+        <dt><kbd>←</kbd></dt><dd>이전 장면</dd>
+        <dt><kbd>R</kbd></dt><dd>이 공격 다시 보기</dd>
+        <dt><kbd>H</kbd></dt><dd>해태 없이 보기 / 돌아가기</dd>
+        <dt><kbd>L</kbd></dt><dd>실험실 열기</dd>
+        <dt><kbd>1</kbd>–<kbd>8</kbd></dt><dd>공격 카드</dd>
+        <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>모형 집 왼쪽 / 오른쪽으로 돌리기</dd>
+        <dt><kbd>+</kbd> <kbd>-</kbd></dt><dd>확대 / 축소</dd>
+        <dt><kbd>V</kbd></dt><dd>시점 초기화 (장면 따라가기 다시 켜기)</dd>
+        <dt><kbd>?</kbd></dt><dd>이 도움말</dd>
+        <dt><kbd>Esc</kbd></dt><dd>시트나 소개 닫기</dd>
+      </dl>
+    </div>
+  </dialog>
+
+  <!-- ⚙ 실험실: non-modal, so the map stays usable -->
+  <dialog class="sheet lab" id="lab" aria-labelledby="lab-title">
+    <div class="sheet-head">
+      <h2 id="lab-title">⚙ 실험실</h2>
+      <button type="button" class="linkbtn lab-collapse" id="lab-collapse" aria-expanded="true">지도 보기 ▾</button>
+      <button type="button" class="icon-btn" id="lab-close" aria-label="실험실 닫기">✕</button>
+    </div>
+    <p class="lab-status" id="lab-clock" aria-live="off"></p>
+    <div class="tabs" role="tablist" aria-label="실험실 탭">
+      <button type="button" role="tab" id="tab-cmd" data-tab="cmd" aria-controls="panel-cmd" aria-selected="true">직접 명령</button>
+      <button type="button" role="tab" id="tab-world" data-tab="world" aria-controls="panel-world" aria-selected="false" tabindex="-1">세계·고장</button>
+      <button type="button" role="tab" id="tab-policy" data-tab="policy" aria-controls="panel-policy" aria-selected="false" tabindex="-1">정책</button>
+      <button type="button" role="tab" id="tab-log" data-tab="log" aria-controls="panel-log" aria-selected="false" tabindex="-1">기록</button>
+    </div>
+    <div class="sheet-body">
+      <div role="tabpanel" id="panel-cmd" aria-labelledby="tab-cmd">
+        <p class="howto">이렇게 써요: 바닥을 누르면 명령, 오른쪽 드래그(두 손가락)로 돌려 보기. 동작을 고른 뒤 바닥을 가리키면 실제 판정 미리보기가 뜹니다.</p>
+        <fieldset class="seg">
+          <legend>동작</legend>
+          <label><input type="radio" name="lab-action" value="move_to" checked> 이동</label>
+          <label><input type="radio" name="lab-action" value="grasp"> 집기</label>
+          <label><input type="radio" name="lab-action" value="place"> 놓기</label>
+          <label><input type="radio" name="lab-action" value="stop"> 정지</label>
+        </fieldset>
+        <label class="field">물건 <select id="lab-object"><option value="knife">칼</option><option value="cup">컵</option><option value="toy">장난감</option></select></label>
+        <label class="field">출처 <select id="lab-source"><option value="vla">AI 모델 (vla)</option><option value="planner">플래너 (planner)</option><option value="teleop">원격 조작 (teleop)</option><option value="peer">옆집 로봇 (peer)</option></select></label>
+        <label class="field">속도 <input type="range" id="lab-speed" min="0" max="3" step="0.1" value="0.8"> <output id="lab-speed-out">0.8 m/s</output></label>
+      </div>
+      <div role="tabpanel" id="panel-world" aria-labelledby="tab-world" hidden>
+        <p class="howto">이렇게 써요: 로봇이 들고 있는 물건, 인식 상태, 사람 위치를 바꾸고 고장을 주입해 보세요. 사람은 지도에서 끌어 옮길 수 있어요.</p>
+        <label class="field">들고 있는 물건 <select id="lab-holding"><option value="">없음</option><option value="knife">칼</option><option value="cup">컵</option><option value="toy">장난감</option></select></label>
+        <label class="field">인식 신뢰도 <input type="range" id="lab-confidence" min="0" max="1" step="0.05" value="0.95"> <output id="lab-confidence-out">95%</output></label>
+        <label class="field">인식 나이 <input type="range" id="lab-age" min="0" max="2000" step="50" value="0"> <output id="lab-age-out">0 ms</output></label>
+        <p class="field-line">사람: <span id="lab-humans"></span></p>
+        <div class="btn-row"><button type="button" class="btn-secondary" id="lab-add-child">+ 아이</button><button type="button" class="btn-secondary" id="lab-add-adult">+ 어른</button><button type="button" class="btn-secondary" id="lab-remove">마지막 사람 빼기</button></div>
+        <p class="field-line" id="lab-mode"></p>
+        <ul class="raise-list">
+          <li><button type="button" class="btn-secondary" data-raise="caution">주의로 올리기</button><span class="raise-out"></span></li>
+          <li><button type="button" class="btn-secondary" data-raise="hold">홀드로 올리기</button><span class="raise-out"></span></li>
+          <li><button type="button" class="btn-secondary" data-raise="safe_park">안전 주차로 올리기</button><span class="raise-out"></span></li>
+          <li><button type="button" class="btn-secondary" data-raise="estop">비상 정지로 올리기</button><span class="raise-out"></span></li>
+        </ul>
+        <div class="btn-row"><button type="button" class="btn-secondary" id="lab-reset">운영자 리셋</button><button type="button" class="btn-secondary" id="lab-stop">■ 정지 보내기</button></div>
+      </div>
+      <div role="tabpanel" id="panel-policy" aria-labelledby="tab-policy" hidden>
+        <p class="howto">이렇게 써요: 정책 JSON을 고치고 “적용”을 누르면 장면과 실험실 게이트를 새로 만듭니다.</p>
+        <p class="banner-note">정책을 바꾸면 장면의 판정도 바뀝니다. 판정은 언제나 게이트가 계산합니다.</p>
+        <label for="lab-policy" class="sr-only">정책 JSON</label>
+        <textarea id="lab-policy" spellcheck="false" rows="16" aria-describedby="lab-policy-status"></textarea>
+        <p class="policy-status" id="lab-policy-status" role="status" tabindex="-1"></p>
+        <div class="btn-row"><button type="button" class="btn-secondary" id="lab-apply" disabled>적용</button><button type="button" class="btn-secondary" id="lab-revert">기본값 복원</button></div>
+      </div>
+      <div role="tabpanel" id="panel-log" aria-labelledby="tab-log" hidden>
+        <p class="howto">이렇게 써요: 모든 판정 호출이 여기에 남습니다. JSONL 스트림을 붙여 넣으면 저녁 파티 재생기로 돌려 볼 수 있어요.</p>
+        <div class="btn-row"><button type="button" class="btn-secondary" id="lab-copy">JSONL 복사</button><button type="button" class="btn-secondary" id="lab-clear">기록 지우기</button></div>
+        <ol class="log" id="event-log"></ol>
+        <label for="lab-stream" class="field-line">JSONL 스트림 재생 (초기 세계: examples/world.json)</label>
+        <textarea id="lab-stream" rows="5" spellcheck="false" placeholder='{"id":1,"source":"vla","timestamp_ms":…,"action":{…}}'></textarea>
+        <div class="btn-row"><label class="btn-secondary file">파일 고르기<input type="file" id="lab-stream-file" accept=".jsonl,.json,.txt"></label><button type="button" class="btn-secondary" id="lab-stream-play">재생</button></div>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    // Boot watchdog (classic script): reports a page that never finished booting.
+    setTimeout(function () {
+      if (window.__haetaeBooted || window.__haetaeFailed) return;
+      var f = document.getElementById('fatal');
+      f.hidden = false;
+      f.textContent = '시뮬레이터를 시작하지 못했습니다. sim/build.sh로 WASM을 빌드한 뒤 sim/ 폴더를 HTTP로 서빙하세요 (python3 -m http.server -d sim 8000). file:// 로는 동작하지 않습니다.';
+    }, 8000);
+  </script>
+  <script type="importmap">{"imports": {"three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/"}}</script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+[package]
+name = "haetae-wasm"
+description = "WebAssembly bindings for the Haetae gate, used by the browser simulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+haetae-core.workspace = true
+serde_json = "1.0.151"
+wasm-bindgen = "0.2.129"

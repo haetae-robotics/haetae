@@ -4,6 +4,8 @@ build/
 *.egg-info/
 __pycache__/
 .DS_Store
+sim/pkg/
+sim/examples/
 # Secrets and incident logs from local runs (the README walkthrough uses a temp dir).
 *.seed
 /sillok*.jsonl

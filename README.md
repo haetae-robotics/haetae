@@ -72,7 +72,22 @@ The scenario has four parts:
   windows are sealed into a tamper-evident `sillok` log, which `replay` verifies
   before printing.
 
-Layout: `crates/haetae-core`, `crates/haetae-runtime`, `crates/sillok`, `crates/haetae`.
+## Browser simulator
+
+`sim/` is an interactive 3D miniature-house simulator that runs the **real** `haetae-core` gate compiled to WebAssembly. The page only draws what the gate returns; it is a demo, not part of the gate.
+
+- Pick an attack card (knife toward a child, spoofed tag, hijacked peer robot, …) and watch Haetae judge it.
+- Compare with "해태 없이 보기", the model's raw command executed unfiltered.
+- Use the lab to send your own commands, inject faults, and edit the policy live.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129   # must match Cargo.lock
+sim/build.sh
+python3 -m http.server -d sim 8000                  # then open http://localhost:8000/
+```
+
+Layout: `crates/haetae-core` (gate), `crates/haetae-runtime` (gate loop), `crates/sillok` (recorder), `crates/haetae-wasm` (simulator bindings), `crates/haetae` (CLI).
 Design contracts: [`docs/w1-contract.md`](docs/w1-contract.md) (gate, sillok),
 [`docs/w2-contract.md`](docs/w2-contract.md) (runtime).
 
