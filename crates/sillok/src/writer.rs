@@ -18,9 +18,20 @@ use crate::Result;
 /// [`SillokWriter::create`] refuses to overwrite an existing path — a log is
 /// born once. A `seal` entry is written automatically after every
 /// `seal_every` appended entries; [`SillokWriter::close`] adds a final one
-/// when entries remain unsealed (or the log is empty), then fsyncs. Dropping
-/// the writer without `close()` still flushes buffered bytes, but skips the
-/// final seal and fsync.
+/// when entries remain unsealed (or the log is empty).
+///
+/// Durability: every seal is flushed and fsynced (`sync_data`) before
+/// [`SillokWriter::seal`] returns, so everything up to and including the
+/// latest seal survives a crash or power loss. Plain appends stay in a
+/// userspace buffer until the next seal — they are cheap, and a crash can
+/// lose the unsealed tail (at worst leaving a torn final line, which
+/// [`crate::verify`] reports as `torn_tail`). Dropping the writer without
+/// `close()` still flushes buffered bytes, but skips the final seal and
+/// fsync.
+///
+/// After any `Err` the in-memory chain state may no longer match the file
+/// (a partial line may have been written). Discard the writer; never keep
+/// appending through it.
 ///
 /// TODO(W4): expose chain tips to an external anchor (RFC 3161 / Sigsum) so
 /// truncation that removes a seal becomes detectable.
@@ -40,19 +51,52 @@ impl SillokWriter {
     ///
     /// Fails with [`Error::AlreadyExists`] if the file exists, and with
     /// [`Error::InvalidSealInterval`] if `seal_every` is 0.
+    ///
+    /// The log holds people's positions, so on unix it is created with mode
+    /// `0o600` (owner read/write only; the umask can only narrow it). On
+    /// unix the parent directory is fsynced as well, so the new directory
+    /// entry itself survives a crash. That directory fsync is best-effort
+    /// where it cannot be done at all — the directory is not readable
+    /// (e.g. mode `0o300`) or the filesystem does not support syncing a
+    /// directory — because the file's own seals are still fsynced. Any
+    /// other directory-fsync failure is an error, and the empty file this
+    /// call just created is removed first, so a retry is not blocked by
+    /// [`Error::AlreadyExists`]. Other platforms get the default
+    /// permissions and no directory fsync (std has no portable way to open
+    /// a directory for syncing).
     pub fn create(path: impl AsRef<Path>, key: Keypair, seal_every: usize) -> Result<Self> {
+        Self::create_with(path.as_ref(), key, seal_every, sync_parent_dir)
+    }
+
+    /// [`SillokWriter::create`] with the directory fsync injected, so tests
+    /// can make it fail.
+    fn create_with(
+        path: &Path,
+        key: Keypair,
+        seal_every: usize,
+        sync_dir: fn(&Path) -> std::io::Result<()>,
+    ) -> Result<Self> {
         if seal_every == 0 {
             return Err(Error::InvalidSealInterval);
         }
-        let path = path.as_ref();
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|e| match e.kind() {
-                ErrorKind::AlreadyExists => Error::AlreadyExists(path.to_path_buf()),
-                _ => Error::Io(e),
-            })?;
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts.open(path).map_err(|e| match e.kind() {
+            ErrorKind::AlreadyExists => Error::AlreadyExists(path.to_path_buf()),
+            _ => Error::Io(e),
+        })?;
+        if let Err(e) = sync_dir(path) {
+            // `create_new` guarantees the file is ours and still empty.
+            // Best-effort: if removal fails too, the orphan stays behind.
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(Error::Io(e));
+        }
         Ok(SillokWriter {
             file: BufWriter::new(file),
             key,
@@ -88,6 +132,9 @@ impl SillokWriter {
     /// Safe to call anytime — including right after a seal or on an empty
     /// log (it signs `ZERO_HASH` then). The seal is itself an ordinary
     /// chained entry.
+    ///
+    /// Returns only once the seal and everything before it are flushed and
+    /// fsynced (`sync_data`): a sealed entry is a durable entry.
     pub fn seal(&mut self) -> Result<()> {
         let ts_ms = now_ms();
         let msg = seal_message(self.next_seq, ts_ms, &self.prev_hash);
@@ -98,6 +145,8 @@ impl SillokWriter {
         });
         self.write_entry(ts_ms, SEAL_KIND, payload)?;
         self.since_seal = 0;
+        self.file.flush()?;
+        self.file.get_ref().sync_data()?;
         Ok(())
     }
 
@@ -154,10 +203,67 @@ impl SillokWriter {
     }
 }
 
+/// Fsync the directory holding `path`, so a freshly created file's
+/// directory entry is durable, not only its contents.
+///
+/// Skipped (returns `Ok`) when it cannot be done at all: the directory
+/// cannot be opened for reading (`PermissionDenied` — creating a file needs
+/// only write and search permission), or the filesystem rejects fsync on a
+/// directory (`InvalidInput` / `Unsupported`, e.g. some network, FUSE or
+/// FAT volumes). Other errors, such as an I/O error, are returned.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let skippable = |e: &std::io::Error| {
+        matches!(
+            e.kind(),
+            ErrorKind::PermissionDenied | ErrorKind::InvalidInput | ErrorKind::Unsupported
+        )
+    };
+    match File::open(dir).and_then(|d| d.sync_all()) {
+        Err(e) if !skippable(&e) => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// No-op: std cannot open a directory for syncing on this platform.
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Wall-clock timestamp for seal entries (0 if the clock is before epoch).
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failing directory fsync must not leave an empty log behind that
+    /// would make every retry fail with `AlreadyExists`.
+    #[test]
+    fn failed_dir_sync_removes_the_new_file() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("log.jsonl");
+        let key = Keypair::from_seed([7; 32]);
+        let fail = |_: &Path| Err(std::io::Error::other("injected dir fsync failure"));
+
+        let err = SillokWriter::create_with(&path, key.clone(), 64, fail);
+        assert!(matches!(err, Err(Error::Io(_))));
+        assert!(!path.exists(), "the half-created log was removed");
+
+        // So a retry succeeds.
+        SillokWriter::create(&path, key, 64)
+            .and_then(SillokWriter::close)
+            .expect("retry after a failed dir fsync");
+        assert!(path.exists());
+    }
 }

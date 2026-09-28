@@ -1,6 +1,6 @@
 [package]
 name = "haetae"
-description = "Robot safety & security stack for physical AI: a policy gate between untrusted models and actuators (pre-alpha)"
+description = "Supervisory policy gate for AI-driven robots: judges untrusted model output before it reaches actuators (non-safety-rated, pre-alpha)"
 readme = "README.md"
 keywords = ["robotics", "safety", "security", "ros2", "guardrail"]
 categories = ["science::robotics"]

@@ -7,8 +7,11 @@ use haetae_core::PolicyError;
 /// Everything that can fail inside [`crate::Runtime`].
 ///
 /// Malformed inbound bytes are **not** errors — they become
-/// [`crate::Outcome::Rejected`]. An `Err` means the safety machinery itself
-/// failed: an invalid policy, an unusable config, or the recorder's I/O.
+/// [`crate::Outcome::Rejected`]. [`crate::Runtime::new`] fails with an invalid
+/// policy or an unusable config. Recorder failures are never returned from
+/// `handle`: they are latched as [`RuntimeError::Sillok`] in
+/// [`crate::Runtime::recorder_fault`], and [`crate::Runtime::close`]
+/// reports them as [`RuntimeError::RecordingIncomplete`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RuntimeError {
@@ -18,6 +21,14 @@ pub enum RuntimeError {
     Sillok(sillok::Error),
     /// A [`crate::RuntimeConfig`] value is unusable.
     InvalidConfig(String),
+    /// Returned by [`crate::Runtime::close`] when any recording failed
+    /// during the run (or the final seal failed): the incident log is
+    /// missing or incomplete. `failures` counts the failed recordings,
+    /// `last` is the most recent one.
+    RecordingIncomplete {
+        failures: usize,
+        last: Box<RuntimeError>,
+    },
 }
 
 impl fmt::Display for RuntimeError {
@@ -26,6 +37,11 @@ impl fmt::Display for RuntimeError {
             RuntimeError::Policy(e) => write!(f, "{e}"),
             RuntimeError::Sillok(e) => write!(f, "recorder error: {e}"),
             RuntimeError::InvalidConfig(m) => write!(f, "invalid config: {m}"),
+            RuntimeError::RecordingIncomplete { failures, last } => write!(
+                f,
+                "sillok recording failed {failures} time(s); the incident log is \
+                 missing or incomplete (last error: {last})"
+            ),
         }
     }
 }
@@ -36,6 +52,7 @@ impl std::error::Error for RuntimeError {
             RuntimeError::Policy(e) => Some(e),
             RuntimeError::Sillok(e) => Some(e),
             RuntimeError::InvalidConfig(_) => None,
+            RuntimeError::RecordingIncomplete { last, .. } => Some(last.as_ref()),
         }
     }
 }

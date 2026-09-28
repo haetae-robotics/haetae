@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use haetae_core::{Mode, Source, Verdict};
-use haetae_runtime::{Fault, Inbound, RecorderConfig, Runtime, RuntimeConfig};
+use haetae_runtime::{Fault, Inbound, RecorderConfig, Runtime, RuntimeConfig, RuntimeError};
 use serde_json::json;
 use sillok::{Entry, Keypair};
 use tempfile::TempDir;
@@ -246,8 +246,110 @@ fn close_leaves_a_fully_sealed_log() {
             .unwrap(),
     );
     assert_eq!(d.verdict, Verdict::Bul);
+    assert!(rt.recorder_fault().is_none());
+    assert_eq!(rt.recorder_failures(), 0);
     rt.close().unwrap();
 
     let report = sillok::verify(&path, &vk).unwrap();
     assert!(report.fully_sealed());
+}
+
+/// R1: a pre-existing file at the log path is never overwritten, and the
+/// failure to record costs neither the decision nor later attempts.
+#[test]
+fn recorder_failure_keeps_the_decision_and_is_latched() {
+    let dir = TempDir::new().unwrap();
+    let (cfg, path, _vk) = recorder(&dir, 8);
+    fs::write(&path, "someone else's file\n").unwrap();
+    let mut rt = Runtime::new(policy(), Some(world()), cfg).unwrap();
+
+    let d = decide(
+        rt.handle(proposal(1, Source::Vla, 20.0, 1.0, 0.5), NOW)
+            .expect("a recorder failure must not withhold the decision"),
+    );
+    assert_eq!(d.verdict, Verdict::Bul);
+    match rt.recorder_fault() {
+        Some(RuntimeError::Sillok(sillok::Error::AlreadyExists(p))) => assert_eq!(p, &path),
+        other => panic!("expected a latched AlreadyExists, got {other:?}"),
+    }
+    assert_eq!(rt.recorder_failures(), 1);
+
+    // Non-incidents still work; the next incident tries again and fails
+    // again — counted, never silent.
+    let d = decide(
+        rt.handle(proposal(2, Source::Vla, 3.0, 1.0, 0.5), NOW)
+            .unwrap(),
+    );
+    assert_eq!(d.verdict, Verdict::Yun);
+    assert_eq!(rt.recorder_failures(), 1);
+    let d = decide(
+        rt.handle(proposal(3, Source::Vla, 20.0, 1.0, 0.5), NOW)
+            .unwrap(),
+    );
+    assert_eq!(d.verdict, Verdict::Bul);
+    assert_eq!(rt.recorder_failures(), 2);
+    assert_eq!(rt.incidents(), 2);
+    // Shutdown does not look clean either.
+    match rt.close() {
+        Err(RuntimeError::RecordingIncomplete { failures, last }) => {
+            assert_eq!(failures, 2);
+            assert!(matches!(
+                *last,
+                RuntimeError::Sillok(sillok::Error::AlreadyExists(_))
+            ));
+        }
+        other => panic!("close must report the lost incidents, got {other:?}"),
+    }
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), "someone else's file\n");
+}
+
+/// R1: the key survives a failed creation, so a later incident can create
+/// the log once the cause is fixed — with the whole backlog in it.
+#[test]
+fn log_creation_is_retried_on_the_next_incident() {
+    let dir = TempDir::new().unwrap();
+    let key = Keypair::generate().unwrap();
+    let vk = key.verifying_key_hex();
+    let sub = dir.path().join("not-yet");
+    let path = sub.join("log.jsonl");
+    let cfg = RuntimeConfig {
+        recorder: Some(RecorderConfig::new(path.clone(), key)),
+        ..RuntimeConfig::default()
+    };
+    let mut rt = Runtime::new(policy(), Some(world()), cfg).unwrap();
+
+    let d = decide(
+        rt.handle(proposal(1, Source::Vla, 20.0, 1.0, 0.5), NOW)
+            .unwrap(),
+    );
+    assert_eq!(d.verdict, Verdict::Bul);
+    assert!(matches!(
+        rt.recorder_fault(),
+        Some(RuntimeError::Sillok(sillok::Error::Io(_)))
+    ));
+    assert!(!path.exists());
+
+    fs::create_dir(&sub).unwrap();
+    decide(
+        rt.handle(proposal(2, Source::Vla, 20.0, 1.0, 0.5), NOW)
+            .unwrap(),
+    );
+    assert_eq!(rt.recorder_failures(), 1, "the retry succeeded");
+    assert!(rt.recorder_fault().is_some(), "the old fault stays latched");
+    // The log is closed and sealed, but the earlier failure is still
+    // reported at shutdown.
+    assert!(matches!(
+        rt.close(),
+        Err(RuntimeError::RecordingIncomplete { failures: 1, .. })
+    ));
+
+    let report = sillok::verify(&path, &vk).unwrap();
+    assert!(report.is_complete());
+    let prop_ids: Vec<u64> = entries(&path)
+        .iter()
+        .filter(|e| e.kind == "proposal")
+        .map(|e| e.payload["proposal"]["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(prop_ids, [1, 2], "the failed incident's records were kept");
 }

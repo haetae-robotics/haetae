@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verdict {
-    /// 允 — allow as proposed.
+    /// 통과 — allow as proposed.
     Yun,
-    /// 節 — allow with tightened limits (speed, force, workspace).
+    /// 감속 — allow with a tighter speed cap (the only limit Haetae clamps).
     Jeol,
-    /// 不 — deny.
+    /// 차단 — deny.
     Bul,
 }
 

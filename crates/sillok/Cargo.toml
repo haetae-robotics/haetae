@@ -11,7 +11,8 @@ publish = false
 name = "sillok"
 
 [dependencies]
-ed25519-dalek = "3.0.0"
+# `zeroize` (a default feature) wipes every SigningKey copy on drop; named explicitly.
+ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
 getrandom = "0.4.3"
 hex = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }

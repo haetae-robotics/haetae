@@ -1,17 +1,17 @@
 # Haetae (해태) /hɛ.tʰɛ/ "heh-teh"
 
-**Robot safety & security stack for physical AI.**
+**A supervisory policy gate for AI-driven robots** (non-safety-rated, pre-alpha).
 
 Haetae treats VLA / foundation-model output as *untrusted input*. Every proposed
 robot action passes through a single policy gate that returns one of three verdicts:
 
-| Verdict | Hanja | Meaning |
+| Verdict | 한글 | Meaning |
 |---|---|---|
-| `yun`  | 允 | allow |
-| `jeol` | 節 | clamp (allow with reduced speed/force/workspace) |
-| `bul`  | 不 | deny |
+| `yun`  | 통과 | allow |
+| `jeol` | 감속 | allow with a reduced speed cap |
+| `bul`  | 차단 | deny |
 
-Planned components: `sillok` (tamper-evident incident recorder), `maek` (self-diagnosis),
-`jangseung` (physical-space consent), `amhaeng` (red-team harness).
+This Python package currently ships only the `Verdict` type. The gate, the runtime loop and the
+`sillok` signed incident log are implemented in Rust: https://github.com/haetae-robotics/haetae
 
 > Status: **pre-alpha (0.0.x)**. Not a certified safety device.

@@ -74,6 +74,7 @@ pub enum RuntimeError {                     // std::error::Error, non_exhaustive
     Policy(PolicyError),
     Sillok(sillok::Error),
     InvalidConfig(String),
+    RecordingIncomplete { failures: usize, last: Box<RuntimeError> }, // from close()
 }
 
 pub struct Runtime;
@@ -84,7 +85,9 @@ impl Runtime {
     pub fn handle(&mut self, msg: Inbound, recv_ms: u64) -> Result<Outcome, RuntimeError>;
     pub fn mode(&self) -> Mode;
     pub fn incidents(&self) -> usize;
-    pub fn close(self) -> Result<(), RuntimeError>;
+    pub fn recorder_fault(&self) -> Option<&RuntimeError>;  // latest recording failure, latched
+    pub fn recorder_failures(&self) -> usize;               // messages whose recording failed
+    pub fn close(self) -> Result<(), RuntimeError>;         // Err if any recording failed
 }
 ```
 
@@ -95,13 +98,20 @@ impl Runtime {
   before the loop started. With `None`, non-stop proposals are denied
   `missing:world` until the first `Inbound::World`.
 - `handle_bytes` never fails on bad input: a parse failure returns
-  `Outcome::Rejected` and adds a `"reject"` record to the sacho (§5). `Err`
-  is reserved for recorder failures (policy/config failures happen in
-  `new`). Per-message isolation: one bad message never stops the loop.
+  `Outcome::Rejected` and adds a `"reject"` record to the sacho (§5).
+  Per-message isolation: one bad message never stops the loop.
+- `handle` / `handle_bytes` never fail on a **recorder** failure either: the
+  `Outcome` (above all the `Decision`) is always returned, and the failure is
+  latched (§5.1). They currently never return `Err`; the `Result` is kept for
+  future failures that must stop the loop. Policy/config failures happen in
+  `new`.
 - `incidents()` counts incident triggers whether or not a recorder is
   configured.
-- `close()` writes the final seal, flushes and fsyncs **if** a log was
-  created; otherwise it is a no-op.
+- `close()` writes the final seal, flushes and fsyncs **if** a log is open.
+  It returns `Err(RuntimeError::RecordingIncomplete { failures, last })` when
+  any recording failed during the run — latched earlier or the final seal
+  itself — even if the log closed cleanly, so an embedder that only checks
+  `close()?` still learns that incidents were lost.
 
 ## 3. Inbound JSON
 
@@ -204,6 +214,36 @@ Rejects never trigger an incident — garbage must not be able to force log
 creation — and once the post window is closed they wait in the sacho for the
 next incident like everything else.
 
+Each seal is fsynced before the step returns (w1 §2.2), so once `handle`
+returns for an incident, that incident and its backlog are durable. The log
+file is created `0o600` on unix.
+
+### 5.1 Recorder failures
+
+A failure to record must never cost the decision, and must never be silent.
+
+- Any failure on the record path — log creation, append, seal, fsync, or
+  serialising a record payload — is **latched**: `recorder_fault()` returns
+  the most recent one (never cleared) and `recorder_failures()` counts the
+  messages it happened on. The outcome is returned as usual.
+- The signing key is kept for the whole run (`Keypair: Clone`), so a failed
+  **creation** is retried on the next incident (e.g. the directory appears).
+  A failed creation never leaves a half-created file behind (w1 §2.2), so the
+  retry is not blocked by its own earlier attempt.
+  Records the failed step could not write stay in the sacho and land in the
+  log once creation succeeds.
+- Creation never overwrites: a pre-existing file at `path` makes every
+  incident's creation attempt fail with `AlreadyExists`, each one counted.
+- A failed **write** to an open log discards that writer — the file may end
+  in a torn line (w1 §2.3) — and it is never appended to again. Later
+  incidents then fail creation on the existing file, and are counted.
+- Recording failures do not change the mode. Failing safe on a recorder
+  fault is a deployment decision for the transport.
+- `close()` reports any latched failure as `RecordingIncomplete` (§2).
+- The `haetae judge` CLI prints `error: sillok recording failed: …` on
+  stderr for each failed line, still prints every decision on stdout, and
+  exits 1 after the whole input is judged (the `close()` error).
+
 `sillok` §2.1's known-kind list should now read `"proposal"`, `"decision"`,
 `"fault"`, `"world"`, `"reject"`, `"mode"`, `"note"`, plus the reserved
 `"seal"`. (`"world"` and `"reject"` are the W2 additions.)
@@ -267,10 +307,12 @@ Rationale:
   including `stop:unvetted-source` for unvetted sources — rather than
   judging against a placeholder snapshot, per the design note.
 - `incidents()` counts triggers even when `recorder` is `None`.
-- A serialisation failure on the record path surfaces as
+- A serialisation failure on the record path is latched (§5.1) as
   `RuntimeError::Sillok(sillok::Error::Json(..))` — the spec fixes the
   error enum at three variants, and serialising a `Decision`/`WorldSnapshot`
-  is a recorder-path failure, not config.
+  is a recorder-path failure, not config. The one exception: a *rejected*
+  world whose preview cannot be serialised is recorded with an empty
+  `input` (unreachable in practice).
 - The reject preview truncates at 4 KiB on a UTF-8 boundary
   (`lossy_preview`), so the stored `input` is always valid UTF-8.
 
@@ -297,3 +339,17 @@ Accepted limitations, to be solved in W3:
   - W3: an `epoch` on `WorldSnapshot`, and persisting the mode and per-source high-water marks (e.g. replayed from sillok on start).
 - **`recv_ms` is not forced to be monotonic.** A backwards jump makes judgements fail closed (`invalid:timestamp`), but the log timeline steps back.
 - **Seal entries still take wall-clock time** inside sillok, not `recv_ms`.
+- **Mode is not persisted.** A raised mode, including `estop`, is lost on
+  restart (see Restarts above).
+- **Reset is unauthenticated.** `Gate::reset_mode` is a plain call; no
+  transport exposes it, and signed operator resets are W3 work.
+- **No enforcement point.** There is no ROS 2 node yet (§7 is the contract
+  only); something outside Haetae must refuse to execute what it denies.
+- **2D point robot model.** Paths, zones and the workspace are 2D segments
+  from the robot pose; arm geometry and reach are not modelled.
+- **Judged at admission only.** An approved action is not re-evaluated
+  while it runs, even if the world changes.
+- **Unauthenticated sources and world.** `source` and world snapshots are
+  taken at face value (see H1 above).
+- **Recorder faults do not fail safe** (§5.1): they are reported, and the
+  gate keeps running at its current mode.

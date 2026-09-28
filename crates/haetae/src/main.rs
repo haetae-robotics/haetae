@@ -2,20 +2,26 @@ use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use haetae::runtime::{Inbound, Outcome, RecorderConfig, Runtime, RuntimeConfig};
-use haetae::sillok::{self, Keypair};
+use haetae::sillok::{self, Keypair, VerifyReport};
 use haetae::{ActionKind, Policy, Verdict, WorldSnapshot};
 use serde_json::{json, Value};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+/// Exit code of `sillok verify` / `sillok replay` for a log whose chain is
+/// intact but which is not signed through its end: empty, an unsealed
+/// tail, or a torn final line. (1 is any error, 2 a usage error.)
+const EXIT_INCOMPLETE: u8 = 3;
+
 #[derive(Parser)]
 #[command(
     name = "haetae",
     version,
-    about = "Robot safety & security stack for physical AI"
+    about = "Supervisory policy gate for AI-driven robots (non-safety-rated, pre-alpha)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -61,6 +67,9 @@ enum Command {
 #[derive(Subcommand)]
 enum SillokCommand {
     /// Check the hash chain and seals of a log.
+    ///
+    /// Exits 0 when the log is intact and complete, 3 when it is intact but
+    /// incomplete (empty, unsealed tail, or torn final line), 1 on failure.
     Verify {
         #[arg(long)]
         log: PathBuf,
@@ -68,6 +77,9 @@ enum SillokCommand {
         pubkey: String,
     },
     /// Print a human-readable timeline of a log (verifies it first).
+    ///
+    /// Exit codes as for `verify`. Text from the log is escaped before it
+    /// reaches the terminal.
     Replay {
         #[arg(long)]
         log: PathBuf,
@@ -76,16 +88,21 @@ enum SillokCommand {
     },
 }
 
-fn main() {
-    if let Err(e) = run(Cli::parse()) {
-        eprintln!("error: {e}");
-        std::process::exit(1);
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(code) => code,
+        Err(e) => {
+            // Errors can quote log or input bytes (e.g. an unknown field
+            // name, a claimed key_id), so they are escaped too.
+            eprintln!("error: {}", sanitize(&e.to_string()));
+            ExitCode::FAILURE
+        }
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::Keygen { out } => keygen(&out),
+        Command::Keygen { out } => keygen(&out).map(|()| ExitCode::SUCCESS),
         Command::Judge {
             policy,
             world,
@@ -107,14 +124,14 @@ fn run(cli: Cli) -> Result<()> {
                 recorder,
                 ..RuntimeConfig::default()
             };
-            judge(&policy, &world, &proposals, cfg)
+            judge(&policy, &world, &proposals, cfg).map(|()| ExitCode::SUCCESS)
         }
         Command::Sillok {
             command: SillokCommand::Verify { log, pubkey },
         } => {
             let report = sillok::verify(&log, &pubkey)?;
             println!("{}", serde_json::to_string_pretty(&report_json(&report))?);
-            Ok(())
+            Ok(completeness(&report))
         }
         Command::Sillok {
             command: SillokCommand::Replay { log, pubkey },
@@ -162,6 +179,10 @@ fn read_key(path: &Path) -> Result<Keypair> {
 /// untrusted claims and never move the clock, so one forged far-future line
 /// cannot make everything after it stale. Malformed lines are rejected and
 /// the run continues.
+///
+/// A recorder failure is reported on stderr as it happens, every decision
+/// is still printed, and the run then fails (exit 1) once all lines are
+/// judged: a run whose incidents were not recorded must not look clean.
 fn judge(policy: &Path, world: &Path, proposals: &Path, cfg: RuntimeConfig) -> Result<()> {
     let policy = Policy::from_json(&fs::read_to_string(policy)?)?;
     let world: WorldSnapshot = serde_json::from_str(&fs::read_to_string(world)?)?;
@@ -180,6 +201,7 @@ fn judge(policy: &Path, world: &Path, proposals: &Path, cfg: RuntimeConfig) -> R
         if line.trim().is_empty() {
             continue;
         }
+        let failures = rt.recorder_failures();
         let outcome = match Inbound::from_json(line.as_bytes()) {
             Ok(msg) => {
                 if let Inbound::World(w) = &msg {
@@ -189,6 +211,16 @@ fn judge(policy: &Path, world: &Path, proposals: &Path, cfg: RuntimeConfig) -> R
             }
             Err(_) => rt.handle_bytes(line.as_bytes(), recv_ms)?,
         };
+        if rt.recorder_failures() > failures {
+            if let Some(e) = rt.recorder_fault() {
+                eprintln!(
+                    "{}:{}: error: sillok recording failed: {}",
+                    proposals.display(),
+                    lineno + 1,
+                    sanitize(&e.to_string())
+                );
+            }
+        }
         match outcome {
             Outcome::Decision(d) => {
                 writeln!(out, "{}", serde_json::to_string(&d)?)?;
@@ -200,7 +232,12 @@ fn judge(policy: &Path, world: &Path, proposals: &Path, cfg: RuntimeConfig) -> R
             }
             Outcome::Rejected { error } => {
                 rejected += 1;
-                eprintln!("{}:{}: rejected: {error}", proposals.display(), lineno + 1);
+                eprintln!(
+                    "{}:{}: rejected: {}",
+                    proposals.display(),
+                    lineno + 1,
+                    sanitize(&error)
+                );
             }
             Outcome::WorldUpdated { .. } | Outcome::ModeChanged { .. } => {}
         }
@@ -213,35 +250,70 @@ fn judge(policy: &Path, world: &Path, proposals: &Path, cfg: RuntimeConfig) -> R
         counts[2],
         rt.incidents()
     );
+    // Fails with `RecordingIncomplete` if any recording failed.
     rt.close()?;
     Ok(())
 }
 
-fn report_json(r: &sillok::VerifyReport) -> Value {
+/// `ok` is chain integrity (always true here: a broken chain is an
+/// error); `complete` additionally requires every byte to be signed.
+fn report_json(r: &VerifyReport) -> Value {
     json!({
         "ok": true,
+        "complete": r.is_complete(),
         "fully_sealed": r.fully_sealed(),
         "entries": r.entries,
         "seals": r.seals,
         "unsealed_tail": r.unsealed_tail,
+        "torn_tail": r.torn_tail,
         "last_hash": r.last_hash,
     })
 }
 
-fn replay(log: &Path, pubkey: &str) -> Result<()> {
-    let report = sillok::verify(log, pubkey)?;
-    println!(
-        "sillok verified: {} entries, {} seals, {} unsealed",
-        report.entries, report.seals, report.unsealed_tail
-    );
-    if report.unsealed_tail > 0 {
-        println!("warning: entries marked UNSEALED are not covered by any signature");
+/// Warn on stderr about every way `r` falls short of complete, and pick
+/// the exit code: success, or [`EXIT_INCOMPLETE`].
+fn completeness(r: &VerifyReport) -> ExitCode {
+    if r.is_complete() {
+        return ExitCode::SUCCESS;
     }
+    if r.entries == 0 {
+        eprintln!("warning: the log holds no entries and no seal (the writer may have died right after creating it)");
+    } else if r.seals == 0 {
+        eprintln!("warning: the log has no seal; nothing in it is signed");
+    } else if r.unsealed_tail > 0 {
+        eprintln!(
+            "warning: {} entries after the last seal (marked UNSEALED) are not covered by any signature",
+            r.unsealed_tail
+        );
+    }
+    if r.torn_tail {
+        eprintln!("warning: the log ends in a torn, unverified partial line (an interrupted write, or truncation); it was ignored");
+    }
+    eprintln!("warning: chain intact but log INCOMPLETE (exit {EXIT_INCOMPLETE})");
+    ExitCode::from(EXIT_INCOMPLETE)
+}
+
+/// Verify and print from a single read of the log, so every printed line
+/// is one of the bytes that were verified — even if the file is replaced
+/// or rewritten meanwhile.
+fn replay(log: &Path, pubkey: &str) -> Result<ExitCode> {
+    let bytes = fs::read(log)?;
+    let report = sillok::verify_reader(&bytes[..], pubkey)?;
+    println!(
+        "sillok verified: {} entries, {} seals, {} unsealed{}",
+        report.entries,
+        report.seals,
+        report.unsealed_tail,
+        if report.torn_tail { ", torn tail" } else { "" }
+    );
+    let code = completeness(&report);
     println!();
     let sealed_through = report.entries - report.unsealed_tail;
-    for (seq, line) in BufReader::new(fs::File::open(log)?).lines().enumerate() {
-        let entry: Value = serde_json::from_str(&line?)?;
-        let mark = if seq as u64 >= sealed_through {
+    // Only the verified entries; a torn tail is marked below, never parsed.
+    let lines = bytes.split(|&b| b == b'\n');
+    for (seq, raw) in (0..report.entries).zip(lines) {
+        let entry: Value = serde_json::from_slice(raw)?;
+        let mark = if seq >= sealed_through {
             "UNSEALED "
         } else {
             ""
@@ -285,9 +357,46 @@ fn replay(log: &Path, pubkey: &str) -> Result<()> {
             "reject" => format!("reject  {}", text(&p["error"])),
             other => format!("{other} {p}"),
         };
-        println!("{mark}{ts}  {line}");
+        println!("{}", sanitize(&format!("{mark}{ts}  {line}")));
     }
-    Ok(())
+    if report.torn_tail {
+        println!("TORN     unverified partial final line (interrupted write, or truncation) — not an entry, ignored");
+    }
+    Ok(code)
+}
+
+/// Make untrusted text (from a log or an input file) safe for a terminal.
+///
+/// C0 controls except tab, DEL, C1 controls (all of Unicode `Cc`), every
+/// Unicode `Bidi_Control` character (ALM, LRM/RLM, the embedding/override
+/// and isolate controls) and the line/paragraph separators U+2028/U+2029
+/// are replaced by their `\u{..}` escapes. Escaping ESC (and the 8-bit CSI
+/// U+009B) makes every escape sequence — colours, cursor moves, OSC title
+/// or clipboard writes — inert text; escaping bidi marks keeps ids and
+/// digits from being visually reordered.
+fn sanitize(s: &str) -> String {
+    let unsafe_char = |c: char| {
+        (c.is_control() && c != '\t')
+            || matches!(
+                c,
+                '\u{061C}'
+                    | '\u{200E}'
+                    | '\u{200F}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2066}'..='\u{2069}'
+            )
+    };
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if unsafe_char(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Human-readable action, or `-` when there is none.
@@ -311,4 +420,28 @@ fn clock(ts_ms: u64) -> String {
         ms / 1000 % 60,
         ms % 1000
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize;
+
+    #[test]
+    fn sanitize_escapes_terminal_controls() {
+        assert_eq!(sanitize("a\tb → ok"), "a\tb → ok");
+        assert_eq!(sanitize("\x1b[2J"), "\\u{1b}[2J");
+        assert_eq!(sanitize("x\ny\r\x07\x7f"), "x\\u{a}y\\u{d}\\u{7}\\u{7f}");
+        assert_eq!(sanitize("\u{9b}31m"), "\\u{9b}31m");
+        assert_eq!(sanitize("\u{202e}txt"), "\\u{202e}txt");
+        for (raw, escaped) in [
+            ("\u{61c}", "\\u{61c}"),
+            ("\u{200e}", "\\u{200e}"),
+            ("\u{200f}bul", "\\u{200f}bul"),
+            ("\u{2028}", "\\u{2028}"),
+            ("\u{2029}", "\\u{2029}"),
+            ("\u{2066}", "\\u{2066}"),
+        ] {
+            assert_eq!(sanitize(raw), escaped);
+        }
+    }
 }

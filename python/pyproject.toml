@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "haetae"
 version = "0.0.1"
-description = "Robot safety & security stack for physical AI: a policy gate between untrusted models and actuators (pre-alpha)"
+description = "Supervisory policy gate for AI-driven robots: judges untrusted model commands before they reach the robot (non-safety-rated, pre-alpha)"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.9"

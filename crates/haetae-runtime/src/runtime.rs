@@ -6,11 +6,12 @@ use std::path::PathBuf;
 use haetae_core::{
     ActionKind, ActionProposal, Decision, Gate, Mode, Policy, Verdict, WorldSnapshot,
 };
-use serde_json::json;
+use serde::Serialize;
+use serde_json::Value;
 use sillok::{Keypair, Sacho};
 
 use crate::dedup::Dedup;
-use crate::inbound::Inbound;
+use crate::inbound::{Fault, Inbound};
 use crate::outcome::Outcome;
 use crate::recorder::Recorder;
 use crate::RuntimeError;
@@ -101,6 +102,32 @@ pub struct Runtime {
     recorder: Option<Recorder>,
     /// Incident triggers so far, whether or not a recorder is configured.
     incidents: usize,
+    /// Most recent recording failure; once set, never cleared.
+    recorder_fault: Option<RuntimeError>,
+    /// Steps whose recording failed.
+    recorder_failures: usize,
+}
+
+/// `"proposal"` record payload (w2-contract §5).
+#[derive(Serialize)]
+struct ProposalRecord<'a> {
+    proposal: &'a ActionProposal,
+    world: &'a Option<WorldSnapshot>,
+}
+
+/// `"fault"` record payload (w2-contract §5).
+#[derive(Serialize)]
+struct FaultRecord<'a> {
+    fault: &'a Fault,
+    mode_before: Mode,
+    mode_after: Mode,
+}
+
+/// `"reject"` record payload (w2-contract §5).
+#[derive(Serialize)]
+struct RejectRecord<'a> {
+    error: &'a str,
+    input: String,
 }
 
 impl Runtime {
@@ -139,6 +166,8 @@ impl Runtime {
             dedup: Dedup::new(cfg.dedup_capacity),
             recorder: cfg.recorder.map(Recorder::new),
             incidents: 0,
+            recorder_fault: None,
+            recorder_failures: 0,
         })
     }
 
@@ -147,14 +176,16 @@ impl Runtime {
     /// Malformed input is **not** an error: it yields [`Outcome::Rejected`]
     /// and a `"reject"` sacho record holding the parse error plus a
     /// truncated lossy preview of the input. Rejects can never create the
-    /// incident log — garbage must not force one. `Err` is reserved for
-    /// recorder failures.
+    /// incident log — garbage must not force one.
+    ///
+    /// Recording failures do not surface here either: see
+    /// [`Runtime::handle`].
     pub fn handle_bytes(&mut self, bytes: &[u8], recv_ms: u64) -> Result<Outcome, RuntimeError> {
         match Inbound::from_json(bytes) {
             Ok(msg) => self.handle(msg, recv_ms),
             Err(error) => {
                 self.reject(recv_ms, &error, bytes);
-                self.after_step(false, false)?;
+                self.after_step(false, false);
                 Ok(Outcome::Rejected { error })
             }
         }
@@ -166,16 +197,27 @@ impl Runtime {
     /// told whether the message was an incident and whether it counts
     /// toward an open post-incident window (proposals and faults count;
     /// world updates do not).
+    ///
+    /// A recording failure (log creation, append, seal, fsync, payload
+    /// serialisation) never costs the caller the outcome: the `Decision` is
+    /// still returned, and the failure is latched in
+    /// [`Runtime::recorder_fault`] and counted in
+    /// [`Runtime::recorder_failures`]. Recording keeps being attempted on
+    /// later incidents. This currently never returns `Err`; the `Result`
+    /// is kept for future failures that must stop the loop.
     pub fn handle(&mut self, msg: Inbound, recv_ms: u64) -> Result<Outcome, RuntimeError> {
         let (outcome, incident, counts) = match msg {
             Inbound::World(w) => match self.check_world(&w, recv_ms) {
                 Err(error) => {
-                    self.reject(recv_ms, &error, &serde_json::to_vec(&w)?);
+                    // Serialising a snapshot cannot fail in practice; an
+                    // empty preview beats dropping the reject record.
+                    let input = serde_json::to_vec(&w).unwrap_or_default();
+                    self.reject(recv_ms, &error, &input);
                     (Outcome::Rejected { error }, false, false)
                 }
                 Ok(()) => {
                     let stamp_ms = w.stamp_ms;
-                    self.sacho.push(recv_ms, "world", serde_json::to_value(&w)?);
+                    self.record(recv_ms, "world", serde_json::to_value(&w));
                     self.world = Some(w);
                     (Outcome::WorldUpdated { stamp_ms }, false, false)
                 }
@@ -184,29 +226,29 @@ impl Runtime {
                 let before = self.gate.mode();
                 self.gate.raise_mode(f.raise_to);
                 let after = self.gate.mode();
-                self.sacho.push(
-                    recv_ms,
-                    "fault",
-                    json!({ "fault": &f, "mode_before": before, "mode_after": after }),
-                );
+                let payload = serde_json::to_value(FaultRecord {
+                    fault: &f,
+                    mode_before: before,
+                    mode_after: after,
+                });
+                self.record(recv_ms, "fault", payload);
                 // Only a climb into stop-only is an incident.
                 let incident = after > before && after.stop_only();
                 (Outcome::ModeChanged { before, after }, incident, true)
             }
             Inbound::Proposal(p) => {
-                self.sacho.push(
-                    recv_ms,
-                    "proposal",
-                    json!({ "proposal": &p, "world": &self.world }),
-                );
+                let payload = serde_json::to_value(ProposalRecord {
+                    proposal: &p,
+                    world: &self.world,
+                });
+                self.record(recv_ms, "proposal", payload);
                 let d = self.judge(&p, recv_ms);
-                self.sacho
-                    .push(recv_ms, "decision", serde_json::to_value(&d)?);
+                self.record(recv_ms, "decision", serde_json::to_value(&d));
                 let incident = d.verdict == Verdict::Bul;
                 (Outcome::Decision(d), incident, true)
             }
         };
-        self.after_step(incident, counts)?;
+        self.after_step(incident, counts);
         Ok(outcome)
     }
 
@@ -222,13 +264,40 @@ impl Runtime {
         self.incidents
     }
 
-    /// Write the final seal, flush and fsync the incident log **if** one was
-    /// created; otherwise a no-op.
-    pub fn close(self) -> Result<(), RuntimeError> {
-        if let Some(r) = self.recorder {
-            r.close()?;
+    /// The most recent recording failure, if any step's recording ever
+    /// failed. Latched: a later successful recording does not clear it, so
+    /// a transport can report it at any point and at shutdown.
+    pub fn recorder_fault(&self) -> Option<&RuntimeError> {
+        self.recorder_fault.as_ref()
+    }
+
+    /// How many handled messages had a recording failure. Poll it after
+    /// each `handle` call to notice new failures as they happen.
+    pub fn recorder_failures(&self) -> usize {
+        self.recorder_failures
+    }
+
+    /// Write the final seal, flush and fsync the incident log **if** one is
+    /// open.
+    ///
+    /// Fails with [`RuntimeError::RecordingIncomplete`] when any recording
+    /// failed during the run — latched earlier, or the final seal itself —
+    /// even if the log was closed cleanly: a run that lost incidents must
+    /// not shut down looking clean. `failures` and `last` are then
+    /// [`Runtime::recorder_failures`] and [`Runtime::recorder_fault`].
+    pub fn close(mut self) -> Result<(), RuntimeError> {
+        if let Some(r) = self.recorder.take() {
+            if let Err(e) = r.close() {
+                self.recorder_failed(e.into());
+            }
         }
-        Ok(())
+        match self.recorder_fault.take() {
+            None => Ok(()),
+            Some(last) => Err(RuntimeError::RecordingIncomplete {
+                failures: self.recorder_failures,
+                last: Box::new(last),
+            }),
+        }
     }
 
     /// Judgement order for a proposal: stop is always allowed (needs no
@@ -286,11 +355,25 @@ impl Runtime {
     /// Record a rejected input. Every reject has the same payload shape:
     /// the error plus a truncated lossy preview of the input.
     fn reject(&mut self, recv_ms: u64, error: &str, input: &[u8]) {
-        self.sacho.push(
-            recv_ms,
-            "reject",
-            json!({ "error": error, "input": lossy_preview(input) }),
-        );
+        let payload = serde_json::to_value(RejectRecord {
+            error,
+            input: lossy_preview(input),
+        });
+        self.record(recv_ms, "reject", payload);
+    }
+
+    /// Push a record into the sacho, or latch the serialisation failure.
+    fn record(&mut self, recv_ms: u64, kind: &str, payload: serde_json::Result<Value>) {
+        match payload {
+            Ok(payload) => self.sacho.push(recv_ms, kind, payload),
+            Err(e) => self.recorder_failed(e.into()),
+        }
+    }
+
+    /// Latch and count a recording failure.
+    fn recorder_failed(&mut self, e: RuntimeError) {
+        self.recorder_failures += 1;
+        self.recorder_fault = Some(e);
     }
 
     /// A Bul for a proposal the gate never saw.
@@ -325,14 +408,16 @@ impl Runtime {
     }
 
     /// Incident bookkeeping plus the recorder hook, once per message.
-    fn after_step(&mut self, incident: bool, counts_toward_post: bool) -> Result<(), RuntimeError> {
+    /// A recorder failure is latched, never propagated.
+    fn after_step(&mut self, incident: bool, counts_toward_post: bool) {
         if incident {
             self.incidents += 1;
         }
         if let Some(r) = self.recorder.as_mut() {
-            r.after_step(incident, counts_toward_post, &mut self.sacho)?;
+            if let Err(e) = r.after_step(incident, counts_toward_post, &mut self.sacho) {
+                self.recorder_failed(e.into());
+            }
         }
-        Ok(())
     }
 }
 
