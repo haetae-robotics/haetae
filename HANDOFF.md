@@ -1,6 +1,6 @@
 # HANDOFF — haetae
 
-마지막 갱신: 2026-09-28 (PR #2, #4 머지 후, W3 시작 전)
+마지막 갱신: 2026-09-28 (PR #1~#5 머지 완료, W3 시작 전에 세션 종료)
 
 ## 다음 세션 시작하기
 
@@ -10,7 +10,9 @@
    source ~/.cargo/env && export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk && cargo test --workspace --locked
    ```
    기대값: 작업 트리 깨끗, 테스트 118개 통과. `RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets --locked`와 `cargo fmt --all -- --check`도 깨끗해야 한다.
-2. 다음 작업은 **W3** ([docs/w3-plan.md](docs/w3-plan.md))다. 시작하기 전에 사용자에게 확인한다.
+2. **사용자에게 먼저 확인할 두 가지** (지난 세션에서 다음으로 미룸):
+   - 머지된 원격 브랜치 5개를 지워도 되는지: `w1-skeleton`, `w2-runtime`, `w2-sim`, `w2-sim-small-screens`, `docs-handoff`
+   - W3 ([docs/w3-plan.md](docs/w3-plan.md))를 계획대로 시작할지
 3. 커밋 메시지 끝에 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, PR 본문 끝에 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`를 붙인다.
 4. push는 위 pull과 같은 방식으로 한다(`gh auth setup-git`은 하지 않았다). `main`에서 바로 커밋하지 않고 브랜치를 만든다.
 
@@ -18,7 +20,7 @@
 
 AI(VLA) 모델이 로봇에 내리는 명령을 **신뢰하지 않는 입력**으로 보고, 모터에 닿기 전에 통과(`yun`) / 감속(`jeol`, 속도만) / 차단(`bul`)을 판정하는 **비안전등급 감독 게이트**다. Rust 워크스페이스이고 라이선스는 Apache-2.0이다. 이름은 조선 세계관의 해태를 따왔다.
 
-## 상태 (`main` = `b5b392a`)
+## 상태 (`main`, PR #5 머지 이후)
 
 | 구성 | 상태 | 요점 |
 |---|---|---|
@@ -35,6 +37,7 @@ AI(VLA) 모델이 로봇에 내리는 명령을 **신뢰하지 않는 입력**�
   - #2 W2 런타임과 감사 대응 수정
   - #3 작은 화면 레이아웃. 서브에이전트가 무단으로 연 PR이고, fast-forward로 자동 머지 처리됐다
   - #4 시뮬레이터
+  - #5 이 HANDOFF 파일
 - **레지스트리**: 이름 선점용 0.0.1만 올라가 있다.
   - crates.io `haetae` 0.0.1
   - PyPI `haetae` 0.0.1. Trusted Publishing이라 `py-v*` 태그를 푸시하면 Actions가 게시한다
@@ -114,7 +117,7 @@ AI(VLA) 모델이 로봇에 내리는 명령을 **신뢰하지 않는 입력**�
    - 인식 어댑터, 폴리곤 몸체, 팔
    - 크레이트 공개(`publish = true`)
 3. **정리 (사용자 확인 후)**
-   - 머지된 원격 브랜치 삭제: `w1-skeleton`, `w2-runtime`, `w2-sim`, `w2-sim-small-screens`
+   - 머지된 원격 브랜치 삭제: `w1-skeleton`, `w2-runtime`, `w2-sim`, `w2-sim-small-screens`, `docs-handoff` (로컬 브랜치도 같이)
    - `publish-pypi.yml`의 액션을 v4에서 최신으로 올린다(Node 20 경고).
    - PyPI 패키지 설명이 `pyproject.toml`에서 바뀌었지만 아직 재게시하지 않았다(버전 올림 필요).
 4. **시뮬레이터 잔여**
