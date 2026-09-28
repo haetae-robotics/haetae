@@ -234,14 +234,24 @@ class Harness:
             self.until(lambda: self.node.base.speed >= 0.3)
             self.node.drop_world = True
             at = time.monotonic()
-            self.until(lambda: self.command_since(at, lambda v: v == 0.0) is not None, timeout=1)
+            # Either the Rust gate can revoke on stale world input, or the
+            # bridge can reject an already stale positive response and exit
+            # after publishing zero. Both are fail-closed outcomes.
+            self.until(lambda: self.command_since(at, lambda v: v == 0.0) is not None,
+                       timeout=1, expected_exit=True)
             self.metrics["gate_zero_ms"] = round((self.command_since(at, lambda v: v == 0.0) - at) * 1000, 1)
             self.node.drop_world = False
             restored = time.monotonic()
-            self.until(lambda: any(t >= restored for t, _ in self.node.world_events))
-            self.until(lambda: time.monotonic() - restored > 0.35)
+            self.until(lambda: any(t >= restored for t, _ in self.node.world_events),
+                       expected_exit=True)
+            self.until(lambda: time.monotonic() - restored > 0.35,
+                       expected_exit=True)
             assert all(v == 0.0 for t, v in self.node.commands if t >= restored)
             assert self.metrics["gate_zero_ms"] <= 300
+            if self.gate.poll() is not None:
+                assert self.gate.returncode == 2, "unexpected bridge exit code"
+                assert "stale actuation response: world expired" in (self.root / "gate.stderr").read_text()
+                self.metrics["bridge_fail_closed"] = True
         elif number == 6:
             self.move(0.8)
             self.until(lambda: self.node.base.speed >= 0.3)
