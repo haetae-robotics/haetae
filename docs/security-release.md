@@ -41,8 +41,9 @@ base. A compromised bridge or privileged host can still command the robot.
 
 ## Current implementation limits
 
-- The Rust core and subprocess tests run locally. The ROS 2 node has not yet
-  been exercised against Jazzy, a differential controller or an arm controller.
+- The Rust core, subprocess and signed ROS bridge smoke tests run in CI on
+  Jazzy. The reference base simulator and mock arm action server are software
+  models; neither substitutes for a differential controller or a real arm.
 - The arm check covers joint space. It does not compute 3D link geometry,
   self-collision, singularities, torque, force, payload or contact. Arm motion
   is denied when any human is present in the current world, but absence of a
@@ -50,9 +51,15 @@ base. A compromised bridge or privileged host can still command the robot.
 - Every arm chunk is at most the policy's `max_duration_ms`; the controller
   must cancel on a request and independently stop on gateway death. A generic
   `joint_trajectory_controller` action alone is not proof of this property.
-- SROS2 permissions and OS isolation have not been deployed or attacked in
-  CI. Publisher counting detects a discovered extra writer; it cannot prevent
-  a command that reaches the controller first.
+- `ros/security/haetae.policy.xml` is a reference SROS2 policy. Generating
+  signed permissions does not prove that unauthorized participants cannot
+  connect on a deployed RMW and controller graph. OS isolation is untested.
+  Publisher counting detects a discovered extra writer; it cannot prevent a
+  command that reaches the controller first.
+- EOF from the bridge now leaves the persistent `running` marker set, so a
+  restart enters Hold. The enforcement incident recorder seals each incident
+  before continuing. A crash during the append itself can still leave an
+  incomplete tail and must be handled as incomplete evidence.
 - The bridge holds all configured signing seeds in one Python process. A
   bridge compromise can forge every configured role. Use separate OS accounts
   and enclaves for the source and trusted world paths; move key operations to

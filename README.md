@@ -24,16 +24,17 @@ adds defense in depth; it does not replace that layer.
 Haetae is **not** a certified safety function and must not be the only thing
 between a model and a person. Not done yet:
 
-- **Enforcement is under development.** A Rust watchdog and an rclpy bridge now
-  emit monitored base commands and short arm action chunks, but ROS controller
-  integration and SROS2 access control have not passed end-to-end tests.
-- **2D point robot model.** Positions, paths, zones and the workspace are 2D;
-  arm geometry, reach and 3D obstacles are not modeled.
+- **Enforcement is under development.** A Rust watchdog and an rclpy bridge can
+  send monitored base commands and short arm action chunks in a local reference
+  setup. No specific robot controller or SROS2 deployment has been validated.
+- **2D disc base model.** Base paths, zones and the workspace are 2D and include
+  a configurable footprint radius. Arm geometry, reach and 3D obstacles are
+  not modeled.
 - **Arm geometry remains incomplete.** Short joint trajectories have bounds,
   rate and tracking checks, but there is no 3D link or contact model.
-- **Deployment is not authenticated yet.** Signed inputs and a signed trust
-  bundle are implemented; the ROS node still needs tested SROS2 permissions
-  and isolated keys on a target robot.
+- **The deployment boundary is not established.** Signed inputs and a signed
+  trust bundle cover the Rust subprocess. The ROS graph still needs tested
+  SROS2 permissions and isolated keys on a target robot.
 
 ## Components
 
@@ -94,5 +95,8 @@ Design contracts: [`docs/w1-contract.md`](docs/w1-contract.md) (gate, sillok),
 [`docs/w2-contract.md`](docs/w2-contract.md) (runtime).
 
 Security scope and release blockers: [`docs/security-release.md`](docs/security-release.md).
+The reference ROS base simulator and arm action test live in `ros/haetae_sim/`;
+the SROS2 policy template is `ros/security/haetae.policy.xml`. Their CI results
+measure only the simulated controller and hosted ROS setup.
 
 > Status: **pre-alpha (0.0.x)**. Not a certified safety device.

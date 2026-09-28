@@ -126,13 +126,15 @@ jobs:
     name: SROS2 permission generation
     runs-on: ubuntu-latest
     container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 79
     steps:
       - uses: actions/checkout@v7
       - name: Generate role-specific signed permissions
         shell: bash
         run: |
           apt-get update
-          apt-get install -y ros-jazzy-sros2
+          apt-get install -y ros-jazzy-sros2 ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
           source /opt/ros/jazzy/setup.bash
           store=$(mktemp -d)
           ros2 security create_keystore "$store"
@@ -141,6 +143,7 @@ jobs:
             ros2 security create_permission "$store" "$enclave" ros/security/haetae.policy.xml
             test -s "$store/enclaves$enclave/permissions.p7s"
           done
+          python3 ros/security/secure_probe.py orchestrate "$store"
 
   build-linux:
     name: Linux gate binary

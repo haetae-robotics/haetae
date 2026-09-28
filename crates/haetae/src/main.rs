@@ -220,7 +220,6 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     // An unexpected bridge death may prevent close(). Each
                     // enforcement incident must already have a durable seal.
                     cfg.post_window = 0;
-                    cfg.seal_every = 1;
                     Some(cfg)
                 }
                 _ => None,
