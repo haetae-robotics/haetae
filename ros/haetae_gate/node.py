@@ -21,7 +21,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from bridge import Bridge, BridgeFailure
+from bridge import Bridge, BridgeFailure, require_fresh_actuation
 from signing import Signer
 
 
@@ -37,7 +37,8 @@ class HaetaeGate(Node):
             "sillok_path": "", "key_path": "", "trust_path": "", "root_pubkey": "",
             "keys_json": "{}", "inputs_json": "[]", "arm_inputs_json": "[]",
             "arm_action": "/joint_trajectory_controller/follow_joint_trajectory",
-            "response_timeout_ms": 500, "tick_hz": 20.0, "output_stamped": True,
+            "response_timeout_ms": 500, "max_actuation_response_ms": 50,
+            "tick_hz": 20.0, "output_stamped": True,
         }
         for key, value in defaults.items():
             self.declare_parameter(key, value)
@@ -46,6 +47,10 @@ class HaetaeGate(Node):
         if any(not param(key) for key in required):
             raise ValueError("all policy, state, log, signing and trust paths are required")
         self.policy = json.loads(open(param("policy_path"), encoding="utf-8").read())
+        self.world_max_age_ms = int(self.policy["freshness"]["world_max_age_ms"])
+        self.max_actuation_response_ms = int(param("max_actuation_response_ms"))
+        if self.max_actuation_response_ms <= 0:
+            raise ValueError("max_actuation_response_ms must be positive")
         self.arm_joints = [j["name"] for j in self.policy.get("arm", {}).get("joints", [])]
         self.signer = Signer(param("trust_path"), param("state_path"), json.loads(param("keys_json")))
         argv = [param("haetae_bin"), "enforce", "--stdio", "--policy", param("policy_path"),
@@ -222,7 +227,16 @@ class HaetaeGate(Node):
         if self.failed:
             return
         try:
-            self._publish(callback())
+            started = time.monotonic()
+            started_ros_ms = self._now()
+            step = callback()
+            now_ros_ms = self._now()
+            elapsed_ms = (-1 if now_ros_ms < started_ros_ms else max(
+                (time.monotonic() - started) * 1000, now_ros_ms - started_ros_ms))
+            require_fresh_actuation(
+                step, elapsed_ms, now_ros_ms,
+                self.world_max_age_ms, self.max_actuation_response_ms)
+            self._publish(step)
         except InvalidProposal as exc:
             try:
                 self.get_logger().warning("Rejected malformed proposal: " + str(exc))

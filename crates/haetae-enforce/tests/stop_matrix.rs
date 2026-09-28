@@ -62,10 +62,12 @@ fn startup_rearm_and_ttl() {
     g.handle(twist(2, 1000, 0.0), 1000);
     let moving = g.handle(twist(3, 1000, 0.5), 1000);
     assert_eq!(moving.cmd.linear, 0.5);
+    assert_eq!(moving.status.active_expires_ms, Some(1200));
     assert_eq!(g.tick(1199).cmd.linear, 0.5);
     let expired = g.tick(1200);
     assert_eq!(expired.stop, Some(StopReason::Expired));
     assert_eq!(expired.cmd.linear, 0.0);
+    assert_eq!(expired.status.active_expires_ms, None);
 }
 
 #[test]

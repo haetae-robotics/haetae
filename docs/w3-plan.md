@@ -306,8 +306,9 @@ Mapping and trust:
 
 Parameters: `haetae_bin`, `policy_path`, `state_path`, `sillok_path`, `key_path`,
 `tick_hz=20`, `inputs=[{topic,source,ttl_ms}]`, `output_stamped=true`,
-`response_timeout_ms=500` for the fsynced command path. The controller's
-independent deadman must stop sooner than this bridge timeout.
+`response_timeout_ms=500`, `max_actuation_response_ms=50` for the fsynced
+command path. Late positive outputs are rejected before publication. The
+controller's independent deadman must stop sooner than the bridge timeout.
 
 Node failure rules:
 
@@ -420,6 +421,7 @@ Thursday for as many pushes as needed; Friday for the repeat run.
 | world stale | 200 ms |
 | default TTL | 200 ms (≤ `max_ttl_ms` ≤ `proposal_max_age_ms`) |
 | node response timeout | 500 ms for durable positive-command checkpoints |
+| positive actuation response | < 50 ms and before proposal/world expiry |
 | base deadman | 250 ms, about 5 missed ticks |
 
 The policy's `max_decel` and `latency_ms` must equal the real base controller's
@@ -432,7 +434,7 @@ and the contract.
 |---|---|
 | Slow CI loops: no local ROS, so every ROS check needs a push and a CI run | All logic in Rust plus pure-Python cores, all tested locally; the rclpy glue stays small; the push budget in §7 |
 | Timing flakes on shared runners | Sim time; thresholds from physics plus a margin; 5× repeat on Friday |
-| stdio hop latency or a hung child | 500 ms response timeout, then zero and exit; the independent 250 ms controller deadman stops earlier. Measure checkpoint latency on the deployment host. A native r2r node is W4. |
+| stdio hop latency or a hung child | Reject positive output after 50 ms or proposal/world expiry; 500 ms child timeout then zero and exit. The independent 250 ms controller deadman stops on missing commands. Measure checkpoint latency on the deployment host. A native r2r node is W4. |
 | Devin's unbuilt code fails to compile | Signatures fixed in the contract; no new dependencies; Claude compiles it the same day |
 | Arc sampling skips a thin zone | `Δs ≤ r/2`, sagitta inflation, a dedicated thin-zone test |
 | The re-arm rule surprises integrators whose upstream never sends zero | Documented in the contract and README; the scenario planners send one zero first; the rule fails closed |

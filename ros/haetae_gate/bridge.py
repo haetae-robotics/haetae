@@ -13,6 +13,23 @@ class BridgeFailure(RuntimeError):
     pass
 
 
+def require_fresh_actuation(step, elapsed_ms, now_ms, world_max_age_ms, max_response_ms):
+    """Reject a delayed positive result before it can reset a controller deadman."""
+    cmd = step["cmd"]
+    arm = step.get("arm")
+    actuating = cmd["linear"] != 0 or cmd["angular"] != 0 or (
+        isinstance(arm, dict) and "execute" in arm)
+    if not actuating:
+        return
+    status = step.get("status") or {}
+    expires = status.get("active_expires_ms")
+    world_age = status.get("world_age_ms")
+    if (type(expires) is not int or type(world_age) is not int
+            or elapsed_ms < 0 or elapsed_ms >= max_response_ms
+            or now_ms >= expires or world_age + elapsed_ms >= world_max_age_ms):
+        raise BridgeFailure("stale actuation response")
+
+
 class Bridge:
     def __init__(self, argv, timeout_ms=500):
         self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

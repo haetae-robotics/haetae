@@ -84,6 +84,7 @@ fn arm_chunk_requires_rearm_and_cancels_on_tracking_divergence() {
     let accepted = g.handle(chunk(3, 1000, 0.0), 1000);
     assert!(matches!(accepted.arm, Some(ArmOutput::Execute { .. })));
     assert!(accepted.stop.is_none());
+    assert_eq!(accepted.status.active_expires_ms, Some(1200));
     let changed = g.handle(Inbound::World(world(1050, 0.2, 0.0)), 1050);
     assert!(matches!(changed.arm, Some(ArmOutput::Cancel)));
     assert_eq!(changed.stop, Some(StopReason::ArmSettling));

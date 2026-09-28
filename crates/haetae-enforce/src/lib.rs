@@ -57,6 +57,7 @@ pub struct Status {
     pub stop: Option<StopReason>,
     pub armed: BTreeSet<Source>,
     pub active: Option<ActionProposal>,
+    pub active_expires_ms: Option<u64>,
     pub suppressed: u64,
     pub world_age_ms: Option<u64>,
     pub recorder_ok: bool,
@@ -537,6 +538,11 @@ impl Enforcer {
                 .as_ref()
                 .map(|a| a.proposal.clone())
                 .or_else(|| self.active_arm.as_ref().map(|a| a.proposal.clone())),
+            active_expires_ms: self
+                .active
+                .as_ref()
+                .map(|a| a.expires_ms)
+                .or_else(|| self.active_arm.as_ref().map(|a| a.expires_ms)),
             suppressed: self.suppressed,
             world_age_ms: world_age,
             recorder_ok: self.runtime.recorder_fault().is_none(),

@@ -364,7 +364,9 @@ def main():
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory() as directory:
+    shared = Path("/dev/shm")
+    with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
+                                     else None) as directory:
         root = Path(directory)
         fixture(root, args.binary)
         rclpy.init()

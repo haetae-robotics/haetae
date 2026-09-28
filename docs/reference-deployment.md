@@ -29,6 +29,9 @@ CI builds the locked Rust workspace, then runs these jobs under Jazzy with
 
 - `ROS 2 reference scenarios`: eight base scenarios, five repeats each,
   `result.json`, `trajectory.csv`, `trajectory.svg` and signed sillok logs.
+  CI uses a disposable memory-backed fixture when available, to keep hosted
+  disk scheduling out of the control timing checks. The Rust CLI test separately
+  checks a failed durable state write on the filesystem.
 - `ROS 2 arm action reference`: malformed and out-of-bounds denial, replacement,
   tracking/human cancellation and gate-death behavior against a mock controller.
 - `SROS2 permission generation`: generates signed permissions, then a VLA
@@ -91,9 +94,12 @@ Its `output_stamped` parameter defaults to `true` for `TwistStamped` on
 plain `Twist`. CI exercises both output types. The controller must accept the
 chosen type directly, without an unaudited command forwarding node.
 The reference `response_timeout_ms` is 500 ms because a positive command
-waits for a durable state checkpoint. A configured controller must
-independently stop on lost gateway heartbeat before that timeout; measure its
-actual deadline and the worst checkpoint latency on the target host.
+waits for a durable state checkpoint. `max_actuation_response_ms` defaults to
+50 ms: a positive base or arm execute result is rejected if it arrives after
+that budget, its proposal TTL, or its world freshness window. Stop and cancel
+outputs are exempt. A configured controller must independently stop on lost
+gateway heartbeat before the 500 ms fault timeout; measure its actual deadline
+and the worst checkpoint latency on the target host.
 `ros/haetae_sim/run_scenario.py` creates a disposable example. Never reuse a
 sillok path after a process restart; the log writer refuses to overwrite an
 existing log. The persistent state path is deliberately reused so an unclean

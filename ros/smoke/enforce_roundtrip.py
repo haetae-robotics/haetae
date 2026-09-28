@@ -27,7 +27,9 @@ def public(seed):
 
 
 def run(binary, output_stamped=True):
-    with tempfile.TemporaryDirectory() as directory:
+    shared = Path("/dev/shm")
+    with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
+                                     else None) as directory:
         root = Path(directory)
         policy = {
             "allowed_sources": ["vla"],

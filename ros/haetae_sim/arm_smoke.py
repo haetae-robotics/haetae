@@ -143,7 +143,9 @@ def kill_gate(gate):
 
 def main(binary):
     binary = str(Path(binary).resolve())
-    with tempfile.TemporaryDirectory() as directory:
+    shared = Path("/dev/shm")
+    with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
+                                     else None) as directory:
         root = Path(directory)
         fixture(root, binary, arm=True)
         rclpy.init()
