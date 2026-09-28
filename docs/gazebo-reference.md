@@ -39,7 +39,9 @@ The runner uses a fresh temporary state and log directory, backed by `/dev/shm`
 when available, so hosted disk scheduling does not dominate the gate's 50 ms
 actuation budget. It copies the result and diagnostic logs to `--out`, leaving
 test signing seeds out of the artifact. The runner keeps Gazebo and setup logs
-next to `result.json`. For a visual
+next to `result.json`. It verifies `sealed-snapshot.jsonl`, a completed sealed
+prefix that contains the arm cancellation; the continuously written live log
+may end with an unsealed world update. For a visual
 inspection, the generated `reference_bot.urdf` can be spawned in the Gazebo GUI
 with the same `controllers.yaml`, but the CI runner intentionally uses the
 headless server to keep its evidence reproducible.

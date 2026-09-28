@@ -168,14 +168,35 @@ def start(argv, root, name, processes, env=None):
     return process, log
 
 
-def stop(process):
+def stop(process, force=False):
     if process.poll() is None:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
         try:
             process.wait(timeout=3)
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=3)
+
+
+def sealed_incident_snapshot(log_path, snapshot_path):
+    """Verify a stable sealed prefix while the live world stream continues."""
+    entries = []
+    for line in log_path.read_text().splitlines():
+        try:
+            entries.append((line, json.loads(line)))
+        except json.JSONDecodeError:
+            break  # A concurrent append may still be writing the final line.
+    arm_incident = next((i for i, (_, row) in enumerate(entries)
+                         if row["kind"] == "revoke" and
+                         row["payload"].get("reason") == "arm:world-changed"), None)
+    if arm_incident is None:
+        return False
+    sealed = next((i for i in range(len(entries) - 1, arm_incident, -1)
+                   if entries[i][1]["kind"] == "seal"), None)
+    if sealed is None:
+        return False
+    snapshot_path.write_text("\n".join(line for line, _ in entries[:sealed + 1]) + "\n")
+    return True
 
 
 def run(root, binary):
@@ -278,7 +299,10 @@ def run(root, binary):
             raise AssertionError("arm kept moving after cancellation")
         world.human = None
 
-        report = subprocess.run([binary, "sillok", "verify", "--log", str(root / "sillok.jsonl"),
+        snapshot = root / "sealed-snapshot.jsonl"
+        wait_for(lambda: sealed_incident_snapshot(root / "sillok.jsonl", snapshot),
+                 3, processes, "sealed arm incident")
+        report = subprocess.run([binary, "sillok", "verify", "--log", str(snapshot),
                                  "--pubkey", public(9)], capture_output=True, text=True)
         if report.returncode or not json.loads(report.stdout)["fully_sealed"]:
             raise AssertionError("incident log is not fully sealed")
@@ -290,7 +314,7 @@ def run(root, binary):
         wait_for(lambda: world.speed() > 0.08, 8, processes, "second base motion",
                  action=lambda: world.propose_base(0.2))
         killed_at = time.monotonic()
-        stop(processes.pop("gate"))
+        stop(processes.pop("gate"), force=True)
         stopped_at = wait_for(lambda: abs(world.speed()) < 0.03, 3, processes,
                               "controller deadman after gate kill")
         result = {"ok": True, "controller": "Gazebo Harmonic gz_ros2_control",
@@ -300,7 +324,7 @@ def run(root, binary):
                   "arm_out_of_bounds_denied": True,
                   "arm_cancelled_at_rad": round(arm_cancel_position, 4),
                   "gate_kill_to_base_stop_ms": round((stopped_at - killed_at) * 1000, 1),
-                  "sillok_fully_sealed": True}
+                  "sillok_incident_snapshot_fully_sealed": True}
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result))
     finally:
@@ -334,7 +358,7 @@ def main():
                 output.mkdir(parents=True, exist_ok=True)
                 for name in ("result.json", "setup.log", "gazebo.log", "gate.log",
                              "clock_bridge.log", "robot_state_publisher.log",
-                             "sillok.jsonl", "reference_bot.urdf"):
+                             "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
                     source = Path(directory) / name
                     if source.exists():
                         shutil.copy2(source, output / name)

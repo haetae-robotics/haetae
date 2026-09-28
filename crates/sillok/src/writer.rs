@@ -247,6 +247,32 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
+    /// Gazebo feedback contains tiny finite floats. Parsing a written log
+    /// must recover the exact bits used to compute its hash.
+    #[test]
+    fn tiny_feedback_float_survives_write_verify() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("log.jsonl");
+        let key = Keypair::from_seed([9; 32]);
+        let public = key.verifying_key_hex();
+        let mut writer = SillokWriter::create(&path, key, 8).expect("writer");
+        writer
+            .append(
+                100,
+                "world",
+                serde_json::json!({
+                    "position": 1.0609417264943618e-18,
+                    "velocity": 7.494866779476933e-19,
+                    "yaw": 4.252223038681478e-17,
+                    "x": 51.248178375505404,
+                }),
+            )
+            .expect("append");
+        writer.close().expect("seal");
+        let report = crate::verify(&path, &public).expect("verify");
+        assert!(report.is_complete());
+    }
+
     /// A failing directory fsync must not leave an empty log behind that
     /// would make every retry fail with `AlreadyExists`.
     #[test]
