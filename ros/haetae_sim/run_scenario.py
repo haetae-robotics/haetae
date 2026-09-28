@@ -194,6 +194,8 @@ class Harness:
             moving = self.move(2.0)
             self.until(lambda: any("decision" in outcome and outcome["decision"]["verdict"] == "jeol"
                                    for _, outcome in self.node.outcomes))
+            self.until(lambda: any(t >= moving and state["stop"] in ("denied", "revoked")
+                                   for t, state in self.node.states), timeout=4)
             self.until(lambda: self.command_since(moving, lambda v: v == 0.0) is not None,
                        timeout=4)
             self.until(lambda: self.node.base.speed == 0.0, timeout=3)
@@ -314,8 +316,15 @@ class Harness:
             results.append({"path": log.name, **result})
         if not any(log.get("fully_sealed") for log in results) and self.scenario != 1:
             raise AssertionError("no sealed sillok log")
-        required = {2: ("decision", "zone:child-room"), 3: ("revoke", "person"),
-                    5: ("stop", "StaleWorld"), 6: ("stop", "Expired")}
+        if self.scenario == 2 and not any(
+            record["kind"] in ("decision", "revoke")
+            and record["payload"].get("verdict") == "bul"
+            and "zone:child-room" in record["payload"].get("fired", [])
+            for record in records
+        ):
+            raise AssertionError("missing causal bul decision/revoke: zone:child-room")
+        required = {3: ("revoke", "person"), 5: ("stop", "StaleWorld"),
+                    6: ("stop", "Expired")}
         if self.scenario in required:
             kind, value = required[self.scenario]
             if not any(record["kind"] == kind and value in json.dumps(record["payload"])

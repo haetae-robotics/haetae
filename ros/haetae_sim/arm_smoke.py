@@ -111,13 +111,17 @@ class ReferenceArm(Node):
         return FollowJointTrajectory.Result()
 
 
-def until(predicate, gate, timeout=5):
+def until(predicate, gate, timeout=5, action=None):
     deadline = time.monotonic() + timeout
+    last_action = 0.0
     while time.monotonic() < deadline:
         if gate.poll() is not None:
             raise AssertionError("gate exited early with " + str(gate.returncode))
         if predicate():
             return
+        if action is not None and time.monotonic() - last_action >= 0.1:
+            action()
+            last_action = time.monotonic()
         time.sleep(0.01)
     raise AssertionError(f"arm test timed out at line {inspect.stack()[1].lineno}")
 
@@ -158,8 +162,11 @@ def main(binary):
                 def arm_source():
                     sent = time.monotonic()
                     world.propose()
-                    until(lambda: any(t >= sent and "vla" in state["armed"]
-                                      for t, state in world.states), gate)
+                    until(lambda: world.states and world.states[-1][0] >= sent
+                          and "vla" in world.states[-1][1]["armed"]
+                          and any(t >= sent and "decision" in value
+                                  for t, value in world.outcomes),
+                          gate, action=lambda: world.propose())
 
                 def settled_after(reset_at):
                     until(lambda: any(t >= reset_at + 0.15 and not state["arm_cancelling"]
@@ -172,9 +179,12 @@ def main(binary):
                 assert not server.accepted
                 until(lambda: world.states and not world.states[-1][1]["armed"], gate)
                 arm_source()
+                bounds_at = time.monotonic()
                 world.propose((0.0, 2.0, 2.0))
-                until(lambda: any("decision" in value and value["decision"]["verdict"] == "bul"
-                                  for _, value in world.outcomes), gate)
+                until(lambda: any(t >= bounds_at and "decision" in value
+                                  and value["decision"]["verdict"] == "bul"
+                                  for t, value in world.outcomes),
+                      gate, action=lambda: world.propose((0.0, 2.0, 2.0)))
                 assert not server.accepted
                 until(lambda: world.states and not world.states[-1][1]["armed"], gate)
                 arm_source()
