@@ -304,7 +304,8 @@ Mapping and trust:
 
 Parameters: `haetae_bin`, `policy_path`, `state_path`, `sillok_path`, `key_path`,
 `tick_hz=20`, `inputs=[{topic,source,ttl_ms}]`, `output_stamped=true`,
-`response_timeout_ms=20`.
+`response_timeout_ms=500` for the fsynced command path. The controller's
+independent deadman must stop sooner than this bridge timeout.
 
 Node failure rules:
 

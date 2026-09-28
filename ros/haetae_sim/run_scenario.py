@@ -77,7 +77,7 @@ def fixture(root, binary, arm=False):
                                  for name in ("world", "fault", "vla")}),
         "inputs_json": json.dumps([{"topic": "/vla/cmd_vel", "source": "vla", "ttl_ms": 200}]),
         "arm_inputs_json": json.dumps([{"topic": "/vla/arm", "source": "vla"}]) if arm else "[]",
-        "response_timeout_ms": 150,
+        "response_timeout_ms": 500,
     }}}
     (root / "params.yaml").write_text(json.dumps(params))
 

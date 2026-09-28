@@ -14,7 +14,7 @@ class BridgeFailure(RuntimeError):
 
 
 class Bridge:
-    def __init__(self, argv, timeout_ms=20):
+    def __init__(self, argv, timeout_ms=500):
         self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL, bufsize=0)
         self.timeout = timeout_ms / 1000.0

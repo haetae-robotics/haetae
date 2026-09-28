@@ -37,7 +37,7 @@ class HaetaeGate(Node):
             "sillok_path": "", "key_path": "", "trust_path": "", "root_pubkey": "",
             "keys_json": "{}", "inputs_json": "[]", "arm_inputs_json": "[]",
             "arm_action": "/joint_trajectory_controller/follow_joint_trajectory",
-            "response_timeout_ms": 20, "tick_hz": 20.0, "output_stamped": True,
+            "response_timeout_ms": 500, "tick_hz": 20.0, "output_stamped": True,
         }
         for key, value in defaults.items():
             self.declare_parameter(key, value)

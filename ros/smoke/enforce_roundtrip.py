@@ -63,7 +63,7 @@ def run(binary, output_stamped=True):
             "root_pubkey": public(1),
             "keys_json": json.dumps({name: str(root / (name + ".key")) for name in ("world", "fault", "vla")}),
             "inputs_json": json.dumps([{"topic": "/vla/cmd_vel", "source": "vla", "ttl_ms": 200}]),
-            "response_timeout_ms": 100,
+            "response_timeout_ms": 500,
             "output_stamped": output_stamped,
         }}}
         (root / "params.yaml").write_text(json.dumps(params))

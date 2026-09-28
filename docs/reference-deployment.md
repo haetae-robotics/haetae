@@ -90,6 +90,10 @@ Its `output_stamped` parameter defaults to `true` for `TwistStamped` on
 `/cmd_vel`; set it to `false` only when the selected base controller expects
 plain `Twist`. CI exercises both output types. The controller must accept the
 chosen type directly, without an unaudited command forwarding node.
+The reference `response_timeout_ms` is 500 ms because a positive command
+waits for a durable state checkpoint. A configured controller must
+independently stop on lost gateway heartbeat before that timeout; measure its
+actual deadline and the worst checkpoint latency on the target host.
 `ros/haetae_sim/run_scenario.py` creates a disposable example. Never reuse a
 sillok path after a process restart; the log writer refuses to overwrite an
 existing log. The persistent state path is deliberately reused so an unclean
