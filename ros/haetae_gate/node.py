@@ -61,18 +61,18 @@ class HaetaeGate(Node):
         best_effort = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(String, "~/world", self._world, best_effort)
         self.create_subscription(String, "~/fault", self._fault, reliable)
-        self.subscriptions = []
+        self._input_subscriptions = []
         for item in json.loads(param("inputs_json")):
             topic, role, ttl = item["topic"], item["source"], int(item["ttl_ms"])
             if role not in self.seq or role not in self.signer.keys or ttl <= 0:
                 raise ValueError("invalid base input binding")
-            self.subscriptions.append(self.create_subscription(
+            self._input_subscriptions.append(self.create_subscription(
                 TwistStamped, topic, lambda msg, role=role, ttl=ttl: self._twist(msg, role, ttl), reliable))
         for item in json.loads(param("arm_inputs_json")):
             topic, role = item["topic"], item["source"]
             if role not in self.seq or role not in self.signer.keys or not self.arm_joints:
                 raise ValueError("invalid arm input binding")
-            self.subscriptions.append(self.create_subscription(
+            self._input_subscriptions.append(self.create_subscription(
                 JointTrajectory, topic, lambda msg, role=role: self._arm(msg, role), reliable))
         hz = float(param("tick_hz"))
         if hz <= 0 or hz > 100:

@@ -108,7 +108,7 @@ jobs:
           apt-get update
           apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
           source /opt/ros/jazzy/setup.bash
-          PYTHONPATH=ros/haetae_gate python3 -c 'import node; import bridge; import signing'
+          PYTHONPATH=ros/haetae_gate:$PYTHONPATH python3 -c 'import node; import bridge; import signing'
 
   gate-python:
     name: ROS bridge and signing core
