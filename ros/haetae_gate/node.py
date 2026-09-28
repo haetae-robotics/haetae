@@ -12,6 +12,7 @@ import sys
 import time
 
 import rclpy
+from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import TwistStamped
 from rclpy.action import ActionClient
@@ -61,6 +62,9 @@ class HaetaeGate(Node):
         self.arm_client = ActionClient(self, FollowJointTrajectory, param("arm_action"))
         self.arm_goal = None
         self.arm_goal_future = None
+        self.arm_result_future = None
+        self.arm_cancel_future = None
+        self.arm_cancel_deadline = None
         self.cancel_requested = False
         self.failed = False
         self.abort_deadline = None
@@ -117,6 +121,8 @@ class HaetaeGate(Node):
                 self.decision_pub.publish(String(data=json.dumps(step["outcome"]["decision"])))
 
     def _execute_arm(self, points):
+        if self.arm_goal_future is not None or self.arm_goal is not None:
+            raise BridgeFailure("previous arm goal has not completed")
         if not self.arm_joints or not self.arm_client.wait_for_server(timeout_sec=0.0):
             raise BridgeFailure("arm controller unavailable")
         goal = FollowJointTrajectory.Goal()
@@ -136,17 +142,44 @@ class HaetaeGate(Node):
     def _on_arm_goal(self, future):
         try:
             self.arm_goal = future.result()
+            self.arm_goal_future = None
             if not self.arm_goal.accepted:
                 raise BridgeFailure("arm goal rejected")
+            self.arm_result_future = self.arm_goal.get_result_async()
+            self.arm_result_future.add_done_callback(self._on_arm_result)
             if self.cancel_requested:
-                self.arm_goal.cancel_goal_async()
+                self._cancel_arm()
+        except Exception as exc:
+            self._abort(exc)
+
+    def _on_arm_result(self, future):
+        try:
+            status = future.result().status
+            if self.cancel_requested and status != GoalStatus.STATUS_CANCELED:
+                raise BridgeFailure("arm did not report a cancelled result")
+            if not self.cancel_requested and status != GoalStatus.STATUS_SUCCEEDED:
+                raise BridgeFailure("arm goal did not succeed")
+            self.arm_goal = None
+            self.arm_result_future = None
+            self.arm_cancel_deadline = None
+        except Exception as exc:
+            self._abort(exc)
+
+    def _on_arm_cancel(self, future):
+        try:
+            response = future.result()
+            self.arm_cancel_future = None
+            if not response.goals_canceling and self.arm_goal is not None:
+                raise BridgeFailure("arm controller rejected cancellation")
         except Exception as exc:
             self._abort(exc)
 
     def _cancel_arm(self):
         self.cancel_requested = True
-        if self.arm_goal is not None:
-            self.arm_goal.cancel_goal_async()
+        if self.arm_goal is not None and self.arm_cancel_future is None:
+            self.arm_cancel_deadline = time.monotonic() + 0.25
+            self.arm_cancel_future = self.arm_goal.cancel_goal_async()
+            self.arm_cancel_future.add_done_callback(self._on_arm_cancel)
 
     def _abort(self, exc):
         if self.failed:
@@ -240,6 +273,8 @@ class HaetaeGate(Node):
 
     def _tick(self):
         def request():
+            if self.arm_cancel_deadline is not None and time.monotonic() > self.arm_cancel_deadline:
+                raise BridgeFailure("arm cancellation did not complete in 250 ms")
             if self.count_publishers("/cmd_vel") > 1:
                 return self._send("fault", {"code": "rogue-cmd-vel-publisher", "timestamp_ms": self._now(), "raise_to": "hold"})
             return self.bridge.request({"k": "tick", "t": self._now()})

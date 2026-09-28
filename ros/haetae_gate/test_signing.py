@@ -16,6 +16,7 @@ class SigningTests(unittest.TestCase):
             private = Ed25519PrivateKey.from_private_bytes(bytes([7]) * 32)
             public = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
             (directory / "seed").write_text((bytes([7]) * 32).hex())
+            (directory / "seed").chmod(0o600)
             (directory / "trust").write_text(json.dumps({"body": json.dumps({
                 "v": 1, "audience": "robot-7", "epoch": 42, "keys": {"vla": public}}),
                 "signature": "unused-by-signer"}))
@@ -27,6 +28,9 @@ class SigningTests(unittest.TestCase):
             (directory / "state").write_text(json.dumps({"auth_epoch": 42, "counters": {"vla": 9}}))
             signer = Signer(directory / "trust", directory / "state", {"vla": str(directory / "seed")})
             self.assertEqual(signer.sign("vla", "{}")["counter"], 10)
+            (directory / "seed").chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "owner-only"):
+                Signer(directory / "trust", directory / "state", {"vla": str(directory / "seed")})
 
 
 if __name__ == "__main__":

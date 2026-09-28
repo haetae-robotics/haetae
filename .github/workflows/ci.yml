@@ -128,13 +128,14 @@ jobs:
     container: ros:jazzy
     env:
       ROS_DOMAIN_ID: 79
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
     steps:
       - uses: actions/checkout@v7
       - name: Generate role-specific signed permissions
         shell: bash
         run: |
           apt-get update
-          apt-get install -y ros-jazzy-sros2 ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
+          apt-get install -y ros-jazzy-sros2 ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
           source /opt/ros/jazzy/setup.bash
           store=$(mktemp -d)
           ros2 security create_keystore "$store"
@@ -165,6 +166,7 @@ jobs:
     container: ros:jazzy
     env:
       ROS_DOMAIN_ID: 76
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
@@ -175,7 +177,7 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
           python3 ros/smoke/enforce_roundtrip.py bin/haetae
@@ -187,6 +189,7 @@ jobs:
     container: ros:jazzy
     env:
       ROS_DOMAIN_ID: 77
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
@@ -197,7 +200,7 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
           python3 -m unittest discover -s ros/haetae_sim -p 'test_*.py' -v
@@ -206,6 +209,7 @@ jobs:
               python3 ros/haetae_sim/run_scenario.py bin/haetae "$scenario" --repeat "$repeat" --out "artifacts/ros-e2e/$scenario-$repeat"
             done
           done
+          python3 ros/haetae_sim/summarize.py artifacts/ros-e2e >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -220,6 +224,7 @@ jobs:
     container: ros:jazzy
     env:
       ROS_DOMAIN_ID: 78
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
@@ -230,7 +235,7 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
           python3 ros/haetae_sim/arm_smoke.py bin/haetae

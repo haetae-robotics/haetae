@@ -6,6 +6,7 @@ publish world/fault messages. Requires ``cryptography``.
 """
 
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -35,7 +36,10 @@ class Signer:
         for role, path in key_paths.items():
             if role not in ROLE_TAG:
                 raise ValueError("unknown signing role: " + role)
-            seed = bytes.fromhex(Path(path).read_text().strip())
+            seed_path = Path(path)
+            if os.name == "posix" and seed_path.stat().st_mode & 0o077:
+                raise ValueError("signing seed must be owner-only: " + role)
+            seed = bytes.fromhex(seed_path.read_text().strip())
             if len(seed) != 32:
                 raise ValueError("signing seed must be 32 bytes")
             key = Ed25519PrivateKey.from_private_bytes(seed)
