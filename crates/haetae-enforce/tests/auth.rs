@@ -124,3 +124,43 @@ fn restored_counter_rejects_old_input_and_epoch_rollback() {
         .is_err());
     assert!(v.restore(43, BTreeMap::new()).is_err());
 }
+
+#[test]
+fn root_signed_key_rotation_accepts_new_epoch_and_rejects_old_key() {
+    let (dir, root, old_seed, root_seed) = setup();
+    let path = dir.path().join("trust.json");
+    let old_bundle: haetae_enforce::auth::SignedBundle =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut body: TrustBody = serde_json::from_str(&old_bundle.body).unwrap();
+    body.epoch = 43;
+    let new_seed = hex::encode([5u8; 32]);
+    body.keys.insert(
+        Role::Vla,
+        hex::encode(
+            SigningKey::from_bytes(&[5u8; 32])
+                .verifying_key()
+                .to_bytes(),
+        ),
+    );
+    let rotated = sign_bundle(&serde_json::to_string(&body).unwrap(), &root_seed).unwrap();
+    fs::write(&path, serde_json::to_vec(&rotated).unwrap()).unwrap();
+    let mut verifier = AuthVerifier::load(&path, &root, b"policy bytes").unwrap();
+    verifier
+        .restore(42, BTreeMap::from([(Role::Vla, 11)]))
+        .unwrap();
+    let payload = r#"{"id":9,"source":"vla","timestamp_ms":1000,"action":{"type":"stop"}}"#;
+    let mut old = signed(&old_seed, 12, Role::Vla, payload);
+    old.epoch = 43;
+    let old = sign_input(old, &old_seed).unwrap();
+    assert!(verifier.verify(&serde_json::to_vec(&old).unwrap()).is_err());
+    let mut next = signed(&new_seed, 1, Role::Vla, payload);
+    next.epoch = 43;
+    let next = sign_input(next, &new_seed).unwrap();
+    assert!(matches!(
+        verifier.verify(&serde_json::to_vec(&next).unwrap()),
+        Ok(Inbound::Proposal(_))
+    ));
+    fs::write(&path, serde_json::to_vec(&old_bundle).unwrap()).unwrap();
+    let mut rolled_back = AuthVerifier::load(&path, &root, b"policy bytes").unwrap();
+    assert!(rolled_back.restore(43, BTreeMap::new()).is_err());
+}

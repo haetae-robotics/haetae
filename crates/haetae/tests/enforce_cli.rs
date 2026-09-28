@@ -169,4 +169,31 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
     let state: serde_json::Value =
         serde_json::from_slice(&fs::read(path("state.json")).unwrap()).unwrap();
     assert_eq!(state["running"], true);
+    assert!(Command::new(binary)
+        .args([
+            "state",
+            "set",
+            "--state",
+            path("state.json").to_str().unwrap(),
+            "--mode",
+            "normal",
+            "--by",
+            "test",
+            "--reason",
+            "offline replay check"
+        ])
+        .status()
+        .unwrap()
+        .success());
+    let mut child = spawn("log3.jsonl");
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let replay_after_reset = exchange(&mut input, &mut output, 1100, "signed", &motion);
+    assert_eq!(replay_after_reset["cmd"]["linear"], 0.0);
+    assert!(replay_after_reset["outcome"]["rejected"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("replayed"));
+    drop(input);
+    assert!(!child.wait().unwrap().success());
 }

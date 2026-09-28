@@ -218,6 +218,7 @@ class Harness:
             assert zero >= first
         elif number == 4:
             self.move(0.8)
+            self.until(lambda: self.node.base.speed >= 0.3)
             at = time.monotonic()
             self.node.fault("hold")
             self.until(lambda: self.node.states and self.node.states[-1][1]["mode"] == "hold")
@@ -228,6 +229,7 @@ class Harness:
             assert all(v == 0.0 for _, v in self.node.commands[before:])
         elif number == 5:
             self.move(0.8)
+            self.until(lambda: self.node.base.speed >= 0.3)
             self.node.drop_world = True
             at = time.monotonic()
             self.until(lambda: self.command_since(at, lambda v: v == 0.0) is not None, timeout=1)
@@ -240,6 +242,7 @@ class Harness:
             assert self.metrics["gate_zero_ms"] <= 300
         elif number == 6:
             self.move(0.8)
+            self.until(lambda: self.node.base.speed >= 0.3)
             self.stream = None
             at = self.last_proposal
             self.until(lambda: self.command_since(at, lambda v: v == 0.0) is not None, timeout=1)
@@ -278,6 +281,7 @@ class Harness:
             self.metrics["child_kill_zero_ms"] = round((zero - at) * 1000, 1)
         elif number == 8:
             self.move(0.5)
+            self.until(lambda: self.node.base.speed >= 0.3)
             self.node.fault("estop")
             self.until(lambda: self.node.states and self.node.states[-1][1]["mode"] == "estop")
             self.stop(force=True)
