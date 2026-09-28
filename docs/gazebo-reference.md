@@ -35,8 +35,11 @@ python3 ros/gazebo/run_reference.py target/release/haetae --out /tmp/haetae-gaze
 cat /tmp/haetae-gazebo-run/result.json
 ```
 
-Use a fresh output directory for each run: `sillok` will not overwrite an old
-log. The runner keeps Gazebo and setup logs next to `result.json`. For a visual
+The runner uses a fresh temporary state and log directory, backed by `/dev/shm`
+when available, so hosted disk scheduling does not dominate the gate's 50 ms
+actuation budget. It copies the result and diagnostic logs to `--out`, leaving
+test signing seeds out of the artifact. The runner keeps Gazebo and setup logs
+next to `result.json`. For a visual
 inspection, the generated `reference_bot.urdf` can be spawned in the Gazebo GUI
 with the same `controllers.yaml`, but the CI runner intentionally uses the
 headless server to keep its evidence reproducible.

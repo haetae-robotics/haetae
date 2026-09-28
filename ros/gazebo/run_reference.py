@@ -11,6 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -322,13 +323,21 @@ def main():
     parser.add_argument("--out", type=Path, help="directory for logs and result.json")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
-    if args.out:
-        run(args.out.resolve(), binary)
-    else:
-        shared = Path("/dev/shm")
-        with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
-                                         else None) as directory:
+    shared = Path("/dev/shm")
+    with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
+                                     else None) as directory:
+        try:
             run(Path(directory), binary)
+        finally:
+            if args.out:
+                output = args.out.resolve()
+                output.mkdir(parents=True, exist_ok=True)
+                for name in ("result.json", "setup.log", "gazebo.log", "gate.log",
+                             "clock_bridge.log", "robot_state_publisher.log",
+                             "sillok.jsonl", "reference_bot.urdf"):
+                    source = Path(directory) / name
+                    if source.exists():
+                        shutil.copy2(source, output / name)
 
 
 if __name__ == "__main__":
