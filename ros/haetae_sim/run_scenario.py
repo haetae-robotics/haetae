@@ -191,11 +191,11 @@ class Harness:
             assert all(v > 0 for t, v in self.node.commands if t >= at), "happy path stopped"
             self.metrics["goal_x"] = self.node.base.x
         elif number == 2:
-            self.move(2.0)
+            moving = self.move(2.0)
             self.until(lambda: any("decision" in outcome and outcome["decision"]["verdict"] == "jeol"
                                    for _, outcome in self.node.outcomes))
-            self.until(lambda: any(status["stop"] == "revoked"
-                                   for _, status in self.node.states), timeout=4)
+            self.until(lambda: self.command_since(moving, lambda v: v == 0.0) is not None,
+                       timeout=4)
             self.until(lambda: self.node.base.speed == 0.0, timeout=3)
             assert not any(row["zone_entry"] for row in self.node.trace), "base entered exclusion zone"
             self.metrics["max_command"] = max(v for _, v in self.node.commands)
@@ -294,6 +294,7 @@ class Harness:
 
     def verify_log(self):
         results = []
+        records = []
         for log in self.log_paths:
             if not log.exists():
                 results.append({"path": log.name, "present": False})
@@ -305,9 +306,17 @@ class Harness:
             result = json.loads(report.stdout)
             if not result["fully_sealed"]:
                 raise AssertionError("sillok is not fully sealed: " + report.stdout)
+            records.extend(json.loads(line) for line in log.read_text().splitlines())
             results.append({"path": log.name, **result})
         if not any(log.get("fully_sealed") for log in results) and self.scenario != 1:
             raise AssertionError("no sealed sillok log")
+        required = {2: ("revoke", "zone:child-room"), 3: ("revoke", "person"),
+                    5: ("stop", "StaleWorld"), 6: ("stop", "Expired")}
+        if self.scenario in required:
+            kind, value = required[self.scenario]
+            if not any(record["kind"] == kind and value in json.dumps(record["payload"])
+                       for record in records):
+                raise AssertionError(f"missing causal {kind} record: {value}")
         return results
 
 

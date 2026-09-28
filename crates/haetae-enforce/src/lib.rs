@@ -469,11 +469,25 @@ impl Enforcer {
         {
             Some(StopReason::Expired)
         } else if self.active.is_none() && self.active_arm.is_none() {
-            Some(if self.ever_armed {
-                StopReason::NoCommand
-            } else {
-                StopReason::Startup
-            })
+            Some(
+                if self.armed.is_empty()
+                    && matches!(
+                        self.last_stop.as_ref(),
+                        Some(
+                            StopReason::Denied
+                                | StopReason::Revoked
+                                | StopReason::Unarmed
+                                | StopReason::StaleWorld
+                        )
+                    )
+                {
+                    self.last_stop.clone().expect("matched a stop reason")
+                } else if self.ever_armed {
+                    StopReason::NoCommand
+                } else {
+                    StopReason::Startup
+                },
+            )
         } else {
             None
         };

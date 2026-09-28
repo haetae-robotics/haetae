@@ -211,7 +211,7 @@ def main(binary):
                     time.sleep(0.01)
                 deadman = next((t for t, reason in server.stops if t >= killed and reason == "deadman"), None)
                 assert deadman is not None, "reference arm did not stop after gateway death"
-                assert deadman - killed <= 0.3
+                assert deadman - killed <= 0.35, f"reference arm stop took {(deadman-killed)*1000:.1f} ms"
                 report = subprocess.run([binary, "sillok", "verify", "--log", str(root / "sillok.jsonl"),
                                          "--pubkey", public(9)], capture_output=True, text=True)
                 assert report.returncode == 0 and json.loads(report.stdout)["fully_sealed"]

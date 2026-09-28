@@ -95,6 +95,7 @@ Design contracts: [`docs/w1-contract.md`](docs/w1-contract.md) (gate, sillok),
 [`docs/w2-contract.md`](docs/w2-contract.md) (runtime).
 
 Security scope and release blockers: [`docs/security-release.md`](docs/security-release.md).
+Reference setup and test commands: [`docs/reference-deployment.md`](docs/reference-deployment.md).
 The reference ROS base simulator and arm action test live in `ros/haetae_sim/`;
 the SROS2 policy template is `ros/security/haetae.policy.xml`. Their CI results
 measure only the simulated controller and hosted ROS setup.

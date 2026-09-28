@@ -84,10 +84,16 @@ fn new_person_revokes_and_requires_a_new_zero() {
     assert_eq!(stopped.stop, Some(StopReason::Revoked));
     assert!(stopped.publish_now);
     assert_eq!(stopped.cmd.linear, 0.0);
+    assert_eq!(g.tick(1060).stop, Some(StopReason::Revoked));
     g.handle(Inbound::World(world(1100)), 1100);
     assert_eq!(
         g.handle(twist(3, 1100, 0.5), 1100).stop,
         Some(StopReason::Unarmed)
+    );
+    assert_eq!(g.tick(1110).stop, Some(StopReason::Unarmed));
+    assert_eq!(
+        g.handle(twist(4, 1110, 0.0), 1110).stop,
+        Some(StopReason::NoCommand)
     );
 }
 
