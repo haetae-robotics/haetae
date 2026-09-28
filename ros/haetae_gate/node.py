@@ -21,7 +21,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from bridge import Bridge, BridgeFailure, require_fresh_actuation
+from bridge import Bridge, BridgeFailure, StaleActuation, require_fresh_actuation
 from signing import Signer
 
 
@@ -196,6 +196,15 @@ class HaetaeGate(Node):
             self._cancel_arm()
         except Exception as cancel_exc:
             self.get_logger().error("Arm cancel request failed: " + str(cancel_exc))
+        if isinstance(exc, StaleActuation):
+            try:
+                self.bridge.request({"k": "reject", "t": self._now(), "reason": str(exc)})
+                # A response is flushed before its zero-command log commit.
+                # The next response proves the reject was sealed before kill.
+                self.bridge.request({"k": "tick", "t": self._now()})
+            except Exception as record_exc:
+                self.get_logger().error("Stale actuation incident could not be sealed: "
+                                        + str(record_exc))
         try:
             self.bridge.close()
         except Exception as close_exc:

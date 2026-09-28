@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use haetae_enforce::auth::{sign_bundle, sign_input, Role, SignedInput, TrustBody};
 use sha2::{Digest, Sha256};
@@ -238,16 +240,32 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
         "signed",
         &signed(Role::Vla, 3, fresh_zero, [4; 32]),
     );
+    let checkpointed = (0..100).any(|_| {
+        let persisted = fs::read(path("state.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|state| state["counters"]["vla"].as_u64() == Some(3));
+        if !persisted {
+            thread::sleep(Duration::from_millis(10));
+        }
+        persisted
+    });
+    assert!(checkpointed, "zero-command checkpoint did not complete");
+    assert!(child.try_wait().unwrap().is_none());
     let moved_dir = dir.path().with_extension("checkpoint-unavailable");
     fs::rename(dir.path(), &moved_dir).unwrap();
     let fresh_move = serde_json::json!({"id":4,"source":"vla","timestamp_ms":1200,"action":{"type":"velocity","linear":0.5,"angular":0.0,"ttl_ms":200}});
-    writeln!(
-        input,
-        "{}",
-        serde_json::json!({"t":1200,"k":"signed","data":signed(Role::Vla, 4, fresh_move, [4; 32])})
-    )
-    .unwrap();
-    input.flush().unwrap();
+    let send_result = (|| -> std::io::Result<()> {
+        writeln!(
+            input,
+            "{}",
+            serde_json::json!({"t":1200,"k":"signed","data":signed(Role::Vla, 4, fresh_move, [4; 32])})
+        )?;
+        input.flush()
+    })();
+    if let Err(error) = send_result {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    }
     let mut leaked_command = String::new();
     let read = output.read_line(&mut leaked_command).unwrap();
     let failed = !child.wait().unwrap().success();

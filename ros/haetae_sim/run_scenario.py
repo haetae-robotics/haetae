@@ -323,13 +323,23 @@ class Harness:
             for record in records
         ):
             raise AssertionError("missing causal bul decision/revoke: zone:child-room")
-        required = {3: ("revoke", "person"), 5: ("stop", "StaleWorld"),
-                    6: ("stop", "Expired")}
+        required = {3: ("revoke", "person")}
         if self.scenario in required:
             kind, value = required[self.scenario]
             if not any(record["kind"] == kind and value in json.dumps(record["payload"])
                        for record in records):
                 raise AssertionError(f"missing causal {kind} record: {value}")
+        for scenario, rust_reason, bridge_reason in (
+            (5, "StaleWorld", "stale actuation response: world expired"),
+            (6, "Expired", "stale actuation response: proposal expired"),
+        ):
+            if self.scenario == scenario and not any(
+                (record["kind"] == "stop" and record["payload"].get("reason") == rust_reason)
+                or (record["kind"] == "reject" and
+                    record["payload"].get("error") == bridge_reason)
+                for record in records
+            ):
+                raise AssertionError(f"missing sealed causal stop: {rust_reason}/{bridge_reason}")
         return results
 
 

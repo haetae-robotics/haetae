@@ -13,6 +13,10 @@ class BridgeFailure(RuntimeError):
     pass
 
 
+class StaleActuation(BridgeFailure):
+    pass
+
+
 def require_fresh_actuation(step, elapsed_ms, now_ms, world_max_age_ms, max_response_ms):
     """Reject a delayed positive result before it can reset a controller deadman."""
     cmd = step["cmd"]
@@ -24,10 +28,17 @@ def require_fresh_actuation(step, elapsed_ms, now_ms, world_max_age_ms, max_resp
     status = step.get("status") or {}
     expires = status.get("active_expires_ms")
     world_age = status.get("world_age_ms")
-    if (type(expires) is not int or type(world_age) is not int
-            or elapsed_ms < 0 or elapsed_ms >= max_response_ms
-            or now_ms >= expires or world_age + elapsed_ms >= world_max_age_ms):
-        raise BridgeFailure("stale actuation response")
+    if type(expires) is not int or type(world_age) is not int:
+        raise StaleActuation("stale actuation response: missing expiry or world age")
+    if elapsed_ms < 0:
+        raise StaleActuation("stale actuation response: ROS clock moved backwards")
+    if now_ms >= expires:
+        raise StaleActuation("stale actuation response: proposal expired")
+    if world_age + elapsed_ms >= world_max_age_ms:
+        raise StaleActuation("stale actuation response: world expired")
+    if elapsed_ms >= max_response_ms:
+        raise StaleActuation(
+            f"stale actuation response: elapsed {elapsed_ms:.1f} ms >= {max_response_ms} ms")
 
 
 class Bridge:

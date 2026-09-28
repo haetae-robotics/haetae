@@ -36,7 +36,7 @@ base. A compromised bridge or privileged host can still command the robot.
 | Replayed signed message | Per-role monotonic counter and persisted epoch/checkpoint | Crash/restart/replay tests across operator reset and key rotation |
 | Policy or trust file changed | Root-signed trust bundle binds exact policy bytes | Provisioning and rollback test on target host |
 | Gateway dies or its response stalls | ROS bridge publishes zero on failure; base deadman is required | Kill -9 tests for bridge and Rust child against configured controllers |
-| Durable checkpoint delays a positive response | Bridge rejects late actuation by response age, proposal expiry and world age; it publishes zero and exits | Measure worst state fsync on target host; test delayed positive base/arm outputs against controller deadman |
+| Durable checkpoint delays a positive response | Bridge rejects late actuation by response age, proposal expiry and world age; it publishes zero, asks the live Rust child to seal an incident, then exits | Measure worst state fsync on target host; test delayed positive base/arm outputs against controller deadman |
 | Rogue direct `/cmd_vel` publisher | ROS graph count raises Hold after discovery | SROS2 permissions must prevent the publisher from connecting |
 | Privileged host compromise, key theft, bad perception, unsafe physics | **Not prevented** | Separate host hardening, key protection, sensor validation and certified safety layer |
 
