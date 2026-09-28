@@ -339,6 +339,7 @@ def main():
         error = None
         try:
             harness.run()
+            harness.stop()
             log = harness.verify_log()
         except Exception as exc:
             error = str(exc)

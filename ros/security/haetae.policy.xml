@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Reference ROS 2 Jazzy graph. Generate signed permissions with sros2 and
+     verify the effective DDS permissions on every deployment. Never share the
+     gate enclave or its key files with a model process. -->
+<policy version="0.2.0">
+  <enclaves>
+    <enclave path="/haetae/gate">
+      <profiles>
+        <profile ns="/" node="haetae_gate">
+          <topics publish="ALLOW">
+            <topic>/cmd_vel</topic>
+            <topic>/haetae_gate/state</topic>
+            <topic>/haetae_gate/outcome</topic>
+            <topic>/haetae_gate/decision</topic>
+            <topic>rosout</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/haetae_gate/world</topic>
+            <topic>/haetae_gate/fault</topic>
+            <topic>/vla/cmd_vel</topic>
+            <topic>/vla/arm</topic>
+            <topic>/clock</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <actions call="ALLOW">
+            <action>/joint_trajectory_controller/follow_joint_trajectory</action>
+          </actions>
+          <services request="ALLOW" reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+          </services>
+        </profile>
+      </profiles>
+    </enclave>
+    <enclave path="/haetae/world">
+      <profiles>
+        <profile ns="/" node="world_source">
+          <topics publish="ALLOW">
+            <topic>/haetae_gate/world</topic>
+            <topic>/haetae_gate/fault</topic>
+            <topic>rosout</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/clock</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <services request="ALLOW" reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+          </services>
+        </profile>
+      </profiles>
+    </enclave>
+    <enclave path="/haetae/vla">
+      <profiles>
+        <profile ns="/" node="vla_source">
+          <topics publish="ALLOW">
+            <topic>/vla/cmd_vel</topic>
+            <topic>/vla/arm</topic>
+            <topic>rosout</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/clock</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <services request="ALLOW" reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+          </services>
+        </profile>
+      </profiles>
+    </enclave>
+    <enclave path="/haetae/controller">
+      <profiles>
+        <profile ns="/" node="joint_trajectory_controller">
+          <topics publish="ALLOW">
+            <topic>rosout</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/cmd_vel</topic>
+            <topic>/clock</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <actions execute="ALLOW">
+            <action>/joint_trajectory_controller/follow_joint_trajectory</action>
+          </actions>
+          <services request="ALLOW" reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+          </services>
+        </profile>
+      </profiles>
+    </enclave>
+  </enclaves>
+</policy>

@@ -120,6 +120,27 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install cryptography
       - run: python -m unittest discover -s ros/haetae_gate -p 'test_*.py' -v
+      - run: python -m unittest discover -s ros/security -p 'test_*.py' -v
+
+  sros-policy:
+    name: SROS2 permission generation
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    steps:
+      - uses: actions/checkout@v7
+      - name: Generate role-specific signed permissions
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-sros2
+          source /opt/ros/jazzy/setup.bash
+          store=$(mktemp -d)
+          ros2 security create_keystore "$store"
+          for enclave in /haetae/gate /haetae/world /haetae/vla /haetae/controller; do
+            ros2 security create_enclave "$store" "$enclave"
+            ros2 security create_permission "$store" "$enclave" ros/security/haetae.policy.xml
+            test -s "$store/enclaves$enclave/permissions.p7s"
+          done
 
   build-linux:
     name: Linux gate binary

@@ -6,6 +6,7 @@ software contract test, not evidence that a real arm controller stops.
 """
 
 import json
+import inspect
 import os
 from pathlib import Path
 import subprocess
@@ -115,7 +116,7 @@ def until(predicate, gate, timeout=5):
         if predicate():
             return
         time.sleep(0.01)
-    raise AssertionError("arm test timed out")
+    raise AssertionError(f"arm test timed out at line {inspect.stack()[1].lineno}")
 
 
 def kill_gate(gate):
@@ -206,8 +207,8 @@ def main(binary):
                 server.destroy_node()
                 rclpy.shutdown()
                 thread.join(timeout=2)
-            if (root / "gate.stderr").stat().st_size:
-                print((root / "gate.stderr").read_text(), file=sys.stderr)
+                if (root / "gate.stderr").stat().st_size:
+                    print((root / "gate.stderr").read_text(), file=sys.stderr)
 
 
 if __name__ == "__main__":

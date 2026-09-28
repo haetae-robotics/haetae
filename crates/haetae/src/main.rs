@@ -215,7 +215,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 return Err("persistent enforcement requires --sillok and --key".into());
             }
             let recorder = match (sillok, key) {
-                (Some(path), Some(key)) => Some(RecorderConfig::new(path, read_key(&key)?)),
+                (Some(path), Some(key)) => {
+                    let mut cfg = RecorderConfig::new(path, read_key(&key)?);
+                    // An unexpected bridge death may prevent close(). Each
+                    // enforcement incident must already have a durable seal.
+                    cfg.post_window = 0;
+                    cfg.seal_every = 1;
+                    Some(cfg)
+                }
                 _ => None,
             };
             enforce_stdio(
