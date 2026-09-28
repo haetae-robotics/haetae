@@ -196,4 +196,68 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
         .contains("replayed"));
     drop(input);
     assert!(!child.wait().unwrap().success());
+
+    // Make state checkpointing fail only after the gate has received a valid
+    // world and zero/re-arm command. The next signed motion must not appear on
+    // stdout: a controller must never see motion without its replay counter on
+    // disk. Moving the directory keeps the already-open log usable but makes
+    // the state path inaccessible on both Unix CI and macOS.
+    assert!(Command::new(binary)
+        .args([
+            "state",
+            "set",
+            "--state",
+            path("state.json").to_str().unwrap(),
+            "--mode",
+            "normal",
+            "--by",
+            "test",
+            "--reason",
+            "checkpoint failure check"
+        ])
+        .status()
+        .unwrap()
+        .success());
+    let mut child = spawn("log4.jsonl");
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let fresh_world = serde_json::json!({"stamp_ms":1200,"robot":{"pose":{"x":5.0,"y":5.0},"yaw":0.0},"humans":[],"confidence":1.0});
+    exchange(
+        &mut input,
+        &mut output,
+        1200,
+        "signed",
+        &signed(Role::World, 2, fresh_world, [2; 32]),
+    );
+    let fresh_zero =
+        serde_json::json!({"id":3,"source":"vla","timestamp_ms":1200,"action":{"type":"stop"}});
+    exchange(
+        &mut input,
+        &mut output,
+        1200,
+        "signed",
+        &signed(Role::Vla, 3, fresh_zero, [4; 32]),
+    );
+    let moved_dir = dir.path().with_extension("checkpoint-unavailable");
+    fs::rename(dir.path(), &moved_dir).unwrap();
+    let fresh_move = serde_json::json!({"id":4,"source":"vla","timestamp_ms":1200,"action":{"type":"velocity","linear":0.5,"angular":0.0,"ttl_ms":200}});
+    writeln!(
+        input,
+        "{}",
+        serde_json::json!({"t":1200,"k":"signed","data":signed(Role::Vla, 4, fresh_move, [4; 32])})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    let mut leaked_command = String::new();
+    let read = output.read_line(&mut leaked_command).unwrap();
+    let failed = !child.wait().unwrap().success();
+    fs::rename(&moved_dir, dir.path()).unwrap();
+    assert!(
+        failed,
+        "state checkpoint failure must terminate the enforcer"
+    );
+    assert_eq!(
+        read, 0,
+        "motion was emitted before counter checkpoint: {leaked_command}"
+    );
 }

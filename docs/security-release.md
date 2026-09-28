@@ -67,10 +67,13 @@ base. A compromised bridge or privileged host can still command the robot.
   every configured role. Use separate OS accounts
   and enclaves for the source and trusted world paths; move key operations to
   isolated signers before a protective release.
-- Signed counter checkpoints are fsynced after each output line. A crash in
-  that small interval may lose the last checkpoint. The unclean-start Hold
-  blocks motion until an offline operator reset, but replay after that reset
-  needs an explicit adversarial test.
+- A counter checkpoint is fsynced before any nonzero base or arm execute
+  output. Zero and arm cancel output go first so a stop does not wait for
+  storage. A crash between a stop output and its checkpoint can still lose
+  that stop's counter; the unclean-start Hold requires an offline reset.
+  Replay after a completed checkpoint and reset has a CLI regression test.
+  The stop-output crash window needs a targeted fault-injection test before
+  protective release.
 - No hardware or certification evidence exists. Controller limits in policy
   must match measured hardware limits. The system must remain behind the
   robot's independent certified safety functions.

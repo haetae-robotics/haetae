@@ -9,7 +9,7 @@ use haetae::runtime::{Inbound, Outcome, RecorderConfig, Runtime, RuntimeConfig};
 use haetae::sillok::{self, Keypair, VerifyReport};
 use haetae::{ActionKind, ActionProposal, Mode, Policy, Source, Verdict, WorldSnapshot};
 use haetae_enforce::auth::{self, AuthVerifier, SignedInput};
-use haetae_enforce::{Enforcer, EnforcerConfig};
+use haetae_enforce::{ArmOutput, Enforcer, EnforcerConfig};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -503,9 +503,20 @@ fn enforce_stdio(
             Ok(_) => gate.reject("transport time moved backwards".into(), &line, last_t),
             Err(error) => gate.reject(error, &line, last_t),
         };
+        let actuating = step.cmd.linear != 0.0
+            || step.cmd.angular != 0.0
+            || matches!(step.arm.as_ref(), Some(ArmOutput::Execute { .. }));
+        // Persist the accepted signature counter before a command can move an
+        // actuator. A failed checkpoint exits without publishing that command.
+        if actuating {
+            gate.commit(last_t)?;
+        }
         writeln!(output, "{}", serde_json::to_string(&step)?)?;
-        output.flush()?; // publish zero before any seal or state fsync
-        gate.commit(last_t)?;
+        output.flush()?;
+        // Stop and cancel must reach the controller without waiting for fsync.
+        if !actuating {
+            gate.commit(last_t)?;
+        }
     }
     // The transport has no authenticated clean-shutdown command. EOF may mean
     // the ROS bridge was killed. Record and seal that stop while retaining the
