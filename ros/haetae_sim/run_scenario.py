@@ -258,8 +258,14 @@ class Harness:
             self.stream = None
             at = self.last_proposal
             self.until(lambda: self.command_since(at, lambda v: v == 0.0) is not None, timeout=1)
-            self.metrics["gate_zero_ms"] = round((self.command_since(at, lambda v: v == 0.0) - at) * 1000, 1)
+            zero = self.command_since(at, lambda v: v == 0.0)
+            self.metrics["gate_zero_ms"] = round((zero - at) * 1000, 1)
             assert self.metrics["gate_zero_ms"] <= 300
+            self.until(lambda: self.node.base.speed == 0.0, timeout=2, expected_exit=True)
+            settled = time.monotonic()
+            self.until(lambda: time.monotonic() - settled >= 0.25, expected_exit=True)
+            assert all(value == 0.0 for t, value in self.node.commands if t >= zero), \
+                "positive command after upstream silence"
         elif number == 7:
             self.move(0.8)
             self.until(lambda: self.node.base.speed >= 0.7)
