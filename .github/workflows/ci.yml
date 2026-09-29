@@ -265,7 +265,14 @@ jobs:
             ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
-          python3 ros/gazebo/run_reference.py bin/haetae --out artifacts/gazebo-reference
+          python3 -m unittest discover -s ros/gazebo -p 'test_*.py' -v
+          python3 ros/gazebo/check_live_stream.py --port 8765 \
+            --out artifacts/gazebo-reference/live-stream.jsonl &
+          live_checker=$!
+          python3 ros/gazebo/run_reference.py bin/haetae \
+            --out artifacts/gazebo-reference --live-port 8765 --wait-for-viewer \
+            --live-hold-seconds 0
+          wait "$live_checker"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gazebo 실시간 관측 | 해태</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { font-family: system-ui, -apple-system, sans-serif; color: #172426; background: #f5f6f1; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header, main, footer { max-width: 1120px; margin: auto; padding: 24px; }
+    header { display: flex; justify-content: space-between; align-items: start; gap: 24px; }
+    h1 { font-size: clamp(26px, 4vw, 38px); margin: 0 0 10px; letter-spacing: -.03em; }
+    h2 { font-size: 19px; margin: 0 0 16px; }
+    p { line-height: 1.6; }
+    .lede { max-width: 780px; color: #4f605a; margin: 0; }
+    a { color: #1d6759; }
+    .badge { padding: 8px 13px; border-radius: 999px; background: #dce3df; white-space: nowrap; font-weight: 700; }
+    .badge[data-state="live"] { background: #d8f1e2; color: #126b43; }
+    .badge[data-state="offline"] { background: #f8e3dc; color: #9d422d; }
+    .badge[data-state="complete"] { background: #d9e8f4; color: #26597d; }
+    .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 18px; }
+    .flow span { background: #e6eeea; padding: 7px 10px; border-radius: 8px; }
+    .notice { padding: 14px 18px; border-radius: 9px; background: #e6f0eb; border-left: 4px solid #488d70; margin: 0 0 20px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(280px, 1fr); gap: 18px; }
+    .card { background: white; border: 1px solid #d9e2dc; border-radius: 16px; padding: 20px; box-shadow: 0 4px 24px #1724260a; }
+    canvas { display: block; width: 100%; height: auto; border-radius: 10px; background: #f8fbf8; }
+    .hint, footer { color: #697972; font-size: 13px; }
+    .status { padding: 14px; border-radius: 10px; background: #edf5ef; margin: 0 0 18px; min-height: 90px; }
+    .status strong { display: block; font-size: 20px; margin-bottom: 5px; }
+    .status span { color: #4f605a; }
+    dl { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 0 0 18px; }
+    dt { color: #687973; } dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 700; }
+    .events { list-style: none; margin: 0; padding: 0; border-top: 1px solid #e1e8e3; }
+    .events li { border-bottom: 1px solid #e1e8e3; padding: 9px 0; line-height: 1.4; }
+    .events time { font-size: 12px; color: #73817c; margin-right: 8px; font-variant-numeric: tabular-nums; }
+    @media (max-width: 750px) { header { display: block; } .badge { display: inline-block; margin-top: 14px; } .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Gazebo 실시간 관측</h1>
+      <p class="lede">Gazebo에서 움직이는 가상 로봇의 바퀴·팔 상태와 ROS를 통해 전달된 해태의 판정을 실행 중에 바로 보여줍니다.</p>
+    </div>
+    <span class="badge" id="connection" data-state="connecting" role="status">연결 중</span>
+  </header>
+  <main>
+    <div class="flow"><span>AI 제안</span> → <span>ROS 2</span> → <span>해태 판정</span> → <span>바퀴·팔 컨트롤러</span> → <span>Gazebo</span></div>
+    <p class="notice">이 화면은 <strong>현재 실행 중인 ROS·Gazebo 측정값</strong>을 받습니다. Gazebo 원본 3D 창과는 별개인 관측 화면이며, 로봇 그림과 위치 축은 보기 좋게 확대했습니다. 실제 로봇의 정지 성능을 뜻하지 않습니다.</p>
+    <div class="grid">
+      <section class="card" aria-labelledby="world-title">
+        <h2 id="world-title">Gazebo 로봇 · 지금</h2>
+        <canvas id="visual" width="900" height="400" role="img" aria-label="Gazebo에서 들어온 현재 로봇 위치와 사람 위치"></canvas>
+        <p class="hint">Gazebo odometry와 joint state를 약 20회/초로 받습니다. 사용 중인 시뮬레이터가 없으면 측정값은 표시되지 않습니다.</p>
+      </section>
+      <aside class="card" aria-labelledby="judgment-title">
+        <h2 id="judgment-title">ROS 명령 · 해태 판정</h2>
+        <p class="status" aria-live="polite"><strong id="phase">실행 대기</strong><span id="detail">브라우저 연결 후 시뮬레이터가 준비되면 시작합니다.</span></p>
+        <dl>
+          <dt>시뮬레이션 시간</dt><dd id="sim-time">—</dd>
+          <dt>바퀴 속도</dt><dd id="speed">—</dd>
+          <dt>ROS 바퀴 명령</dt><dd id="command">—</dd>
+          <dt>팔 관절</dt><dd id="joint">—</dd>
+          <dt>사람 보고</dt><dd id="human">—</dd>
+        </dl>
+        <ol class="events" id="events" aria-label="최근 사건"></ol>
+      </aside>
+    </div>
+  </main>
+  <footer><p>실시간 화면은 <code>ros/gazebo/run_reference.py --live-port</code>를 실행하는 동안에만 연결됩니다. 이전 실행은 <a href="./gazebo-replay.html">녹화 기록 재생</a>에서 확인할 수 있습니다.</p></footer>
+  <script type="module" src="./gazebo-live.js"></script>
+</body>
+</html>

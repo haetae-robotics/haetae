@@ -31,6 +31,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
 from run_scenario import fixture, public  # noqa: E402
+from live_stream import LiveHub, start_server  # noqa: E402
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -39,10 +40,11 @@ BASE_CONTROLLER_TOPIC = "/diff_drive_base_controller/cmd_vel"
 
 
 class GazeboWorld(Node):
-    def __init__(self):
+    def __init__(self, live=None):
         super().__init__("haetae_gazebo_world", parameter_overrides=[
             Parameter("use_sim_time", Parameter.Type.BOOL, True)],
             automatically_declare_parameters_from_overrides=True)
+        self.live = live
         self.odom = None
         self.joint = None
         self.odom_received = 0.0
@@ -58,11 +60,34 @@ class GazeboWorld(Node):
         self.create_subscription(Odometry, "/diff_drive_base_controller/odom", self._odom, 10)
         self.create_subscription(JointState, "/joint_states", self._joint, 10)
         self.create_subscription(TwistStamped, BASE_CONTROLLER_TOPIC, self._command, 10)
-        self.create_subscription(String, "/haetae_gate/state",
-                                 lambda m: self.states.append((time.monotonic(), json.loads(m.data))), 10)
-        self.create_subscription(String, "/haetae_gate/outcome",
-                                 lambda m: self.outcomes.append((time.monotonic(), json.loads(m.data))), 10)
+        self.create_subscription(String, "/haetae_gate/state", self._state, 10)
+        self.create_subscription(String, "/haetae_gate/outcome", self._outcome, 10)
         self.create_timer(0.05, self._publish_world)
+
+    def _emit(self, kind, **values):
+        if self.live:
+            self.live.publish({"kind": kind,
+                               "sim_ms": self.get_clock().now().nanoseconds // 1_000_000,
+                               **values})
+
+    def marker(self, label):
+        self._emit("phase", label=label)
+
+    def _state(self, msg):
+        value = json.loads(msg.data)
+        self.states.append((time.monotonic(), value))
+        self._emit("state", mode=value.get("mode"), stop=value.get("stop"),
+                   arm_cancelling=value.get("arm_cancelling", False))
+
+    def _outcome(self, msg):
+        value = json.loads(msg.data)
+        self.outcomes.append((time.monotonic(), value))
+        decision = value.get("decision", {})
+        if decision:
+            self._emit("decision", verdict=decision.get("verdict"),
+                       fired=decision.get("fired", []),
+                       action=decision.get("action", {}).get("type")
+                       if decision.get("action") else None)
 
     def _odom(self, msg):
         self.odom = msg
@@ -75,6 +100,7 @@ class GazeboWorld(Node):
 
     def _command(self, msg):
         self.commands.append((time.monotonic(), msg.twist.linear.x))
+        self._emit("base_command", linear=msg.twist.linear.x)
 
     def pose(self):
         if self.odom is None:
@@ -114,6 +140,8 @@ class GazeboWorld(Node):
                    "confidence": 1.0}
         self.world_pub.publish(String(data=json.dumps(payload)))
         self.world_count += 1
+        self._emit("telemetry", x=x, y=y, speed=self.speed(),
+                   joint=self.shoulder(), humans=payload["humans"])
 
     def propose_base(self, linear):
         msg = TwistStamped()
@@ -199,7 +227,7 @@ def sealed_incident_snapshot(log_path, snapshot_path):
     return True
 
 
-def run(root, binary):
+def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0):
     root.mkdir(parents=True, exist_ok=True)
     fixture(root, binary, arm=True)
     params_path = root / "params.yaml"
@@ -235,7 +263,7 @@ def run(root, binary):
                         "--ros-args", "--params-file", str(description_params)],
                        root, "robot_state_publisher", processes)
         logs.append(log)
-        world = GazeboWorld()
+        world = GazeboWorld(live)
         executor = MultiThreadedExecutor(num_threads=3)
         executor.add_node(world)
         thread = threading.Thread(target=executor.spin, daemon=True)
@@ -259,6 +287,12 @@ def run(root, binary):
         world.propose_base(0.0)
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                  5, processes, "base rearm", action=lambda: world.propose_base(0.0))
+        if live:
+            world.marker("실험 준비 완료")
+            if wait_for_viewer:
+                wait_for(lambda: live.status()["viewers"] > 0, 120, processes,
+                         "browser live viewer")
+            world.marker("AI 바퀴 이동 명령")
         start_x = world.pose()[0]
         wait_for(lambda: world.pose()[0] >= start_x + 0.03 and world.speed() > 0.08,
                  8, processes, "approved base motion", action=lambda: world.propose_base(0.2))
@@ -266,11 +300,16 @@ def run(root, binary):
         revoked_at = time.monotonic()
         revoked_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         world.human = (moving_x + 0.1, world.pose()[1])
+        world.marker("사람 등장")
         zero_at = wait_for(lambda: any(t >= revoked_at and value == 0 for t, value in world.commands),
                            3, processes, "world-triggered zero base command")
+        world.marker("해태가 바퀴 0속도 명령")
         zero_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         wait_for(lambda: abs(world.speed()) < 0.03, 3, processes, "base stopped after human")
         base_stop_x = world.pose()[0]
+        world.marker("Gazebo 바퀴 정지")
+        if live:
+            time.sleep(0.8)
         world.human = None
         time.sleep(0.3)
 
@@ -278,19 +317,25 @@ def run(root, binary):
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                  5, processes, "arm rearm", action=lambda: world.propose_base(0.0))
         bad_at = time.monotonic()
+        world.marker("AI 팔 범위 초과 명령")
         world.propose_arm(2.0)
         wait_for(lambda: any(t >= bad_at and value.get("decision", {}).get("verdict") == "bul"
                              for t, value in world.outcomes), 5, processes, "out-of-bounds arm denial")
         denied_position = world.shoulder()
         if abs(denied_position) > 0.02:
             raise AssertionError("denied arm command moved the joint")
+        world.marker("해태가 팔 명령 거부")
+        if live:
+            time.sleep(0.8)
         world.propose_base(0.0)
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                  5, processes, "arm rearm after denial", action=lambda: world.propose_base(0.0))
+        world.marker("AI 정상 팔 이동 명령")
         world.propose_arm(0.12)
         wait_for(lambda: world.shoulder() > 0.01, 5, processes, "approved arm motion")
         arm_at = time.monotonic()
         world.human = (5.5, 5.5)
+        world.marker("사람 등장, 팔 취소 요청")
         wait_for(lambda: any(t >= arm_at and value["arm_cancelling"]
                              for t, value in world.states), 3, processes, "arm cancellation request")
         wait_for(lambda: world.states and not world.states[-1][1]["arm_cancelling"],
@@ -299,6 +344,9 @@ def run(root, binary):
         time.sleep(0.35)
         if abs(world.shoulder() - arm_cancel_position) > 0.02:
             raise AssertionError("arm kept moving after cancellation")
+        world.marker("Gazebo 팔 관절 정지")
+        if live:
+            time.sleep(0.8)
         world.human = None
 
         snapshot = root / "sealed-snapshot.jsonl"
@@ -317,10 +365,12 @@ def run(root, binary):
                  action=lambda: world.propose_base(0.2))
         killed_at = time.monotonic()
         killed_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
+        world.marker("해태 프로세스 강제 종료")
         stop(processes.pop("gate"), force=True)
         stopped_at = wait_for(lambda: abs(world.speed()) < 0.03, 3, processes,
                               "controller deadman after gate kill")
         stopped_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
+        world.marker("컨트롤러 데드맨으로 바퀴 정지")
         result = {"ok": True, "controller": "Gazebo Harmonic gz_ros2_control",
                   "base_moved_m": round(moving_x - start_x, 3),
                   "human_to_zero_wall_ms": round((zero_at - revoked_at) * 1000, 1),
@@ -332,6 +382,10 @@ def run(root, binary):
                   "gate_kill_to_base_stop_sim_ms": stopped_sim_ms - killed_sim_ms,
                   "sillok_incident_snapshot_fully_sealed": True}
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+        if live:
+            live.publish({"kind": "result", "sim_ms": stopped_sim_ms, "result": result})
+            if live_hold_seconds:
+                time.sleep(live_hold_seconds)
         print(json.dumps(result))
     finally:
         for process in list(processes.values())[::-1]:
@@ -351,23 +405,44 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", help="path to the built haetae executable")
     parser.add_argument("--out", type=Path, help="directory for logs and result.json")
+    parser.add_argument("--live-port", type=int, help="serve live Gazebo/ROS telemetry on loopback")
+    parser.add_argument("--wait-for-viewer", action="store_true",
+                        help="start motion after a browser connects to the live page")
+    parser.add_argument("--live-hold-seconds", type=float, default=5,
+                        help="keep the completed live view connected for this many seconds")
     args = parser.parse_args()
+    if args.wait_for_viewer and args.live_port is None:
+        parser.error("--wait-for-viewer requires --live-port")
+    if args.live_port is not None and not 1 <= args.live_port <= 65535:
+        parser.error("--live-port must be between 1 and 65535")
+    if args.live_hold_seconds < 0:
+        parser.error("--live-hold-seconds must be nonnegative")
     binary = str(Path(args.binary).resolve())
+    live = LiveHub() if args.live_port is not None else None
+    server = start_server(live, args.live_port) if live else None
+    if server:
+        print(f"Live view: http://127.0.0.1:{args.live_port}/", flush=True)
     shared = Path("/dev/shm")
-    with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
-                                     else None) as directory:
-        try:
-            run(Path(directory), binary)
-        finally:
-            if args.out:
-                output = args.out.resolve()
-                output.mkdir(parents=True, exist_ok=True)
-                for name in ("result.json", "setup.log", "gazebo.log", "gate.log",
-                             "clock_bridge.log", "robot_state_publisher.log",
-                             "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
-                    source = Path(directory) / name
-                    if source.exists():
-                        shutil.copy2(source, output / name)
+    try:
+        with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
+                                         else None) as directory:
+            try:
+                run(Path(directory), binary, live, args.wait_for_viewer,
+                    args.live_hold_seconds if live else 0)
+            finally:
+                if args.out:
+                    output = args.out.resolve()
+                    output.mkdir(parents=True, exist_ok=True)
+                    for name in ("result.json", "setup.log", "gazebo.log", "gate.log",
+                                 "clock_bridge.log", "robot_state_publisher.log",
+                                 "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
+                        source = Path(directory) / name
+                        if source.exists():
+                            shutil.copy2(source, output / name)
+    finally:
+        if server:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

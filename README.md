@@ -103,7 +103,11 @@ measure only the simulated controller and hosted ROS setup.
 
 For a physics-backed virtual robot, `ros/gazebo/` connects the same gate to a
 Gazebo Harmonic mobile base and one-joint arm through real `ros2_control`
-controllers. See [the Gazebo runbook](docs/gazebo-reference.md). This still
-cannot establish a real robot's stop behavior or arm collision safety.
+controllers. Its [live browser view](sim/gazebo-live.html) streams measurements
+and decisions while the reference runs; the
+[Gazebo runbook](docs/gazebo-reference.md) has the launch command. The
+[recorded replay](sim/gazebo-replay.html) works without Gazebo installed. These
+references still cannot establish a real robot's stop behavior or arm
+collision safety.
 
 > Status: **pre-alpha (0.0.x)**. Not a certified safety device.

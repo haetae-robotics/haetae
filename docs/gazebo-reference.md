@@ -35,6 +35,34 @@ python3 ros/gazebo/run_reference.py target/release/haetae --out /tmp/haetae-gaze
 cat /tmp/haetae-gazebo-run/result.json
 ```
 
+## Watch the running simulation
+
+On an Ubuntu 24.04 machine with the packages above installed, start the
+reference with its loopback-only live page:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=81 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+python3 ros/gazebo/run_reference.py target/release/haetae \
+  --live-port 8765 --wait-for-viewer --live-hold-seconds 20 \
+  --out /tmp/haetae-gazebo-live
+```
+
+Then open `http://127.0.0.1:8765/` on that machine. The runner waits for the
+browser before sending the first moving command. The page updates from the
+running Gazebo odometry and joint feedback, ROS base commands, and Haetae
+decisions. It is a live data view, not a capture of Gazebo's 3D GUI. The
+reference runs its fixed test once, then keeps the finished page connected for
+20 seconds. Restart the command for another run. The HTTP server binds only to
+`127.0.0.1`; from another computer, use an SSH port forward rather than
+exposing the test endpoint directly.
+
+On an Ubuntu desktop, `gz sim -g` in a second terminal can attach the native
+Gazebo 3D GUI to the same server. The separate GUI mode is described in the
+[Gazebo documentation](https://gazebosim.org/docs/harmonic/gui/). The live
+browser view provides the ROS decisions and measurements that the native GUI
+does not label.
+
 The runner uses a fresh temporary state and log directory, backed by `/dev/shm`
 when available, so hosted disk scheduling does not dominate the gate's 50 ms
 actuation budget. It copies the result and diagnostic logs to `--out`, leaving
@@ -53,6 +81,8 @@ successful CI run to show Gazebo odometry and joint feedback alongside the ROS
 gate's decisions. It is a recorded data visualization, not a Gazebo GUI video
 or a live simulator session. The [evidence note](../sim/evidence/README.md)
 identifies the exact source run and verification key.
+The live viewer serves [its own page](../sim/gazebo-live.html) from the running
+reference process and streams only selected telemetry and verdict fields.
 
 ## Boundaries
 
