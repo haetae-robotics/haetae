@@ -37,6 +37,29 @@ cat /tmp/haetae-gazebo-run/result.json
 
 ## Watch the running simulation
 
+### macOS or Linux with Docker
+
+With Docker Desktop running on macOS, or Docker Engine running on Linux, run
+from the repository root:
+
+```bash
+ros/gazebo/run_docker.sh
+```
+
+The first run builds a ROS 2 Jazzy and Gazebo Harmonic image and a Linux
+Haetae binary for the host's CPU architecture. Open
+`http://127.0.0.1:8765/` when the script prints the address. The simulator
+waits for the live browser viewer before sending the first movement command.
+The script writes `result.json` and diagnostic logs to
+`artifacts/gazebo-local/`; pass another output directory as its first
+argument if needed. Run the script again to repeat the scenario.
+
+Docker publishes port 8765 on the host's `127.0.0.1` only. The container's
+HTTP process listens on its own `0.0.0.0` so Docker can forward that local
+port. Do not publish this test page on a public interface.
+
+### Native Ubuntu 24.04
+
 On an Ubuntu 24.04 machine with the packages above installed, start the
 reference with its loopback-only live page:
 

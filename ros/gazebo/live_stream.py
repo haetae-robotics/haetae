@@ -1,4 +1,4 @@
-"""Loopback-only browser stream for the running Gazebo reference.
+"""Browser stream for the running Gazebo reference.
 
 Only explicitly selected telemetry and verdict fields are sent. Test signing
 keys, raw world messages, and private fixture files never enter this server.
@@ -48,7 +48,7 @@ class LiveHub:
             return {"viewers": self._viewers, "last_id": self._sequence}
 
 
-def start_server(hub, port):
+def start_server(hub, port, bind_host="127.0.0.1"):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, _format, *_args):
             pass
@@ -119,7 +119,7 @@ def start_server(hub, port):
         daemon_threads = True
         allow_reuse_address = True
 
-    server = Server(("127.0.0.1", port), Handler)
+    server = Server((bind_host, port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server

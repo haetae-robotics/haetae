@@ -104,8 +104,9 @@ measure only the simulated controller and hosted ROS setup.
 For a physics-backed virtual robot, `ros/gazebo/` connects the same gate to a
 Gazebo Harmonic mobile base and one-joint arm through real `ros2_control`
 controllers. Its [live browser view](sim/gazebo-live.html) streams measurements
-and decisions while the reference runs; the
-[Gazebo runbook](docs/gazebo-reference.md) has the launch command. The
+and decisions while the reference runs. On macOS or Linux with Docker, run
+`ros/gazebo/run_docker.sh` and open `http://127.0.0.1:8765/`. The
+[Gazebo runbook](docs/gazebo-reference.md) has the native Ubuntu command. The
 [recorded replay](sim/gazebo-replay.html) works without Gazebo installed. These
 references still cannot establish a real robot's stop behavior or arm
 collision safety.

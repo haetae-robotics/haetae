@@ -405,7 +405,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", help="path to the built haetae executable")
     parser.add_argument("--out", type=Path, help="directory for logs and result.json")
-    parser.add_argument("--live-port", type=int, help="serve live Gazebo/ROS telemetry on loopback")
+    parser.add_argument("--live-port", type=int, help="serve live Gazebo/ROS telemetry")
+    parser.add_argument("--live-bind", default="127.0.0.1",
+                        help="HTTP bind address; keep the default outside a container")
     parser.add_argument("--wait-for-viewer", action="store_true",
                         help="start motion after a browser connects to the live page")
     parser.add_argument("--live-hold-seconds", type=float, default=5,
@@ -419,7 +421,7 @@ def main():
         parser.error("--live-hold-seconds must be nonnegative")
     binary = str(Path(args.binary).resolve())
     live = LiveHub() if args.live_port is not None else None
-    server = start_server(live, args.live_port) if live else None
+    server = start_server(live, args.live_port, args.live_bind) if live else None
     if server:
         print(f"Live view: http://127.0.0.1:{args.live_port}/", flush=True)
     shared = Path("/dev/shm")
