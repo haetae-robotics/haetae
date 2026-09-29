@@ -371,6 +371,10 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0):
                               "controller deadman after gate kill")
         stopped_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         world.marker("컨트롤러 데드맨으로 바퀴 정지")
+        if live:
+            x, y = world.pose()
+            world._emit("telemetry", x=x, y=y, speed=world.speed(),
+                        joint=world.shoulder(), humans=[])
         result = {"ok": True, "controller": "Gazebo Harmonic gz_ros2_control",
                   "base_moved_m": round(moving_x - start_x, 3),
                   "human_to_zero_wall_ms": round((zero_at - revoked_at) * 1000, 1),

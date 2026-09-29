@@ -16,7 +16,7 @@ def run(port, output):
         try:
             response = urlopen(address, timeout=10)
             break
-        except URLError:
+        except (URLError, ConnectionError):
             if time.monotonic() >= deadline:
                 raise TimeoutError("live server did not start")
             time.sleep(0.1)
