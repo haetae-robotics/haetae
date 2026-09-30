@@ -1,0 +1,7 @@
+<library path="haetae_arm_guard">
+  <class name="haetae_arm_guard/LeaseTrajectoryController"
+    type="haetae_arm_guard::LeaseTrajectoryController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>Position-only trajectory controller holding on gateway lease loss.</description>
+  </class>
+</library>

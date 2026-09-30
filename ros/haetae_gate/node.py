@@ -18,10 +18,10 @@ from geometry_msgs.msg import Twist, TwistStamped
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt64
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from bridge import Bridge, BridgeFailure, StaleActuation, require_fresh_actuation
+from bridge import Bridge, BridgeFailure, StaleActuation, require_fresh_actuation, lease_renewable
 from signing import Signer
 
 
@@ -39,6 +39,7 @@ class HaetaeGate(Node):
             "arm_action": "/joint_trajectory_controller/follow_joint_trajectory",
             "response_timeout_ms": 500, "max_actuation_response_ms": 50,
             "tick_hz": 20.0, "output_stamped": True,
+            "heartbeat_topic": "",
         }
         for key, value in defaults.items():
             self.declare_parameter(key, value)
@@ -63,6 +64,9 @@ class HaetaeGate(Node):
             raise ValueError("output_stamped must be a bool")
         self.command_pub = self.create_publisher(
             TwistStamped if self.output_stamped else Twist, "/cmd_vel", 1)
+        self.heartbeat_pub = (self.create_publisher(UInt64, param("heartbeat_topic"),
+                             QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+                              if param("heartbeat_topic") else None)
         self.state_pub = self.create_publisher(String, "~/state", QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -245,6 +249,10 @@ class HaetaeGate(Node):
             require_fresh_actuation(
                 step, elapsed_ms, now_ros_ms,
                 self.world_max_age_ms, self.max_actuation_response_ms)
+            if self.heartbeat_pub and lease_renewable(step, elapsed_ms,
+                    self.world_max_age_ms, self.max_actuation_response_ms):
+                # Use the request's clock, never restamp a delayed response.
+                self.heartbeat_pub.publish(UInt64(data=started_ros_ms))
             self._publish(step)
         except InvalidProposal as exc:
             try:

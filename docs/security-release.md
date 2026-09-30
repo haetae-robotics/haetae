@@ -47,8 +47,12 @@ base. A compromised bridge or privileged host can still command the robot.
   models. The Gazebo Harmonic reference also exercises a differential-drive
   controller and a four-joint OpenMANIPULATOR-X trajectory controller on the
   manufacturer ROSbot XL model under physics, including
-  base timeout after gate death. It still cannot measure hardware stopping or
-  prove an independent arm stop after gate death.
+  base timeout after gate death. The reference arm uses the
+  `haetae_arm_guard/LeaseTrajectoryController` plugin: a 250 ms lease checked
+  against simulator and monotonic wall clocks holds measured positions and
+  discards the old trajectory on gateway loss. Gazebo kill, Rust stall and
+  delayed gateway tests run in CI. This does not measure hardware stopping or
+  survive failure of the controller process or host.
 - The arm check covers joint space. It does not compute 3D link geometry,
   self-collision, singularities, torque, force, payload or contact. Arm motion
   is denied when any human is present in the current world, but absence of a
