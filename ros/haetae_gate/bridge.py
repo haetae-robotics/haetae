@@ -17,6 +17,16 @@ class StaleActuation(BridgeFailure):
     pass
 
 
+def lease_renewable(step, elapsed_ms, world_max_age_ms, max_response_ms):
+    """A controller lease requires a fresh, healthy enforcement round trip."""
+    status = step.get("status") or {}
+    age = status.get("world_age_ms")
+    return (status.get("mode") == "normal" and status.get("recorder_ok") is True
+            and status.get("state_ok") is True and type(age) is int and age >= 0
+            and 0 <= elapsed_ms < max_response_ms
+            and age + elapsed_ms < world_max_age_ms)
+
+
 def require_fresh_actuation(step, elapsed_ms, now_ms, world_max_age_ms, max_response_ms):
     """Reject a delayed positive result before it can reset a controller deadman."""
     cmd = step["cmd"]

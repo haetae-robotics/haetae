@@ -30,7 +30,7 @@ diff_drive_base_controller:
 
 joint_trajectory_controller:
   ros__parameters:
-    type: joint_trajectory_controller/JointTrajectoryController
+    type: haetae_arm_guard/LeaseTrajectoryController
     joints: [joint1, joint2, joint3, joint4]
     command_interfaces: [position]
     state_interfaces: [position, velocity]

@@ -2,6 +2,7 @@
 set -eo pipefail
 # ROS setup scripts read optional variables before initializing them.
 source /opt/ros/jazzy/setup.bash
+source /opt/haetae/setup.bash
 set -u
 
 export DISPLAY=:99

@@ -3,7 +3,7 @@
 
 This is a physics-backed reference test, not a robot safety certification.
 The world publisher uses simulator ground truth, and Gazebo / ros2_control are
-trusted. The four-joint arm controller has no independent gate-loss watchdog.
+trusted. The four-joint controller checks an independent 250 ms gateway lease.
 """
 
 import argparse
@@ -65,6 +65,7 @@ class GazeboWorld(Node):
         self.states = []
         self.outcomes = []
         self.commands = []
+        self.guard_states = []
         self.attack_world_received = 0
         self.world_count = 0
         self.world_pub = self.create_publisher(String, "/haetae_gate/world", 1)
@@ -76,6 +77,8 @@ class GazeboWorld(Node):
         self.create_subscription(String, "/haetae_gate/state", self._state, 10)
         self.create_subscription(String, "/haetae_gate/outcome", self._outcome, 10)
         self.create_subscription(String, "/haetae_gate/world", self._observe_world_attack, 10)
+        self.create_subscription(String, "/joint_trajectory_controller/guard_state",
+                                 lambda msg: self.guard_states.append((time.monotonic(), json.loads(msg.data))), 10)
         self.create_timer(0.05, self._publish_world)
 
     def _emit(self, kind, **values):
@@ -181,6 +184,15 @@ class GazeboWorld(Node):
         if (not stamp or self.odom is None or self.joint is None or
                 now - self.odom_received > 0.2 or now - self.joint_received > 0.2):
             return
+        joint_stamp = (self.joint.header.stamp.sec * 1000 +
+                       self.joint.header.stamp.nanosec // 1_000_000)
+        odom_stamp = (self.odom.header.stamp.sec * 1000 +
+                      self.odom.header.stamp.nanosec // 1_000_000)
+        if not (-20 <= stamp - joint_stamp < 200 and -20 <= stamp - odom_stamp < 200):
+            return
+        # Never restamp an older joint sample as current: arm tracking uses
+        # this measurement time, not the timer's publication time.
+        stamp = joint_stamp
         yaw = self.heading()
         joints = self.measured_joints()
         x, y = self.pose()
@@ -202,7 +214,7 @@ class GazeboWorld(Node):
                                         "robot": (x, y), "human": (humans[0]["pos"]["x"], humans[0]["pos"]["y"])})
         self.world_pub.publish(String(data=json.dumps(payload)))
         self.world_count += 1
-        self._emit("telemetry", x=x, y=y, speed=self.speed(),
+        self._emit("telemetry", sim_ms=stamp, x=x, y=y, speed=self.speed(),
                    joint=self.primary_joint(), joints=joints, yaw=yaw, humans=payload["humans"],
                    human_motion=human_motion, model=MODEL_NAME)
 
@@ -290,14 +302,76 @@ def sealed_incident_snapshot(log_path, snapshot_path):
     return True
 
 
+def exercise_arm_fault(world, processes, case):
+    """Fault injection is confined to this test harness, never the gate."""
+    time.sleep(0.3)  # Drain the rearm stop proposals before submitting motion.
+    wait_for(lambda: world.guard_states and not world.guard_states[-1][1]["holding"],
+             5, processes, "independent controller lease opens")
+    initial = world.arm_positions()
+    world.marker("팔 독립 정지 시험", case=case)
+    world.propose_arm(initial[0] + (-0.5 if initial[0] > 0.1 else 0.5))
+    wait_for(lambda: abs(world.primary_joint() - initial[0]) > 0.10, 5, processes,
+             "arm moving before injected fault")
+    gate = processes.pop("gate")
+    fault_wall = time.monotonic()
+    fault_sim = world.get_clock().now().nanoseconds // 1_000_000
+    world.marker("팔 동작 중 연결 고장", case=case)
+    if case == "kill":
+        stop(gate, force=True)
+    elif case == "delay":
+        os.kill(gate.pid, signal.SIGSTOP)
+    else:
+        children = Path(f"/proc/{gate.pid}/task/{gate.pid}/children").read_text().split()
+        if len(children) != 1:
+            raise AssertionError("cannot identify the Rust enforcement child")
+        os.kill(int(children[0]), signal.SIGSTOP)
+    try:
+        stopped = wait_for(lambda: world.guard_states and world.guard_states[-1][0] >= fault_wall
+                           and world.guard_states[-1][1]["holding"], 2, processes,
+                           "controller independently expires its lease")
+        stop_sim = world.guard_states[-1][1]["cutoff_ms"]
+        controller_stop_wall = world.guard_states[-1][1]["stop_wall_ns"] / 1_000_000_000
+        if stop_sim-fault_sim > 320 or controller_stop_wall-fault_wall > 0.4:
+            raise AssertionError("controller missed its independent stop deadline")
+        wait_for(lambda: world.joint.header.stamp.sec * 1000 +
+                 world.joint.header.stamp.nanosec // 1_000_000 >= stop_sim and
+                 all(abs(world.joint.velocity[list(world.joint.name).index(j)]) < 0.03
+                     for j in ARM_JOINTS), 2, processes, "fresh stopped-joint feedback")
+        positions = world.arm_positions()
+        time.sleep(0.4)
+        drift = max(abs(a-b) for a,b in zip(positions, world.arm_positions()))
+        if drift > 0.02:
+            raise AssertionError(f"arm moved {drift} rad after independent stop")
+        world.marker("팔 제어기가 스스로 정지", case=case)
+        # A delayed gateway is resumed only to test queued-message rejection.
+        # No new proposal is sent. Its old action must never resume.
+        if case == "delay":
+            os.kill(gate.pid, signal.SIGCONT)
+            time.sleep(0.5)
+            if max(abs(a-b) for a,b in zip(positions, world.arm_positions())) > 0.02:
+                raise AssertionError("heartbeat recovery revived the expired trajectory")
+        return {"ok": True, "case": case, "controller": "independent_arm_lease",
+                "joint_names": list(ARM_JOINTS), "held_positions_rad": positions,
+                "post_stop_drift_rad": drift,
+                "fault_to_hold_wall_ms": round((controller_stop_wall-fault_wall)*1000, 1),
+                "hold_observed_after_wall_ms": round((stopped-fault_wall)*1000, 1),
+                "fault_to_hold_sim_ms": stop_sim-fault_sim,
+                "old_goal_did_not_resume": True}
+    finally:
+        if gate.poll() is None:
+            os.killpg(gate.pid, signal.SIGCONT)
+        stop(gate, force=True)
+
+
 def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         gazebo_gui=False, manual_start=False, attack_probes=False,
-        secure_graph=False, step_through=False):
+        secure_graph=False, step_through=False, arm_fault=None):
     root.mkdir(parents=True, exist_ok=True)
     fixture(root, binary, arm=True, arm_policy=arm_policy(), person_distance=PERSON_DISTANCE_M)
     params_path = root / "params.yaml"
     params = json.loads(params_path.read_text())
-    params["haetae_gate"]["ros__parameters"]["use_sim_time"] = True
+    params["haetae_gate"]["ros__parameters"].update({"use_sim_time": True,
+        "heartbeat_topic": "/haetae_gate/heartbeat"})
     params_path.write_text(json.dumps(params))
     controllers = HERE / "controllers.yaml"
     model = root / "reference_bot.urdf"
@@ -411,6 +485,11 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         world.propose_base(0.0)
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                  5, processes, "base rearm", action=lambda: world.propose_base(0.0))
+        if arm_fault:
+            result = exercise_arm_fault(world, processes, arm_fault)
+            (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+            print(json.dumps(result))
+            return
         if live:
             world.marker("실험 준비 완료")
             if wait_for_viewer:
@@ -483,10 +562,11 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         world.propose_base(0.0)
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                  5, processes, "arm rearm after denial", action=lambda: world.propose_base(0.0))
+        time.sleep(0.3)
         prepare_scene("이번에는 정상 팔 동작 중 사람 근접 보고를 넣습니다. 팔 움직임과 취소 결과를 확인하세요.")
         world.marker("AI 정상 팔 이동 명령")
-        world.propose_arm(0.65)
-        wait_for(lambda: world.primary_joint() > 0.40, 6, processes, "approved arm motion")
+        world.propose_arm(0.5)
+        wait_for(lambda: world.primary_joint() > 0.25, 6, processes, "approved arm motion")
         arm_at = time.monotonic()
         if live:
             world.begin_person_walk(person_entry(*world.pose(), world.heading()),
@@ -579,8 +659,36 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             x, y = world.pose()
             world._emit("telemetry", x=x, y=y, speed=world.speed(),
                         joint=world.primary_joint(), joints=world.measured_joints(), yaw=world.heading(), humans=[])
+        arm_fault_results = {}
+        for case in ("kill", "stall", "delay"):
+            # Independent test session, not an operator reset or automatic
+            # production restart. Start only after the base and arm are held.
+            if abs(world.speed()) >= 0.03:
+                raise AssertionError("cannot start a new fault fixture while base moves")
+            fault_root = root / ("arm-" + case)
+            fault_root.mkdir()
+            fixture(fault_root, binary, arm=True, arm_policy=arm_policy(),
+                    person_distance=PERSON_DISTANCE_M)
+            fault_params = json.loads((fault_root / "params.yaml").read_text())
+            fault_params["haetae_gate"]["ros__parameters"].update({
+                "use_sim_time": True, "heartbeat_topic": "/haetae_gate/heartbeat"})
+            (fault_root / "params.yaml").write_text(json.dumps(fault_params))
+            world.states.clear()
+            _, log = start([sys.executable, str(REPO / "ros/haetae_gate/node.py"),
+                            "--ros-args", "--params-file", str(fault_root / "params.yaml"),
+                            "-r", "/cmd_vel:=" + BASE_CONTROLLER_TOPIC],
+                           fault_root, "gate", processes, role_env("gate"))
+            logs.append(log)
+            wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal",
+                     10, processes, "new isolated arm fault fixture")
+            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+                     5, processes, "fault fixture rearm", action=lambda: world.propose_base(0.0))
+            arm_fault_results[case] = exercise_arm_fault(world, processes, case)
+            (fault_root / "result.json").write_text(json.dumps(arm_fault_results[case], indent=2) + "\n")
+            world._emit("arm_fault_result", **arm_fault_results[case])
+            presentation_wait(2)
         if attack_probes:
-            review_scene("연결 끊김 뒤 정지 장면", "해태 프로세스가 종료된 뒤 바퀴 컨트롤러가 스스로 멈췄습니다.",
+            review_scene("연결 끊김 뒤 정지 장면", "바퀴 정지와 팔의 독립 정지를 확인했습니다. 팔 시험은 프로세스 종료, 엔진 멈춤, 지연 신호 세 가지입니다.",
                          "재전송·서명 변조 시험" if secure_graph else "외부 노드 공격 시험")
             if not secure_graph:
                 world.marker("외부 노드 바퀴 명령 공격")
@@ -620,6 +728,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         result = {"ok": all(row["blocked"] for row in attacks.values()),
                   "robot_model": MODEL_NAME,
                   "arm_joints": list(ARM_JOINTS),
+                  "arm_faults": arm_fault_results,
                   "arm_cancelled_positions_rad": arm_cancel_positions,
                   "controller": "Gazebo Harmonic gz_ros2_control",
                   "base_moved_m": round(moving_x - start_x, 3),
@@ -676,6 +785,8 @@ def main():
                         help="run SROS2 and signed-input attack probes")
     parser.add_argument("--secure-graph", action="store_true",
                         help="run Gazebo and attacker with separate SROS2 enclaves")
+    parser.add_argument("--arm-fault", choices=("kill", "stall", "delay"),
+                        help="isolated moving-arm controller failure test")
     args = parser.parse_args()
     if args.wait_for_viewer and args.live_port is None:
         parser.error("--wait-for-viewer requires --live-port")
@@ -707,7 +818,7 @@ def main():
                 run(Path(directory), binary, live, args.wait_for_viewer,
                     args.live_hold_seconds if live else 0, args.gazebo_gui,
                     args.manual_start, args.attack_probes, args.secure_graph,
-                    args.step_through)
+                    args.step_through, args.arm_fault)
             except Exception as exc:
                 (Path(directory) / "error.json").write_text(json.dumps({
                     "error_type": type(exc).__name__, "error": str(exc),
@@ -722,6 +833,14 @@ def main():
                 if args.out:
                     output = args.out.resolve()
                     output.mkdir(parents=True, exist_ok=True)
+                    for case in ("kill", "stall", "delay"):
+                        src = Path(directory) / ("arm-" + case)
+                        if src.exists():
+                            dst = output / ("arm-" + case)
+                            dst.mkdir(exist_ok=True)
+                            for artifact in ("result.json", "gate.log", "sillok.jsonl"):
+                                if (src / artifact).exists():
+                                    shutil.copy2(src / artifact, dst / artifact)
                     for name in ("result.json", "error.json", "attack-result.json", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
                                  "clock_bridge.log", "robot_state_publisher.log",
                                  "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):

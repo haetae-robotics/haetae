@@ -15,6 +15,10 @@ WORKDIR /workspace
 COPY ros/ ./ros/
 COPY sim/ ./sim/
 COPY tools/build_reference_visuals.py tools/build_product_visuals.py ./tools/
+RUN . /opt/ros/jazzy/setup.sh && colcon --log-base /tmp/guard-log build \
+    --base-paths ros/haetae_arm_guard --merge-install \
+    --build-base /tmp/guard-build --install-base /opt/haetae \
+    && ctest --test-dir /tmp/guard-build/haetae_arm_guard --output-on-failure
 RUN . /opt/ros/jazzy/setup.sh && python3 tools/build_product_visuals.py
 COPY --from=builder /src/target/release/haetae ./bin/haetae
 ENV ROS_DOMAIN_ID=81 RMW_IMPLEMENTATION=rmw_fastrtps_cpp

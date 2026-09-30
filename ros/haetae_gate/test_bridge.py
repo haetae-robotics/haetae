@@ -2,10 +2,18 @@ import json
 import sys
 import unittest
 
-from bridge import Bridge, BridgeFailure, require_fresh_actuation
+from bridge import Bridge, BridgeFailure, require_fresh_actuation, lease_renewable
 
 
 class BridgeTests(unittest.TestCase):
+    def test_arm_lease_requires_fresh_healthy_engine_response(self):
+        status = {"mode": "normal", "recorder_ok": True, "state_ok": True, "world_age_ms": 10}
+        self.assertTrue(lease_renewable({"status": status}, 20, 200, 50))
+        for change, elapsed in (({}, 50), ({}, -1), ({"world_age_ms": 180}, 20),
+                                ({"mode": "hold"}, 1), ({"recorder_ok": False}, 1),
+                                ({"state_ok": False}, 1), ({"world_age_ms": None}, 1)):
+            self.assertFalse(lease_renewable({"status": {**status, **change}}, elapsed, 200, 50))
+
     def fake(self, code, timeout=100):
         bridge = Bridge([sys.executable, "-u", "-c", code], timeout_ms=timeout)
         self.addCleanup(bridge.close)

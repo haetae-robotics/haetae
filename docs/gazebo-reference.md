@@ -13,9 +13,21 @@ The runner remaps Haetae's `/cmd_vel` publisher directly to the controller's
 The test checks approved base motion, a human-triggered zero command and base
 stop, out-of-bounds arm denial, arm action cancellation, a sealed incident log,
 and the base controller's command timeout after the bridge is killed. The
-human report is injected from test code, not inferred from a camera. The arm
-action controller has **no independent gateway-loss stop guarantee** in this
-setup; only the base deadman is tested after gate death.
+human report is injected from test code, not inferred from a camera. The
+reference arm uses `haetae_arm_guard/LeaseTrajectoryController`, a position-only
+ros2_control plugin with an independent 250 ms gateway lease. It checks both
+simulator time and monotonic wall time, rejects replayed, delayed and far-future
+heartbeats, holds measured joint positions on expiry, and discards the old
+trajectory. Heartbeat recovery alone cannot resume it. This guard still depends
+on the controller, simulator and OS running; it is not a hardware safety stop.
+
+After the base timeout test, the live scene shows three moving-arm faults:
+bridge kill, Rust child stall, and delayed bridge traffic (SIGSTOP/SIGCONT).
+Each uses a separate fresh test fixture after measured base stop; these fixtures
+are not an automatic production restart or operator reset. The controller's
+transition time, observation delay, all four held positions and post-stop drift
+are recorded in `result.json` under `arm_faults`. A dedicated headless case is
+available with `--arm-fault kill`, `stall` or `delay`.
 
 ## Run headlessly on Ubuntu 24.04
 
@@ -30,6 +42,9 @@ sudo apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp \
   ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
   ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
 source /opt/ros/jazzy/setup.bash
+colcon --log-base /tmp/guard-log build --base-paths ros/haetae_arm_guard \
+  --merge-install --build-base /tmp/guard-build --install-base /tmp/haetae-guard
+source /tmp/haetae-guard/setup.bash
 cargo build --release --locked -p haetae
 export ROS_DOMAIN_ID=81 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 python3 ros/gazebo/run_reference.py target/release/haetae --out /tmp/haetae-gazebo-run
