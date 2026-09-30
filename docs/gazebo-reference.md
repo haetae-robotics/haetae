@@ -305,3 +305,8 @@ The source signer, gateway and controller retain the Stage 2 UID/DDS isolation.
 Software rendering uses two Mesa worker threads per process to avoid
 oversubscribing container CPU quotas. Sensor freshness and stop budgets remain
 unchanged; rendering overload still fails closed rather than extending them.
+
+Native person pose services run in a spawned process. Blocking Gazebo Transport
+requests cannot hold the ROS world publisher or lidar callback's Python GIL.
+Only the latest desired geometry is shared; measured lidar input and its original
+200 ms freshness budget remain independent of the pose driver.

@@ -5,7 +5,9 @@ visuals and collisions, and gait follows simulation time / planted-foot IK.
 """
 
 import math
+import multiprocessing
 import threading
+import time
 from xml.etree import ElementTree as E
 
 PARTS = [("torso", "cylinder", (0.145, 0.65)), ("head", "sphere", (0.095,))]
@@ -177,6 +179,61 @@ def geometry_poses(position, motion):
     return result
 
 
+def _set_poses(node, poses):
+    from gz.msgs10.pose_v_pb2 import Pose_V
+    from gz.msgs10.boolean_pb2 import Boolean
+
+    request = Pose_V()
+    for name, (position, orientation) in poses.items():
+        p = request.pose.add()
+        p.name = name
+        p.position.x, p.position.y, p.position.z = position
+        p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = orientation
+    ok, response = node.request(
+        "/world/empty/set_pose_vector", request, Pose_V, Boolean, 100
+    )
+    return ok and response.data
+
+
+def _drive_native(target, calibration_ack, status, stop):
+    """Keep blocking native transport calls outside the ROS/sensor process.
+
+    A Python thread is insufficient: the transport binding can retain the GIL
+    while waiting for a service response. Shared memory holds only the latest
+    desired geometry, so a slow response cannot build a stale command queue.
+    """
+    from gz.transport13 import Node
+
+    node = Node()
+    previous = None
+    while not stop.is_set():
+        with target.get_lock():
+            present, x, y, heading, distance, visible, generation = target[:]
+        try:
+            if generation != calibration_ack.value:
+                poses = {
+                    "lidar_calibration": ((3, 7, 1.16 if visible else -5), (0, 0, 0, 1))
+                }
+                if _set_poses(node, poses):
+                    calibration_ack.value = int(generation)
+            position = (x, y) if present else None
+            poses = {
+                "person_" + name: value
+                for name, value in geometry_poses(
+                    position, {"heading": heading, "distance_m": distance}
+                ).items()
+            }
+            if poses != previous:
+                if _set_poses(node, poses):
+                    previous = poses
+                    status.value = 1
+                else:
+                    status.value = 0
+        except Exception:
+            status.value = 0
+        stop.wait(0.005)
+
+
 class NativeScene:
     def __init__(self, desired, perception):
         from gz.transport13 import Node
@@ -186,76 +243,77 @@ class NativeScene:
         self.node = Node()
         self.desired = desired
         self.running = True
-        self.error = None
         self.lock = threading.Lock()
-        self.request_lock = threading.Lock()
         self.observed = None
         self.observed_stamp_ms = None
         self.node.subscribe(LaserScan, "/haetae/sensors/bay_scan", perception.receive)
         self.node.subscribe(Pose_V, "/world/empty/pose/info", self.observe)
+        # Never fork an initialized ROS / Gazebo transport process.
+        context = multiprocessing.get_context("spawn")
+        self.target = context.Array("d", [0, 0, 0, 0, 0, 1, 0])
+        self.calibration_ack = context.Value("q", 0)
+        self.status = context.Value("i", -1)
+        self.stop = context.Event()
+        self.process = context.Process(
+            target=_drive_native,
+            args=(self.target, self.calibration_ack, self.status, self.stop),
+            daemon=True,
+        )
+        self.process.start()
         self.thread = threading.Thread(target=self.drive, daemon=True)
         self.thread.start()
+
+    @property
+    def error(self):
+        if not self.process.is_alive():
+            return "native pose driver exited"
+        if self.status.value == 0:
+            return "native person pose command not acknowledged"
+        return None
 
     def observe(self, msg):
         for p in msg.pose:
             if p.name == "person_torso":
                 with self.lock:
                     self.observed = (p.position.x, p.position.y, p.position.z)
-                    self.observed_stamp_ms = msg.header.stamp.sec * 1000 + msg.header.stamp.nsec // 1_000_000
+                    self.observed_stamp_ms = (
+                        msg.header.stamp.sec * 1000 + msg.header.stamp.nsec // 1_000_000
+                    )
 
-    def set_poses(self, poses):
-        from gz.msgs10.pose_v_pb2 import Pose_V
-        from gz.msgs10.boolean_pb2 import Boolean
-
-        request = Pose_V()
-        for name, (position, orientation) in poses.items():
-            p = request.pose.add()
-            p.name = name
-            p.position.x, p.position.y, p.position.z = position
-            p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = (
-                orientation
-            )
-        with self.request_lock:
-            ok, response = self.node.request(
-                "/world/empty/set_pose_vector", request, Pose_V, Boolean, 100
-            )
-        return ok and response.data
+    def observed_sample(self):
+        with self.lock:
+            return self.observed, self.observed_stamp_ms
 
     def drive(self):
-        import time
-
-        # This service worker cannot block ROS world publication/watchdogs.
-        previous = None
         while self.running:
-            try:
-                position, motion = self.desired()
-                poses = {
-                    "person_" + name: value
-                    for name, value in geometry_poses(position, motion).items()
-                }
-                if poses == previous:
-                    time.sleep(0.025)
-                    continue
-                if not self.set_poses(poses):
-                    self.error = "native person pose command not acknowledged"
-                else:
-                    self.error = None
-                    previous = poses
-            except Exception as exc:
-                self.error = str(exc)
-            time.sleep(0.025)
+            position, motion = self.desired()
+            motion = motion or {}
+            with self.target.get_lock():
+                self.target[:5] = [
+                    int(position is not None),
+                    *(position or (0, 0)),
+                    motion.get("heading", 0),
+                    motion.get("distance_m", 0),
+                ]
+            time.sleep(0.005)
 
     def calibration_visible(self, visible):
-        import time
-
-        poses = {"lidar_calibration": ((3, 7, 1.16 if visible else -5), (0, 0, 0, 1))}
+        with self.target.get_lock():
+            self.target[5] = int(visible)
+            self.target[6] += 1
+            generation = int(self.target[6])
         deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            if self.set_poses(poses):
+        while time.monotonic() < deadline and self.process.is_alive():
+            if self.calibration_ack.value == generation:
                 return True
-            time.sleep(0.05)
+            time.sleep(0.01)
         return False
 
     def close(self):
         self.running = False
         self.thread.join(timeout=2)
+        self.stop.set()
+        self.process.join(timeout=2)
+        if self.process.is_alive():
+            self.process.terminate()
+            self.process.join(timeout=2)

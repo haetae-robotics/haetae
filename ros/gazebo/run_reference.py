@@ -223,7 +223,7 @@ class GazeboWorld(Node):
         with self.human_lock:
             human_motion = self.human_motion
             present = self.human is not None
-        observed = self.native.observed if self.native else None
+        observed, native_stamp = self.native.observed_sample() if self.native else (None, None)
         render_humans = ([{"id": "sim-person", "class": "adult",
                           "pos": {"x": observed[0], "y": observed[1]}}]
                          if present and observed and observed[2] > 0 else [])
@@ -245,7 +245,7 @@ class GazeboWorld(Node):
         self._emit("telemetry", sim_ms=joint_stamp, x=x, y=y, speed=self.speed(),
                    joint=self.primary_joint(), joints=joints, yaw=yaw, humans=render_humans,
                    detections=humans, sensor=sensor,
-                   native_person_stamp_ms=self.native.observed_stamp_ms if self.native else None,
+                   native_person_stamp_ms=native_stamp,
                    human_motion=human_motion, model=MODEL_NAME)
 
     def propose_base(self, linear):
@@ -550,7 +550,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     def clear_person():
         if live and world.human is not None:
             world.marker("사람이 걸어 나갑니다", detail="정지 장면 확인이 끝났습니다. 사람의 이동이 끝나면 다음 시험을 준비합니다.")
-            world.begin_person_walk(world.human, person_entry(*world.pose(), world.heading()), speed=0.35)
+            world.begin_person_walk(world.human, person_entry(*world.pose(), world.heading()), speed=0.24)
             wait_for(world.person_walk_finished, 20, processes, "person exit path")
             world.freeze_person()
         if world.human is not None:
