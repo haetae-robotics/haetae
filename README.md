@@ -26,7 +26,7 @@ between a model and a person. Not done yet:
 
 - **Enforcement is under development.** A Rust watchdog and an rclpy bridge can
   send monitored base commands and short arm action chunks in a local reference
-  setup. No specific robot controller or SROS2 deployment has been validated.
+  setup. No target robot controller or production SROS2 deployment has been validated.
 - **2D disc base model.** Base paths, zones and the workspace are 2D and include
   a configurable footprint radius. Arm geometry, reach and 3D obstacles are
   not modeled.
