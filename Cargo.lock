@@ -244,27 +244,45 @@ dependencies = [
 
 [[package]]
 name = "haetae"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "clap",
  "haetae-core",
+ "haetae-enforce",
  "haetae-runtime",
  "haetae-sillok",
+ "hex",
+ "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
 [[package]]
 name = "haetae-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
  "serde_json",
 ]
 
 [[package]]
+name = "haetae-enforce"
+version = "0.0.3"
+dependencies = [
+ "ed25519-dalek",
+ "haetae-core",
+ "haetae-runtime",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "haetae-runtime"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "haetae-core",
  "haetae-sillok",
@@ -275,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "haetae-sillok"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "ed25519-dalek",
  "getrandom",
@@ -288,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "haetae-wasm"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "haetae-core",
  "serde_json",

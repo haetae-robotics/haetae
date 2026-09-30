@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ROS·Gazebo 차단 기록 | 해태</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { font-family: system-ui, -apple-system, sans-serif; color: #172426; background: #f6f5ef; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header, main, footer { max-width: 1120px; margin: auto; padding: 24px; }
+    header { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+    h1 { font-size: clamp(24px, 4vw, 36px); margin: 0 0 10px; letter-spacing: -.03em; }
+    h2 { font-size: 19px; margin: 0 0 16px; }
+    p { line-height: 1.6; }
+    .lede { max-width: 730px; margin: 0; color: #465354; }
+    .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 18px; }
+    .flow span { background: #e9eeeb; border-radius: 8px; padding: 7px 10px; }
+    .flow b { color: #667773; }
+    a { color: #1a5a57; }
+    .back { white-space: nowrap; }
+    .notice { padding: 14px 18px; background: #e5f0ec; border-left: 4px solid #358573; border-radius: 8px; }
+    .scenes { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0; }
+    button { font: inherit; cursor: pointer; }
+    .scene, .play { border: 1px solid #aebdb9; border-radius: 10px; background: #fff; color: #203430; padding: 10px 14px; }
+    .scene[aria-pressed="true"] { background: #174f48; color: #fff; border-color: #174f48; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(270px, 1fr); gap: 18px; }
+    .card { background: #fff; border: 1px solid #d9dfdc; border-radius: 16px; padding: 20px; box-shadow: 0 4px 24px #1724260a; }
+    canvas { display: block; width: 100%; height: auto; border-radius: 10px; background: #f8fbf8; }
+    .hint { color: #677574; font-size: 12px; margin: 8px 0 0; }
+    .controls { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+    input[type="range"] { flex: 1; accent-color: #206c5f; }
+    .time { min-width: 86px; text-align: right; font-variant-numeric: tabular-nums; color: #52605f; }
+    .status { background: #eef5f1; border-radius: 10px; padding: 14px; min-height: 88px; margin: 0 0 18px; }
+    .status strong { display: block; font-size: 19px; margin-bottom: 4px; }
+    .status span { color: #455654; }
+    dl { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 0 0 20px; }
+    dt { color: #61706e; } dd { margin: 0; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .events { list-style: none; padding: 0; margin: 0; border-top: 1px solid #e1e8e3; }
+    .events li { border-bottom: 1px solid #e1e8e3; padding: 10px 0; color: #647270; }
+    .events li.past { color: #203430; }
+    .events li.active { color: #a53d29; font-weight: 700; }
+    .events time { font-variant-numeric: tabular-nums; margin-right: 7px; }
+    footer { color: #60706c; font-size: 13px; }
+    @media (max-width: 750px) { header { display: block; } .back { display: inline-block; margin-top: 12px; } .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>ROS 명령을 Gazebo 로봇에서 막는 과정</h1>
+      <p class="lede">Gazebo가 계산한 바퀴 위치·속도와 팔 관절값에, ROS를 통해 전달된 명령에 대한 해태의 판정을 시간순으로 겹쳐 보여줍니다.</p>
+    </div>
+    <a class="back" href="./index.html">← 체험판으로</a>
+  </header>
+  <main>
+    <div class="flow" aria-label="명령이 움직임으로 이어지는 경로">
+      <span>AI가 명령 제안</span><b>→</b><span>ROS 2가 전달</span><b>→</b><span>해태가 통과·차단</span><b>→</b><span>Gazebo 가상 로봇이 움직임</span>
+    </div>
+    <p class="notice">이 화면은 <strong>실제 ROS·Gazebo CI 실행 기록의 재생</strong>입니다. Gazebo 프로그램 창을 녹화한 영상이나 지금 실행 중인 로봇 화면은 아닙니다. 위치 변화는 보기 쉽게 확대했고 로봇 그림은 개략도입니다.</p>
+    <div class="scenes" aria-label="볼 장면 선택">
+      <button class="scene" data-scene="base" aria-pressed="true">① 사람 등장 → 바퀴 정지</button>
+      <button class="scene" data-scene="arm-deny" aria-pressed="false">② 위험한 팔 명령 거부</button>
+      <button class="scene" data-scene="arm-cancel" aria-pressed="false">③ 팔 이동 중 취소</button>
+    </div>
+    <div class="grid">
+      <section class="card" aria-labelledby="visual-title">
+        <h2 id="visual-title">Gazebo 측정값</h2>
+        <canvas id="visual" width="900" height="400" role="img" aria-label="Gazebo가 측정한 로봇 위치와 사람 위치"></canvas>
+        <p class="hint">바퀴 위치는 Gazebo odometry, 팔 각도는 Gazebo joint state에서 온 값입니다. 그림 크기는 실제 로봇 크기와 무관합니다.</p>
+        <div class="controls">
+          <button class="play" id="play" aria-label="일시정지">일시정지</button>
+          <input id="seek" type="range" aria-label="기록 시간 이동" min="0" max="1000" value="0">
+          <span class="time" id="clock"></span>
+        </div>
+      </section>
+      <aside class="card" aria-labelledby="decision-title">
+        <h2 id="decision-title">ROS 명령과 해태 판정</h2>
+        <p class="status" aria-live="polite"><strong id="status-title">기록 불러오는 중</strong><span id="status-detail"></span></p>
+        <dl>
+          <dt>바퀴 속도</dt><dd id="speed">—</dd>
+          <dt>팔 관절 각도</dt><dd id="joint">—</dd>
+          <dt>사람 감지</dt><dd id="human">—</dd>
+        </dl>
+        <ol class="events" id="events"></ol>
+      </aside>
+    </div>
+  </main>
+  <footer>
+    <p>출처: <a href="https://github.com/haetae-robotics/haetae/actions/runs/36457675543">CI 실행 36457675543</a>의 <a href="./evidence/gazebo-snapshot.jsonl">서명된 사건 기록</a>과 <a href="./evidence/gazebo-result.json">검증 결과</a>. 원본 기록의 검증 방법은 <a href="./evidence/README.md">증거 안내</a>에 있습니다. 이 테스트는 실제 로봇의 정지 성능을 입증하지 않습니다.</p>
+  </footer>
+  <script type="module" src="./gazebo-replay.js"></script>
+</body>
+</html>

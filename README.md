@@ -24,22 +24,25 @@ adds defense in depth; it does not replace that layer.
 Haetae is **not** a certified safety function and must not be the only thing
 between a model and a person. Not done yet:
 
-- **No enforcement point.** There is no ROS 2 node or driver integration yet;
-  something else must actually refuse to execute what Haetae denies.
-- **2D point robot model.** Positions, paths, zones and the workspace are 2D;
-  arm geometry, reach and 3D obstacles are not modeled.
-- **Judged only at admission.** A command is checked once, when it arrives.
-  An approved action is not re-evaluated while it runs, even if the world changes.
-- **Unauthenticated inputs.** Proposal `source` fields and world snapshots are
-  taken at face value; nothing verifies who sent them.
-- **Mode is not persisted.** A raised mode (`caution`, `hold`, E-stop) resets
-  when the process restarts.
+- **Enforcement is under development.** A Rust watchdog and an rclpy bridge can
+  send monitored base commands and short arm action chunks in a local reference
+  setup. No target robot controller or production SROS2 deployment has been validated.
+- **2D disc base model.** Base paths, zones and the workspace are 2D and include
+  a configurable footprint radius. Arm geometry, reach and 3D obstacles are
+  not modeled.
+- **Arm geometry remains incomplete.** Short joint trajectories have bounds,
+  rate and tracking checks, but there is no 3D link or contact model.
+- **The deployment boundary is not established.** Signed inputs and a signed
+  trust bundle cover the Rust subprocess. The ROS graph still needs tested
+  SROS2 permissions and isolated keys on a target robot.
 
 ## Components
 
 - `haetae-core`: the policy gate (verdicts, envelope, rules, modes).
 - `haetae-runtime`: transport-agnostic gate loop: world updates, faults that
   raise the mode, proposals judged at trusted receive time, incidents recorded.
+- `haetae-enforce`: watchdog, re-arm latch, persistent mode and signed-input
+  verifier for short base and arm commands.
 - `sillok` (실록): hash-chained, Ed25519-sealed incident log with `verify` and `replay`.
 - `haetae`: the CLI (`keygen`, `judge`, `sillok verify`, `sillok replay`).
 
@@ -90,5 +93,30 @@ python3 -m http.server -d sim 8000                  # then open http://localhost
 Layout: `crates/haetae-core` (gate), `crates/haetae-runtime` (gate loop), `crates/sillok` (recorder), `crates/haetae-wasm` (simulator bindings), `crates/haetae` (CLI).
 Design contracts: [`docs/w1-contract.md`](docs/w1-contract.md) (gate, sillok),
 [`docs/w2-contract.md`](docs/w2-contract.md) (runtime).
+
+Security scope and release blockers: [`docs/security-release.md`](docs/security-release.md).
+Reference setup and test commands: [`docs/reference-deployment.md`](docs/reference-deployment.md).
+Private vulnerability reports: [`SECURITY.md`](SECURITY.md).
+The reference ROS base simulator and arm action test live in `ros/haetae_sim/`;
+the SROS2 policy template is `ros/security/haetae.policy.xml`. Their CI results
+measure only the simulated controller and hosted ROS setup.
+
+For a physics-backed virtual robot, `ros/gazebo/` connects the same gate to a
+Gazebo Harmonic **Husarion ROSbot XL + ROBOTIS OpenMANIPULATOR-X** through real
+`ros2_control` controllers (four standard wheels and four monitored arm joints).
+The manufacturer URDF and meshes are pinned locally with their licenses. Its [live browser view](sim/gazebo-live.html) shows the Gazebo 3D
+window beside streamed measurements and decisions while the reference runs.
+On macOS or Linux with Docker, run
+`ros/gazebo/run_docker.sh`, wait for `Live view:` in the terminal, then open
+`http://127.0.0.1:8765/` and press **시뮬레이션 시작** when the robot appears. The
+page also shows direct-command and forged-world attacks from a restricted
+ROS node on the same Gazebo graph. The replay check uses a fresh production
+enforcer. See the
+[Gazebo scope and evidence](docs/gazebo-reference.md) before treating those
+probe results as deployment evidence.
+The [Gazebo runbook](docs/gazebo-reference.md) has the native Ubuntu command. The
+[recorded replay](sim/gazebo-replay.html) works without Gazebo installed. These
+references still cannot establish a real robot's stop behavior or arm
+collision safety.
 
 > Status: **pre-alpha (0.0.x)**. Not a certified safety device.

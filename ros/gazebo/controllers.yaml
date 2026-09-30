@@ -1,0 +1,47 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    use_sim_time: true
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+diff_drive_base_controller:
+  ros__parameters:
+    type: diff_drive_controller/DiffDriveController
+    left_wheel_names: [fl_wheel_joint, rl_wheel_joint]
+    right_wheel_names: [fr_wheel_joint, rr_wheel_joint]
+    wheel_separation: 0.248
+    wheel_separation_multiplier: 1.3
+    wheel_radius: 0.048
+    publish_rate: 50.0
+    odom_frame_id: odom
+    base_frame_id: base_link
+    enable_odom_tf: false
+    open_loop: false
+    cmd_vel_timeout: 0.25
+    linear.x.max_velocity: 0.5
+    linear.x.min_velocity: -0.5
+    linear.x.max_acceleration: 1.0
+    linear.x.max_deceleration: -1.0
+    angular.z.max_velocity: 1.0
+    angular.z.min_velocity: -1.0
+    angular.z.max_acceleration: 2.0
+    angular.z.max_deceleration: -2.0
+
+joint_trajectory_controller:
+  ros__parameters:
+    type: joint_trajectory_controller/JointTrajectoryController
+    joints: [joint1, joint2, joint3, joint4]
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+    state_publish_rate: 50.0
+    action_monitor_rate: 50.0
+
+# Trusted simulator holds the gripper closed. No grasp proposal path is exposed.
+gripper_hold_controller:
+  ros__parameters:
+    type: joint_trajectory_controller/JointTrajectoryController
+    joints: [gripper_left_joint]
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+    state_publish_rate: 50.0

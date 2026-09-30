@@ -1,14 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/haetae", "crates/haetae-core", "crates/haetae-runtime", "crates/haetae-wasm", "crates/sillok"]
+members = ["crates/haetae", "crates/haetae-core", "crates/haetae-runtime", "crates/haetae-enforce", "crates/haetae-wasm", "crates/sillok"]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/haetae-robotics/haetae"
 
 [workspace.dependencies]
-haetae-core = { path = "crates/haetae-core", version = "0.0.2" }
-haetae-runtime = { path = "crates/haetae-runtime", version = "0.0.2" }
-sillok = { path = "crates/sillok", version = "0.0.2", package = "haetae-sillok" }
+haetae-core = { path = "crates/haetae-core", version = "0.0.3" }
+haetae-runtime = { path = "crates/haetae-runtime", version = "0.0.3" }
+haetae-enforce = { path = "crates/haetae-enforce", version = "0.0.3" }
+sillok = { path = "crates/sillok", version = "0.0.3", package = "haetae-sillok" }

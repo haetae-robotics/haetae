@@ -1,0 +1,59 @@
+import json
+import sys
+import unittest
+
+from bridge import Bridge, BridgeFailure, require_fresh_actuation
+
+
+class BridgeTests(unittest.TestCase):
+    def fake(self, code, timeout=100):
+        bridge = Bridge([sys.executable, "-u", "-c", code], timeout_ms=timeout)
+        self.addCleanup(bridge.close)
+        return bridge
+
+    def test_good_reply(self):
+        code = "import sys; sys.stdin.readline(); print('{\"cmd\":{\"linear\":0,\"angular\":0}}',flush=True)"
+        self.assertEqual(self.fake(code).request({"k": "tick", "t": 1})["cmd"]["linear"], 0)
+
+    def test_timeout_eof_and_malformed_reply(self):
+        cases = [
+            ("import sys,time; sys.stdin.readline(); time.sleep(2)", 20),
+            ("import sys; sys.stdin.readline()", 100),
+            ("import sys; sys.stdin.readline(); print('broken',flush=True)", 100),
+            ("import sys; sys.stdin.readline(); print('{\"cmd\":{\"linear\":NaN,\"angular\":0}}',flush=True)", 100),
+        ]
+        for code, timeout in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(BridgeFailure):
+                    self.fake(code, timeout).request({"k": "tick", "t": 1})
+
+    def test_oversized_request_is_refused_before_write(self):
+        bridge = self.fake("import time; time.sleep(2)")
+        with self.assertRaises(BridgeFailure):
+            bridge.request({"data": "a" * (1024 * 1024)})
+
+    def test_late_motion_cannot_reset_controller_deadman(self):
+        step = {"cmd": {"linear": 0.5, "angular": 0.0},
+                "status": {"active_expires_ms": 1200, "world_age_ms": 20}}
+        require_fresh_actuation(step, 40, 1040, 200, 50)
+        for elapsed, now, age, expiry in (
+            (60, 1060, 20, 1200),   # response budget exceeded
+            (40, 1200, 20, 1200),   # proposal expired
+            (40, 1040, 170, 1200),  # world basis expired
+        ):
+            with self.subTest(elapsed=elapsed, now=now, age=age):
+                late = {"cmd": step["cmd"], "status": {
+                    "active_expires_ms": expiry, "world_age_ms": age}}
+                with self.assertRaisesRegex(BridgeFailure, "stale actuation"):
+                    require_fresh_actuation(late, elapsed, now, 200, 50)
+        arm = {"cmd": {"linear": 0, "angular": 0}, "arm": {"execute": {}},
+               "status": {"active_expires_ms": 2000, "world_age_ms": 20}}
+        with self.assertRaises(BridgeFailure):
+            require_fresh_actuation(arm, 60, 1060, 200, 50)
+        for stop in ({"cmd": {"linear": 0, "angular": 0}},
+                     {"cmd": {"linear": 0, "angular": 0}, "arm": "cancel"}):
+            require_fresh_actuation(stop, 500, 1500, 200, 50)
+
+
+if __name__ == "__main__":
+    unittest.main()

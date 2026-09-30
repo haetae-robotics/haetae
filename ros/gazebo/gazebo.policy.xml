@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Docker reference only. The simulator, world publisher and gate are trusted
+     processes. Only the attacker/VLA enclave is intentionally restricted. -->
+<policy version="0.2.0">
+  <enclaves>
+    <enclave path="/haetae/sim">
+      <profiles><profile ns="/" node="*">
+        <topics publish="ALLOW"><topic>*</topic></topics>
+        <topics subscribe="ALLOW"><topic>*</topic></topics>
+        <services request="ALLOW" reply="ALLOW"><service>*</service></services>
+        <actions call="ALLOW" execute="ALLOW"><action>*</action></actions>
+      </profile></profiles>
+    </enclave>
+    <enclave path="/haetae/world">
+      <profiles><profile ns="/" node="*">
+        <topics publish="ALLOW"><topic>*</topic></topics>
+        <topics subscribe="ALLOW"><topic>*</topic></topics>
+        <services request="ALLOW" reply="ALLOW"><service>*</service></services>
+        <actions call="ALLOW" execute="ALLOW"><action>*</action></actions>
+      </profile></profiles>
+    </enclave>
+    <enclave path="/haetae/gate">
+      <profiles><profile ns="/" node="*">
+        <topics publish="ALLOW"><topic>*</topic></topics>
+        <topics subscribe="ALLOW"><topic>*</topic></topics>
+        <services request="ALLOW" reply="ALLOW"><service>*</service></services>
+        <actions call="ALLOW" execute="ALLOW"><action>*</action></actions>
+      </profile></profiles>
+    </enclave>
+    <enclave path="/haetae/vla">
+      <profiles><profile ns="/" node="vla_source">
+        <topics publish="ALLOW">
+          <topic>/vla/cmd_vel</topic><topic>/vla/arm</topic>
+          <topic>rosout</topic><topic>ros_discovery_info</topic>
+          <topic>/parameter_events</topic>
+        </topics>
+        <topics subscribe="ALLOW">
+          <topic>/clock</topic><topic>ros_discovery_info</topic>
+          <topic>/parameter_events</topic>
+        </topics>
+        <services request="ALLOW" reply="ALLOW">
+          <service>~/describe_parameters</service>
+          <service>~/get_parameter_types</service>
+          <service>~/get_parameters</service>
+          <service>~/list_parameters</service>
+          <service>~/set_parameters</service>
+          <service>~/set_parameters_atomically</service>
+          <service>~/get_type_description</service>
+        </services>
+      </profile></profiles>
+    </enclave>
+  </enclaves>
+</policy>

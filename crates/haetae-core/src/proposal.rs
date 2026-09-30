@@ -3,9 +3,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::Point2;
+use crate::world::Twist2;
 
 /// Where a proposal came from. Every source is untrusted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Vla,
@@ -18,10 +19,37 @@ pub enum Source {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionKind {
-    MoveTo { goal: Point2, speed: f64 },
-    Grasp { object: String, at: Point2 },
-    Place { at: Point2 },
+    MoveTo {
+        goal: Point2,
+        speed: f64,
+    },
+    Grasp {
+        object: String,
+        at: Point2,
+    },
+    Place {
+        at: Point2,
+    },
     Stop,
+    /// Body-frame command for a differential drive base.
+    Velocity {
+        linear: f64,
+        angular: f64,
+        ttl_ms: u64,
+    },
+    /// Ordered joint waypoints. Each segment is checked against the trusted
+    /// measured joint state; execution still requires a monitored adapter.
+    JointTrajectory {
+        points: Vec<JointWaypoint>,
+        ttl_ms: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointWaypoint {
+    pub time_from_start_ms: u64,
+    pub positions: Vec<f64>,
 }
 
 impl ActionKind {
@@ -33,13 +61,16 @@ impl ActionKind {
             ActionKind::MoveTo { goal: target, .. }
             | ActionKind::Grasp { at: target, .. }
             | ActionKind::Place { at: target } => Some((pose, *target)),
-            ActionKind::Stop => None,
+            ActionKind::Stop | ActionKind::Velocity { .. } | ActionKind::JointTrajectory { .. } => {
+                None
+            }
         }
     }
 
     pub(crate) fn speed(&self) -> Option<f64> {
         match self {
             ActionKind::MoveTo { speed, .. } => Some(*speed),
+            ActionKind::Velocity { linear, .. } => Some(linear.abs()),
             _ => None,
         }
     }
@@ -50,6 +81,22 @@ impl ActionKind {
                 goal: *goal,
                 speed: v,
             },
+            ActionKind::Velocity {
+                linear,
+                angular,
+                ttl_ms,
+            } => {
+                let factor = if *linear == 0.0 {
+                    1.0
+                } else {
+                    v / linear.abs()
+                };
+                ActionKind::Velocity {
+                    linear: linear * factor,
+                    angular: angular * factor,
+                    ttl_ms: *ttl_ms,
+                }
+            }
             other => other.clone(),
         }
     }
@@ -60,6 +107,16 @@ impl ActionKind {
                 goal.is_finite() && speed.is_finite() && *speed >= 0.0
             }
             ActionKind::Grasp { at, .. } | ActionKind::Place { at } => at.is_finite(),
+            ActionKind::Velocity {
+                linear, angular, ..
+            } => Twist2 {
+                linear: *linear,
+                angular: *angular,
+            }
+            .is_finite(),
+            ActionKind::JointTrajectory { points, .. } => points
+                .iter()
+                .all(|p| p.positions.iter().all(|x| x.is_finite())),
             ActionKind::Stop => true,
         }
     }
@@ -74,6 +131,14 @@ impl fmt::Display for ActionKind {
             ActionKind::Grasp { object, at } => write!(f, "grasp({object} at {}, {})", at.x, at.y),
             ActionKind::Place { at } => write!(f, "place({}, {})", at.x, at.y),
             ActionKind::Stop => write!(f, "stop"),
+            ActionKind::Velocity {
+                linear,
+                angular,
+                ttl_ms,
+            } => write!(f, "velocity({linear} m/s, {angular} rad/s, {ttl_ms} ms)"),
+            ActionKind::JointTrajectory { points, ttl_ms } => {
+                write!(f, "joint_trajectory({} points, {ttl_ms} ms)", points.len())
+            }
         }
     }
 }

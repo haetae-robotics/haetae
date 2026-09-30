@@ -48,6 +48,9 @@ fn world() -> WorldSnapshot {
         stamp_ms: NOW,
         robot: RobotState {
             pose: Point2::new(1.0, 1.0),
+            yaw: None,
+            twist: None,
+            joints: None,
             holding: None,
         },
         humans: Vec::new(),

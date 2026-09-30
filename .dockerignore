@@ -1,0 +1,10 @@
+.git
+target
+artifacts
+.omx
+.playwright-cli
+sim/pkg
+sim/examples
+**/__pycache__
+**/*.seed
+sillok*.jsonl

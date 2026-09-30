@@ -102,3 +102,180 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           python3 ros/smoke/json_roundtrip.py
+      - name: Gate transport imports
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
+          source /opt/ros/jazzy/setup.bash
+          PYTHONPATH=ros/haetae_gate:$PYTHONPATH python3 -c 'import node; import bridge; import signing'
+
+  gate-python:
+    name: ROS bridge and signing core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: python -m pip install cryptography
+      - run: python -m unittest discover -s ros/haetae_gate -p 'test_*.py' -v
+      - run: python -m unittest discover -s ros/security -p 'test_*.py' -v
+
+  sros-policy:
+    name: SROS2 permission generation
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 79
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    steps:
+      - uses: actions/checkout@v7
+      - name: Generate role-specific signed permissions
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-sros2 ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
+          source /opt/ros/jazzy/setup.bash
+          store=$(mktemp -d)
+          ros2 security create_keystore "$store"
+          for enclave in /haetae/gate /haetae/world /haetae/vla /haetae/controller; do
+            ros2 security create_enclave "$store" "$enclave"
+            ros2 security create_permission "$store" "$enclave" ros/security/haetae.policy.xml
+            test -s "$store/enclaves$enclave/permissions.p7s"
+          done
+          python3 ros/security/secure_probe.py orchestrate "$store"
+
+  build-linux:
+    name: Linux gate binary
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p haetae
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haetae-linux
+          path: target/release/haetae
+
+  ros-gate-e2e:
+    name: ROS 2 signed gate smoke
+    needs: build-linux
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 76
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: haetae-linux
+          path: bin
+      - name: Signed world and VLA through ROS to base output
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs
+          source /opt/ros/jazzy/setup.bash
+          chmod +x bin/haetae
+          python3 ros/smoke/enforce_roundtrip.py bin/haetae
+          ROS_DOMAIN_ID=80 python3 ros/smoke/enforce_roundtrip.py bin/haetae --unstamped
+
+  ros-sim-e2e:
+    name: ROS 2 reference scenarios
+    needs: build-linux
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 77
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: haetae-linux
+          path: bin
+      - name: Run eight scenarios five times
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
+          source /opt/ros/jazzy/setup.bash
+          chmod +x bin/haetae
+          python3 -m unittest discover -s ros/haetae_sim -p 'test_*.py' -v
+          for repeat in 1 2 3 4 5; do
+            for scenario in 1 2 3 4 5 6 7 8; do
+              python3 ros/haetae_sim/run_scenario.py bin/haetae "$scenario" --repeat "$repeat" --out "artifacts/ros-e2e/$scenario-$repeat"
+            done
+          done
+          python3 ros/haetae_sim/summarize.py artifacts/ros-e2e >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ros-e2e-evidence
+          path: artifacts/ros-e2e
+          if-no-files-found: warn
+
+  ros-arm-e2e:
+    name: ROS 2 arm action reference
+    needs: build-linux
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 78
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: haetae-linux
+          path: bin
+      - name: Signed arm action, cancellation and deadman
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
+          source /opt/ros/jazzy/setup.bash
+          chmod +x bin/haetae
+          python3 ros/haetae_sim/arm_smoke.py bin/haetae
+
+  gazebo-reference:
+    name: Gazebo physics base and arm reference
+    needs: build-linux
+    runs-on: ubuntu-latest
+    container: ros:jazzy
+    env:
+      ROS_DOMAIN_ID: 81
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: haetae-linux
+          path: bin
+      - name: Gazebo Harmonic with ros2_control controllers
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp \
+            ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
+            ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
+          source /opt/ros/jazzy/setup.bash
+          chmod +x bin/haetae
+          python3 -m unittest discover -s ros/gazebo -p 'test_*.py' -v
+          python3 ros/gazebo/check_live_stream.py --port 8765 \
+            --out artifacts/gazebo-reference/live-stream.jsonl &
+          live_checker=$!
+          python3 ros/gazebo/run_reference.py bin/haetae \
+            --out artifacts/gazebo-reference --live-port 8765 --wait-for-viewer \
+            --live-hold-seconds 0
+          wait "$live_checker"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gazebo-reference-evidence
+          path: artifacts/gazebo-reference
+          if-no-files-found: warn

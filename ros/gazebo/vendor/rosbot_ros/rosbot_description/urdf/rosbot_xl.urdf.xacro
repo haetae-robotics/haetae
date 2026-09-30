@@ -1,0 +1,62 @@
+<?xml version='1.0'?>
+<robot name="rosbot_xl" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="components_config" default="" />
+  <xacro:arg name="configuration" default="basic" />
+  <xacro:arg name="controller_config" default="" />
+  <xacro:arg name="manipulator_serial_port" default="/dev/ttyUSB0" />
+  <xacro:arg name="mecanum" default="False" />
+  <xacro:arg name="namespace" default="" />
+  <!-- The arm runs under its own manipulator_controller_manager (see MANIPULATOR.md), so each
+       controller_manager gets a description with only its own <ros2_control> blocks. The
+       defaults produce the drive's description; manipulator_supervisor builds the arm's with
+       robot_ros2_control:=False manipulator_ros2_control:=True. -->
+  <xacro:arg name="manipulator_ros2_control" default="False" />
+  <xacro:arg name="robot_ros2_control" default="True" />
+  <xacro:arg name="use_sim" default="False" />
+
+  <!-- Soft compat: if components_config is not given explicitly, derive it
+       from configuration so the two stay in sync. -->
+  <xacro:property name="components_config_resolved"
+    value="${'$(arg components_config)' if '$(arg components_config)' else '$(find rosbot_description)/config/rosbot_xl/$(arg configuration).yaml'}" />
+
+  <xacro:include filename="$(find rosbot_description)/urdf/rosbot_xl/rosbot_xl_macro.urdf.xacro" ns="husarion" />
+  <xacro:include filename="$(find husarion_components_description)/urdf/components.urdf.xacro" ns="components" />
+
+  <xacro:husarion.rosbot_xl
+    controller_config="$(arg controller_config)"
+    mecanum="$(arg mecanum)"
+    namespace="$(arg namespace)"
+    ros2_control_enabled="$(arg robot_ros2_control)"
+    use_sim="$(arg use_sim)" />
+
+  <xacro:components.create_components
+    components_config_path="${components_config_resolved}"
+    namespace="$(arg namespace)"
+    use_sim="$(arg use_sim)"
+    use_tf_prefix="False" />
+
+  <xacro:if value="${'$(arg configuration)'.startswith('manipulation')}">
+    <xacro:include filename="$(find rosbot_description)/urdf/open_manipulator/open_manipulator_x_macro.xacro" />
+
+    <xacro:open_manipulator_x
+      parent_link="'cover_link'"
+      xyz="-0.11 0.0 0.0"
+      device_namespace="''"
+      use_sim="$(arg use_sim)"
+      port_name="$(arg manipulator_serial_port)"
+      ros2_control_enabled="$(arg manipulator_ros2_control)"/>
+
+    <xacro:if value="$(arg use_sim)">
+      <xacro:if value="$(arg robot_ros2_control)">
+        <xacro:include filename="$(find rosbot_description)/urdf/common/gazebo.urdf.xacro" ns="gazebo" />
+        <xacro:gazebo.controller
+          config_file="$(arg controller_config)"
+          namespace="$(arg namespace)"
+          controller_manager_name="manipulator_controller_manager"
+          robot_description_topic="manipulator_controller_manager/robot_description" />
+      </xacro:if>
+    </xacro:if>
+  </xacro:if>
+
+</robot>

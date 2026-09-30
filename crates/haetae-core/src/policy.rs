@@ -13,6 +13,11 @@ use crate::world::HumanClass;
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub envelope: Envelope,
+    /// Required before velocity commands can be admitted.
+    #[serde(default)]
+    pub base: Option<Base>,
+    #[serde(default)]
+    pub arm: Option<Arm>,
     /// Proposals from any other source are denied (except `Stop`). Required:
     /// forgetting it must not mean "allow everyone".
     pub allowed_sources: Vec<Source>,
@@ -22,6 +27,39 @@ pub struct Policy {
     pub zones: Vec<Zone>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Base {
+    pub footprint_radius: f64,
+    pub max_decel: f64,
+    pub max_angular: f64,
+    pub latency_ms: u64,
+    pub max_ttl_ms: u64,
+    #[serde(default)]
+    pub allow_reverse: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Arm {
+    pub joints: Vec<JointLimit>,
+    pub max_points: usize,
+    pub max_duration_ms: u64,
+    pub max_start_error: f64,
+    pub max_tracking_error: f64,
+    pub min_confidence: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointLimit {
+    pub name: String,
+    pub min_position: f64,
+    pub max_position: f64,
+    pub max_velocity: f64,
+    pub max_acceleration: f64,
 }
 
 /// Upper bound for every freshness budget: one minute.
@@ -150,6 +188,60 @@ impl Policy {
         }
         if !self.envelope.workspace.is_valid() {
             return invalid("envelope.workspace is not a valid rectangle".into());
+        }
+        if let Some(base) = &self.base {
+            if !base.footprint_radius.is_finite() || base.footprint_radius <= 0.0 {
+                return invalid("base.footprint_radius must be positive".into());
+            }
+            if !base.max_decel.is_finite() || base.max_decel <= 0.0 {
+                return invalid("base.max_decel must be positive".into());
+            }
+            if !base.max_angular.is_finite() || base.max_angular <= 0.0 {
+                return invalid("base.max_angular must be positive".into());
+            }
+            if base.latency_ms > MAX_FRESHNESS_BUDGET_MS {
+                return invalid("base.latency_ms exceeds freshness budget".into());
+            }
+            if base.max_ttl_ms == 0 || base.max_ttl_ms > self.freshness.proposal_max_age_ms {
+                return invalid(
+                    "base.max_ttl_ms must be positive and no greater than proposal_max_age_ms"
+                        .into(),
+                );
+            }
+        }
+        if let Some(arm) = &self.arm {
+            if arm.joints.is_empty()
+                || arm.joints.len() > 32
+                || arm.max_points < 3
+                || arm.max_points > 256
+                || arm.max_duration_ms == 0
+                || arm.max_duration_ms > self.freshness.proposal_max_age_ms
+                || !arm.max_start_error.is_finite()
+                || arm.max_start_error < 0.0
+                || !arm.max_tracking_error.is_finite()
+                || arm.max_tracking_error <= 0.0
+                || !(0.0..=1.0).contains(&arm.min_confidence)
+            {
+                return invalid("arm configuration exceeds bounds or is empty".into());
+            }
+            let mut names = HashSet::new();
+            for joint in &arm.joints {
+                if joint.name.is_empty()
+                    || !names.insert(&joint.name)
+                    || !joint.min_position.is_finite()
+                    || !joint.max_position.is_finite()
+                    || joint.min_position >= joint.max_position
+                    || !joint.max_velocity.is_finite()
+                    || joint.max_velocity <= 0.0
+                    || !joint.max_acceleration.is_finite()
+                    || joint.max_acceleration <= 0.0
+                {
+                    return invalid(format!(
+                        "arm joint `{}` has invalid limits or duplicate name",
+                        joint.name
+                    ));
+                }
+            }
         }
         let f = &self.freshness;
         let budgets = [

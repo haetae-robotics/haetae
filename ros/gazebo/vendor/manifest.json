@@ -1,0 +1,40 @@
+[
+  {
+    "repository": "https://github.com/husarion/rosbot_ros",
+    "commit": "ff77c662bdfd1fac933af74df488c917f987afc5",
+    "license": "Apache-2.0",
+    "directory": "rosbot_ros",
+    "files": {
+      "rosbot_description/urdf/rosbot_xl/body.urdf.xacro": "fe9213e5629aaace79538eb576a509cbb533a4cfe15d0348af3c203c358dbce0",
+      "rosbot_description/urdf/rosbot_xl/wheel.urdf.xacro": "afe35ae96845f89002929a8c78c391f60c6d5c82e869e8879711ffc9ee952613",
+      "rosbot_description/urdf/rosbot_xl/components/antenna.urdf.xacro": "cf0dc3976e93ed0c65fee804005768e4a92c83a5f32eb34a07c1e6e4e093b246",
+      "rosbot_description/urdf/open_manipulator/body.xacro": "ea79a7e259434d0249b5a07f1d0b52cee847f3d56d95d9413a37145e6c2b97e1",
+      "rosbot_description/meshes/rosbot_xl/body.dae": "e4f55005253c91cc3fa11de62a121f94481591d7bad149e7341dd4eea31bf564",
+      "rosbot_description/meshes/rosbot_xl/body_colision.stl": "c2a5fbb0022aa1ce94b030b646ce448e6927a5bb8bf6d1e107258c1de449ae68",
+      "rosbot_description/meshes/rosbot_xl/wheel_a.dae": "2a9203e0ce8d5a11a7060da49731da5bad2755d8c122dadf91d7e4fda208c4bc",
+      "rosbot_description/meshes/rosbot_xl/wheel_b.dae": "a1d82f356113eee3141df45519fe98cac2256694f3ccfd6a334a92d6211ab86a",
+      "rosbot_description/meshes/rosbot_xl/components/antenna.dae": "200e0d3326a296e1ae202815f49513c1e4026345642ab30eb60e98eb2e8d43c2",
+      "rosbot_description/meshes/rosbot_xl/components/antenna_connector.dae": "5827e449712e29e17abde51433012813342596400fbd2d0147965d098bc15162",
+      "rosbot_description/package.xml": "ad21faba4e5b0baa16accedc7b6a2d0c68fbb4dbfd381709429325e6a5b352c6",
+      "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "rosbot_description/urdf/rosbot_xl.urdf.xacro": "810beb8d931d320151f2ffafe394554448ea1f1274110b788c156e0a6f662077",
+      "rosbot_moveit/config/rosbot_xl.srdf": "ded973117d42e0e1db62414dc35c39c9ab7f4e1d8f2cfabb2f0ad21d53b31f9c"
+    }
+  },
+  {
+    "repository": "https://github.com/ROBOTIS-GIT/open_manipulator",
+    "commit": "9f84095404d3e596267cd520e90963011059ebf6",
+    "license": "Apache-2.0",
+    "directory": "open_manipulator",
+    "files": {
+      "open_manipulator_description/meshes/open_manipulator_x/link2.stl": "20a6cc8a673b90ab02f97e4c2f0437ff692e71daded8a82a77b54254ae877c66",
+      "open_manipulator_description/meshes/open_manipulator_x/link3.stl": "e6904447bca7888acb6a3a170d220b12e92f6dbf53c560987527cfd115f6eb19",
+      "open_manipulator_description/meshes/open_manipulator_x/link4.stl": "9da72baf0854e0335bf0fe199da3676c57625e17277a4fa455b995130b29ffab",
+      "open_manipulator_description/meshes/open_manipulator_x/link5.stl": "75e7596295dd5f5cbc68d81b2c875058f28721f98d7402d2d431ccf2334b57a6",
+      "open_manipulator_description/meshes/open_manipulator_x/gripper_left_palm.stl": "fb4dfabe68712bbba34deb9f8469f9187009c07579dccd5401b82d08de425267",
+      "open_manipulator_description/meshes/open_manipulator_x/gripper_right_palm.stl": "a5bfc10a067c806a19062e2fcb58989623a09edc0e9bbc4fd735a56d83f99752",
+      "open_manipulator_description/package.xml": "a85d7aff8bab6d8a710282ae21d831ae0a9f3d606d6672b5aa677e640678529e",
+      "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    }
+  }
+]

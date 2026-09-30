@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HAETAE — 로봇 보안 검증</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./gazebo-live.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="해태 라이브 처음 화면">
+      <svg viewBox="0 0 28 32" aria-hidden="true"><path d="M3 4 14 1l11 3v15L14 30 3 19Z"/><path d="M9 9v12m10-12v12M9 15h10"/></svg>
+      <span>HAETAE</span>
+    </a>
+    <span class="product-name">Physical AI Security</span>
+    <div class="connection-wrap"><span class="local-label">LOCAL SESSION</span><span class="badge" id="connection" data-state="connecting" role="status">연결 중</span></div>
+  </header>
+  <main class="studio">
+    <div class="workspace-heading">
+      <div><p class="eyebrow">SIMULATION / REFERENCE 01</p><h1>로봇 보안 검증</h1></div>
+      <p class="workspace-intro">위험한 명령이 오면, 로봇은 멈출까요?<br><span>움직임부터 차단까지, 한 장면씩 확인하세요.</span></p>
+    </div>
+    <div class="workspace">
+      <section class="viewport" aria-labelledby="world-title">
+        <div class="viewport-toolbar">
+          <h2 id="world-title"><span class="viewport-dot"></span>검증 공간 <span class="subtle">01</span></h2>
+          <div class="viewer-tabs" id="viewer-tabs" hidden role="group" aria-label="화면 선택">
+            <button id="show-reconstruction" type="button" aria-pressed="true">라이브 3D</button>
+            <button id="show-gazebo" type="button" aria-pressed="false">Gazebo 원본</button>
+          </div>
+        </div>
+        <div class="scene">
+          <canvas id="visual" role="img" aria-label="Gazebo 측정값으로 재구성한 로봇의 3D 움직임"></canvas>
+          <iframe id="gazebo-gui" title="실제 Gazebo Harmonic 시뮬레이터" hidden></iframe>
+          <div class="scene-meta"><span id="scene-label">Gazebo 측정값 · 3D 재구성</span><span class="model-id">ROSbot XL <i>OpenMANIPULATOR-X / 4축 팔</i></span></div>
+          <strong class="scene-alert" id="scene-alert" role="status" hidden></strong>
+          <p class="scene-hold" id="scene-hold" hidden><span class="pause-icon" aria-hidden="true">Ⅱ</span> 장면 확인 중 <span>하단의 ‘다음 단계’로 계속</span></p>
+        </div>
+        <div class="instruments" aria-label="실시간 측정값">
+          <div><span>바퀴 속도</span><strong id="speed">—</strong></div>
+          <div><span>팔 회전 · joint1</span><strong id="joint">—</strong></div>
+          <div><span>물리 시간</span><strong id="sim-time">—</strong></div>
+          <div class="instrument-tag"><span class="live-dot"></span> GAZEBO TELEMETRY</div>
+        </div>
+        <p class="scene-note" id="scene-note">Gazebo의 실제 위치·관절 측정값을 표시합니다. 드래그로 회전 · 스크롤로 확대</p>
+      </section>
+      <aside class="inspector" aria-labelledby="judgment-title">
+        <div class="inspector-heading"><h2 id="judgment-title">실시간 판정</h2><span class="eyebrow">HAETAE GATE</span></div>
+        <section class="current-state" aria-live="polite">
+          <span class="verdict" id="verdict" data-kind="waiting">판정 대기</span>
+          <h3 id="phase">로봇 준비 중</h3>
+          <p id="detail">시뮬레이터와 연결하고 있습니다.</p>
+          <p class="next-step" id="next-step">로봇이 준비되면 하단의 시작 버튼을 눌러 주세요.</p>
+        </section>
+        <section class="attack-lab" id="attack-lab" aria-labelledby="attack-title" hidden>
+          <div class="section-label"><h3 id="attack-title">공격 검증</h3><span>03 CHECKS</span></div>
+          <div class="attack-list">
+            <article class="attack-card" id="attack-direct" data-state="pending"><span class="attack-index">01</span><div><h4>바퀴에 직접 명령</h4><strong id="attack-direct-state">대기</strong><p id="attack-direct-detail">공격자 권한으로 제어 명령을 보냅니다.</p></div></article>
+            <article class="attack-card" id="attack-world" data-state="pending"><span class="attack-index">02</span><div><h4>사람 정보 위조</h4><strong id="attack-world-state">대기</strong><p id="attack-world-detail">가짜 보고와 변조된 서명을 시험합니다.</p></div></article>
+            <article class="attack-card" id="attack-replay" data-state="pending"><span class="attack-index">03</span><div><h4>승인 명령 재전송</h4><strong id="attack-replay-state">대기</strong><p id="attack-replay-detail">이미 사용한 서명 명령을 다시 보냅니다.</p></div></article>
+          </div>
+          <details class="scope"><summary>검증 범위</summary><p id="attack-scope">적용 범위를 확인하고 있습니다.</p></details>
+        </section>
+        <section class="event-section"><div class="section-label"><h3>이벤트</h3><span>RECENT</span></div><ol class="events" id="events" aria-label="최근 사건"></ol></section>
+        <details class="technical"><summary>상세 측정값</summary><dl><dt>마지막 바퀴 명령</dt><dd id="command">—</dd><dt>보고된 사람 거리</dt><dd id="human">—</dd></dl></details>
+      </aside>
+    </div>
+    <p class="honesty">사람 표시는 주입한 테스트 보고입니다. 제조사 공개 모델 ROSbot XL + OpenMANIPULATOR-X를 사용합니다. 실물 안전 성능은 별도 검증이 필요합니다. <a href="./gazebo-replay.html">이전 기록 ↗</a></p>
+  </main>
+  <footer class="transport">
+    <div class="transport-inner">
+      <div class="run-progress" role="group" aria-label="진행 단계">
+        <div class="progress-caption"><span class="eyebrow">SCENARIO</span><strong id="stage-label">준비 / 6개 장면</strong></div>
+        <ol class="stage-track" id="stage-track">
+          <li id="stage-1"><span id="stage-number-1">01</span> 사람 접근</li><li id="stage-2"><span id="stage-number-2">02</span> 명령 제한</li><li id="stage-3"><span id="stage-number-3">03</span> 팔 취소</li><li id="stage-4"><span id="stage-number-4">04</span> 접근 권한</li><li id="stage-5"><span id="stage-number-5">05</span> 연결 종료</li><li id="stage-6"><span id="stage-number-6">06</span> 재전송</li>
+        </ol>
+      </div>
+      <div class="run-action"><button id="start-simulation" class="start-button" type="button" hidden>▶ 시뮬레이션 시작</button><p id="start-help">준비가 끝나면 시작할 수 있습니다.</p></div>
+      <span id="step-two" class="sr-only">시작 버튼 누르기</span><span id="step-three" class="sr-only">장면 확인 후 다음 단계 누르기</span>
+    </div>
+  </footer>
+  <script type="importmap">{"imports":{"three":"./vendor/three/three.module.js","three/addons/":"./vendor/three/"}}</script>
+  <script type="module" src="./gazebo-live.js"></script>
+</body>
+</html>
