@@ -1,53 +1,178 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- Docker reference only. The simulator, world publisher and gate are trusted
-     processes. Only the attacker/VLA enclave is intentionally restricted. -->
+<?xml version='1.0' encoding='UTF-8'?>
 <policy version="0.2.0">
   <enclaves>
     <enclave path="/haetae/sim">
-      <profiles><profile ns="/" node="*">
-        <topics publish="ALLOW"><topic>*</topic></topics>
-        <topics subscribe="ALLOW"><topic>*</topic></topics>
-        <services request="ALLOW" reply="ALLOW"><service>*</service></services>
-        <actions call="ALLOW" execute="ALLOW"><action>*</action></actions>
-      </profile></profiles>
+      <profiles>
+        <profile ns="/" node="*">
+          <topics publish="ALLOW">
+            <topic>/clock</topic>
+            <topic>/robot_description</topic>
+            <topic>/joint_states</topic>
+            <topic>/tf</topic>
+            <topic>/tf_static</topic>
+            <topic>/diff_drive_base_controller/odom</topic>
+            <topic>/diff_drive_base_controller/controller_state</topic>
+            <topic>/joint_trajectory_controller/controller_state</topic>
+            <topic>/joint_trajectory_controller/state</topic>
+            <topic>/joint_trajectory_controller/guard_state</topic>
+            <topic>/gripper_hold_controller/*</topic>
+            <topic>/controller_manager/*</topic>
+            <topic>/rosout</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+            <topic>/dynamic_joint_states</topic>
+            <topic>/joint_trajectory_controller/transition_event</topic>
+            <topic>/joint_state_broadcaster/transition_event</topic>
+            <topic>/diff_drive_base_controller/transition_event</topic>
+            <topic>/diagnostics</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/clock</topic>
+            <topic>/robot_description</topic>
+            <topic>/diff_drive_base_controller/cmd_vel</topic>
+            <topic>/haetae_gate/heartbeat</topic>
+            <topic>/joint_trajectory_controller/joint_trajectory</topic>
+            <topic>/gripper_hold_controller/joint_trajectory</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+            <topic>/joint_states</topic>
+            <topic>/joint_trajectory_controller/speed_scaling_input</topic>
+            <topic>/gripper_hold_controller/speed_scaling_input</topic>
+          </topics>
+          <services reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+            <service>~/query_state</service>
+            <service>~/get_logger_levels</service>
+            <service>~/set_logger_levels</service>
+            <service>/controller_manager/*</service>
+          </services>
+          <services request="ALLOW">
+            <service>/controller_manager/*</service>
+          </services>
+          <actions execute="ALLOW">
+            <action>/joint_trajectory_controller/follow_joint_trajectory</action>
+            <action>/gripper_hold_controller/follow_joint_trajectory</action>
+          </actions>
+        </profile>
+      </profiles>
     </enclave>
     <enclave path="/haetae/world">
-      <profiles><profile ns="/" node="*">
-        <topics publish="ALLOW"><topic>*</topic></topics>
-        <topics subscribe="ALLOW"><topic>*</topic></topics>
-        <services request="ALLOW" reply="ALLOW"><service>*</service></services>
-        <actions call="ALLOW" execute="ALLOW"><action>*</action></actions>
-      </profile></profiles>
+      <profiles>
+        <profile ns="/" node="*">
+          <topics publish="ALLOW">
+            <topic>/haetae_input/world</topic>
+            <topic>/haetae_input/fault</topic>
+            <topic>/haetae_gate/signed/world</topic>
+            <topic>/haetae_gate/signed/fault</topic>
+            <topic>/rosout</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/clock</topic>
+            <topic>/joint_states</topic>
+            <topic>/diff_drive_base_controller/odom</topic>
+            <topic>/diff_drive_base_controller/cmd_vel</topic>
+            <topic>/haetae_gate/state</topic>
+            <topic>/haetae_gate/outcome</topic>
+            <topic>/haetae_input/world</topic>
+            <topic>/haetae_input/fault</topic>
+            <topic>/joint_trajectory_controller/guard_state</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <services reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+            <service>~/query_state</service>
+            <service>~/get_logger_levels</service>
+            <service>~/set_logger_levels</service>
+          </services>
+        </profile>
+      </profiles>
     </enclave>
     <enclave path="/haetae/gate">
-      <profiles><profile ns="/" node="*">
-        <topics publish="ALLOW"><topic>*</topic></topics>
-        <topics subscribe="ALLOW"><topic>*</topic></topics>
-        <services request="ALLOW" reply="ALLOW"><service>*</service></services>
-        <actions call="ALLOW" execute="ALLOW"><action>*</action></actions>
-      </profile></profiles>
+      <profiles>
+        <profile ns="/" node="*">
+          <topics publish="ALLOW">
+            <topic>/diff_drive_base_controller/cmd_vel</topic>
+            <topic>/haetae_gate/heartbeat</topic>
+            <topic>/haetae_gate/state</topic>
+            <topic>/haetae_gate/outcome</topic>
+            <topic>/haetae_gate/decision</topic>
+            <topic>/rosout</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/clock</topic>
+            <topic>/haetae_gate/signed/world</topic>
+            <topic>/haetae_gate/signed/fault</topic>
+            <topic>/haetae_gate/signed/vla</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <services reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+            <service>~/query_state</service>
+            <service>~/get_logger_levels</service>
+            <service>~/set_logger_levels</service>
+          </services>
+          <actions call="ALLOW">
+            <action>/joint_trajectory_controller/follow_joint_trajectory</action>
+          </actions>
+        </profile>
+      </profiles>
     </enclave>
     <enclave path="/haetae/vla">
-      <profiles><profile ns="/" node="vla_source">
-        <topics publish="ALLOW">
-          <topic>/vla/cmd_vel</topic><topic>/vla/arm</topic>
-          <topic>rosout</topic><topic>ros_discovery_info</topic>
-          <topic>/parameter_events</topic>
-        </topics>
-        <topics subscribe="ALLOW">
-          <topic>/clock</topic><topic>ros_discovery_info</topic>
-          <topic>/parameter_events</topic>
-        </topics>
-        <services request="ALLOW" reply="ALLOW">
-          <service>~/describe_parameters</service>
-          <service>~/get_parameter_types</service>
-          <service>~/get_parameters</service>
-          <service>~/list_parameters</service>
-          <service>~/set_parameters</service>
-          <service>~/set_parameters_atomically</service>
-          <service>~/get_type_description</service>
-        </services>
-      </profile></profiles>
+      <profiles>
+        <profile ns="/" node="*">
+          <topics publish="ALLOW">
+            <topic>/vla/cmd_vel</topic>
+            <topic>/vla/arm</topic>
+            <topic>/haetae_gate/signed/vla</topic>
+            <topic>/rosout</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/clock</topic>
+            <topic>/vla/cmd_vel</topic>
+            <topic>/vla/arm</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <services reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+            <service>~/query_state</service>
+            <service>~/get_logger_levels</service>
+            <service>~/set_logger_levels</service>
+          </services>
+        </profile>
+      </profiles>
     </enclave>
   </enclaves>
 </policy>

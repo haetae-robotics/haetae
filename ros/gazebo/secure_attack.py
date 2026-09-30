@@ -24,7 +24,7 @@ def main():
 
     proposal = publisher(TwistStamped, "/vla/cmd_vel")
     direct = publisher(TwistStamped, "/diff_drive_base_controller/cmd_vel")
-    forged_world = publisher(String, "/haetae_gate/world")
+    forged_world = publisher(String, "/haetae_input/world")
     if proposal is None:
         raise RuntimeError("allowed VLA proposal publisher could not be created")
 

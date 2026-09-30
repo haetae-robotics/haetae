@@ -164,10 +164,18 @@ neither unauthorized message reached the receiving topic and the robot stayed
 still. The attacker runs as an unprivileged OS user with a keystore containing
 only its VLA enclave; the trusted processes use a separate owner-only
 keystore. Fast DDS uses UDPv4 here so those different users can exchange DDS
-traffic without relying on shared-memory permissions. The simulator, world
-and gate enclaves have broad permissions because they are trusted parts of
-this reference. Those trusted processes still share one OS account, and
-Gazebo Transport is outside the ROS ACL. See the
+traffic without relying on shared-memory permissions. The secured Linux container runs the gateway as UID 2001, the world/fault
+signer as UID 2002, and the VLA signer/proposal writer as UID 2003. Each has only
+its private role keystore and permitted signing keys. The gateway has an audit
+key but no source signing keys, and accepts role-bound signed topic inputs.
+Fresh unpredictable per-run keys replace the legacy demo seeds. Source counters
+are durably reserved before publication and exclusively locked across restart.
+The scenario provisioner and physics process remain trusted root processes.
+`principal-isolation.json` records failed OS reads of perception credentials;
+`role-permissions.json` records denied DDS writers/action clients and matched
+authorized writers. The gateway's legitimate controller/heartbeat authority is
+still trusted: a compromised gateway can actuate, even though it cannot forge
+perception inputs. Gazebo Transport is outside the ROS ACL. See the
 [Fast DDS transport options](https://fast-dds.docs.eprosima.com/en/2.14.x/fastdds/env_vars/env_vars.html#fastdds-builtin-transports).
 
 The page also shows an exact signed-command replay and a changed signed world
@@ -243,3 +251,15 @@ Transport from an attacker. The browser demo and Python kinematic fixture remain
 ways to explore policy behavior; this reference exercises actual ROS
 controllers and Gazebo physics. Only physical hardware can establish a real
 motor's stop time and distance or a real arm's cancel behavior.
+
+## Isolated role implementation
+
+`--secure-graph` requires the root-run Linux test container; it is not a native
+host account installer. A trusted test provisioner creates private principal
+folders and launches each child with its UID/GID and no supplementary groups.
+`source_node.py` signs world/fault or VLA exclusively. The VLA signer validates
+raw proposals; malformed commands become signed stops. The signed-only gateway
+rejects envelope roles that do not match the topic binding before passing the
+exact signed bytes to Rust. The root test driver has a private stdin pipe to a
+VLA-only proposal writer, rather than using perception DDS authority to issue
+AI commands. Legacy headless smoke scenarios remain explicitly non-isolated.
