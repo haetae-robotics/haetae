@@ -536,9 +536,15 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             (root / "source-restart.json").write_text(json.dumps({"role": "vla",
                 "before": before, "after": json.loads((roles.directories["vla"] / "counters.json").read_text())["counters"]["vla"],
                 "continued_counter": True}, indent=2))
-        world.propose_base(0.0)
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
-                 5, processes, "base rearm", action=lambda: world.propose_base(0.0))
+        # Counter reservation happens before DDS delivery. After a signer
+        # restart an old armed-state sample cannot confirm a new rearm.
+        world.states.clear()
+        world.outcomes.clear()
+        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"]
+                 and sum(1 for _, row in world.outcomes
+                         if row.get("decision", {}).get("verdict") == "yun"
+                         and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
+                 8, processes, "fresh accepted base rearm", action=lambda: world.propose_base(0.0))
         if arm_fault:
             result = exercise_arm_fault(world, processes, arm_fault)
             if roles and (gate_directory / "sillok.jsonl").exists():
@@ -818,6 +824,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                 time.sleep(live_hold_seconds)
         print(json.dumps(result))
     finally:
+        if roles and (gate_directory / "sillok.jsonl").exists():
+            shutil.copy2(gate_directory / "sillok.jsonl", root / "sillok.jsonl")
         for process in list(processes.values())[::-1]:
             stop(process)
         if executor is not None:
