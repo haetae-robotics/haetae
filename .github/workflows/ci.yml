@@ -260,7 +260,7 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp \
+          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp xvfb libgl1-mesa-dri \
             ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
             ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
           source /opt/ros/jazzy/setup.bash

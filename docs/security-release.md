@@ -141,3 +141,19 @@ The proposal writer owns only the `/haetae/vla` DDS certificate (UID 2004).
 The VLA signer owns a separate `/haetae/vla_signer` certificate and signing
 seed (UID 2003). Only that signer can publish `/haetae_gate/signed/vla`;
 ROS node names within an enclave are not an authentication boundary.
+
+## Stage 3 simulator perception evidence
+
+The Gazebo reference now contains native person geometry and a real simulated
+GPU lidar. Scenario paths move that geometry; only measured occupancy populates
+signed worlds. A known calibration return, complete scan validation, original
+source age and receipt age guard the controlled bay. Invalid/unknown scans do
+not refresh the world; the existing 200 ms world-age stop remains unchanged.
+Moving-base tests cover receiver disconnect and removal of the native
+calibration target, with no automatic motion rearm after sensor recovery.
+
+This is conservative obstacle occupancy at one adult torso-height scan plane,
+not a validated human classifier. Root/simulator/Gazebo Transport, calibrated
+scene assumptions and the trusted perception adapter remain trusted. Physical
+sensor failure rates, child detection, occlusions, content poisoning and real
+robot stopping/certification blockers above are still open.

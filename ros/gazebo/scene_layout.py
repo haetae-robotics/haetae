@@ -1,6 +1,6 @@
-"""Place injected person reports beside the robot, in its local frame.
+"""Place native test person paths beside the robot, in its local frame.
 
-The report remains inside the product gate's configured proximity boundary,
+The test person remains inside the product gate's configured proximity boundary,
 but the displayed silhouette stands clear of the base and the arm sweep.
 """
 
@@ -28,10 +28,10 @@ def person_entry(x, y, yaw):
 
 @dataclass(frozen=True)
 class PersonWalk:
-    """A scripted test report path sampled on the Gazebo clock.
+    """A scripted test person path sampled on the Gazebo clock.
 
-    No camera detection or physical human collision is implied. The frontend
-    receives these same positions; its gait uses the reported travel distance.
+    This path drives native geometry only. Security occupancy is obtained
+    independently from the Gazebo lidar. It does not populate world inputs.
     """
     start: tuple
     end: tuple

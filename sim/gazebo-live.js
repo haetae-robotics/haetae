@@ -49,8 +49,8 @@ const phaseCopy = {
   '실험 준비 완료': ['로봇 준비 완료', '시뮬레이터가 명령을 기다리고 있습니다.', '화면이 뜨면 시작 버튼을 눌러 주세요.'],
   '3D 화면 준비 · 시작 버튼을 누르세요': ['시작할 준비 완료', '로봇이 보이면 시작해 주세요.', '시작 후 로봇이 움직이고, 위험 보고가 들어오면 해태가 반응합니다.'],
   'AI 바퀴 이동 명령': ['로봇이 움직입니다', 'AI가 바퀴에 이동 명령을 제안했습니다.', '잠시 뒤 사람이 옆에서 걸어 접근합니다. 가까워질 때 정지하는지 확인하세요.'],
-  '사람이 걸어 접근합니다': ['사람이 걸어 접근합니다', '멀리 있는 사람의 위치 보고가 계속 갱신됩니다.', '로봇은 허용된 이동을 이어가다가 근접 조건에 걸리면 멈춥니다.'],
-  '사람 등장': ['사람 근접 보고', '테스트에서 로봇 앞에 사람이 있다고 보고했습니다.', '해태의 판정과 바퀴의 정지 명령을 지켜보세요.'],
+  '사람이 걸어 접근합니다': ['사람이 걸어 접근합니다', 'Gazebo 라이다가 접근하는 사람 형상을 계속 측정합니다.', '로봇은 허용된 이동을 이어가다가 근접 조건에 걸리면 멈춥니다.'],
+  '사람 등장': ['사람 근접 보고', '가상 라이다가 사람 형상의 장애물 표면을 측정했습니다.', '해태의 판정과 바퀴의 정지 명령을 지켜보세요.'],
   '해태가 바퀴 0속도 명령': ['정지 명령 전달', '해태가 바퀴 컨트롤러에 속도 0을 보냈습니다.', '이제 실제 Gazebo 바퀴 속도가 0으로 줄어드는지 확인합니다.'],
   'Gazebo 바퀴 정지': ['바퀴가 멈췄습니다', 'Gazebo 측정 속도가 정지 기준 아래로 내려갔습니다.', '다음은 팔에 허용 범위를 넘는 명령을 보내 봅니다.'],
   'AI 팔 범위 초과 명령': ['위험한 팔 명령', 'AI가 허용 범위를 넘는 팔 동작을 제안했습니다.', '해태가 팔 명령을 거부하는지 확인합니다.'],
@@ -61,6 +61,9 @@ const phaseCopy = {
   '사람이 걸어 나갑니다': ['사람이 걸어 나갑니다', '확인을 마친 사람이 로봇에서 멀어집니다.', '이동이 끝나면 사람 보고를 해제하고 다음 시험을 준비합니다.'],
   '사람 등장, 팔 취소 요청': ['팔 동작 취소 요청', '해태가 진행 중인 팔 동작을 취소하도록 요청했습니다.', '팔 관절이 더 움직이지 않는지 확인합니다.'],
   'Gazebo 팔 관절 정지': ['팔이 멈췄습니다', 'Gazebo 관절 측정값이 더 움직이지 않았습니다.', '정지한 팔 관절과 취소 판정을 확인하세요.'],
+  '센서 연결 끊김 시험': ['센서 연결 끊김 시험', '로봇 이동 중 라이다 수신을 끊습니다.', '오래된 측정으로 이동하지 않고 정지하는지 확인합니다.'],
+  '센서 검증 표적 사라짐': ['센서 검증 표적 사라짐', 'Gazebo 안의 검증 표적을 치워 측정 범위를 확인할 수 없게 만듭니다.', '빈 공간으로 오인하지 않고 이동을 차단해야 합니다.'],
+  '센서 이상 → 정지': ['센서 이상으로 정지', '센서 상태를 확인할 수 없어 이동이 차단됐습니다.', '센서가 복구돼도 이전 이동 명령은 다시 시작하지 않습니다.'],
   '두 번째 바퀴 이동': ['로봇이 다시 움직입니다', '연결 끊김 시험을 위해 바퀴를 다시 움직입니다.', '해태 프로세스가 꺼진 뒤 컨트롤러가 멈추는지 확인합니다.'],
   '해태 프로세스 강제 종료': ['해태 연결 끊김 시험', '게이트 프로세스를 강제로 종료했습니다.', '바퀴 컨트롤러 자체의 정지 기능을 확인합니다.'],
   '팔 독립 정지 시험': ['팔 고장 시험 시작', '정상 팔 동작 중 해태 연결에 고장을 넣습니다.', '종료·엔진 멈춤·지연 신호를 각각 시험합니다.'],
@@ -215,7 +218,17 @@ stream.onmessage = (event) => {
     $('joint').textContent = `${fmt(row.joint, 4)} rad`;
     const human = row.humans[0];
     $('human').textContent = human ? `${fmt(Math.hypot(human.pos.x - row.x, human.pos.y - row.y), 2)} m` : '없음';
+    const detections = row.detections || [];
+    const distance = detections.length ? Math.min(...detections.map(h =>
+      Math.hypot(h.pos.x - row.x, h.pos.y - row.y))) : null;
+    $('sensor-distance').textContent = row.sensor?.healthy ?
+      distance === null ? '감지 없음' : `${fmt(distance, 2)} m` : '확인 불가';
+    $('sensor-health').textContent = row.sensor?.healthy ? '측정 정상' : '측정 불확실 · 이동 차단';
+    $('sensor-age').textContent = Number.isFinite(row.sensor?.age_ms) ? `${row.sensor.age_ms} ms` : '—';
     sceneView?.update(row);
+  } else if (row.kind === 'sensor_fault_result') {
+    addEvent(`센서 ${row.case === 'disconnect' ? '끊김' : '범위 검증 실패'} · 정지 확인`, row.sim_ms);
+    sceneAlert('센서 확인 불가 → 정지', 'measured');
   } else if (row.kind === 'base_command') {
     $('command').textContent = `${fmt(Math.abs(row.linear))} m/s`;
     if (lastCommand > 0.01 && Math.abs(row.linear) < 0.001) {
@@ -225,7 +238,7 @@ stream.onmessage = (event) => {
     lastCommand = Math.abs(row.linear);
   } else if (row.kind === 'phase') {
     const phaseStages = { 'AI 바퀴 이동 명령': 1, 'AI 팔 범위 초과 명령': 2,
-      'AI 정상 팔 이동 명령': 3, '외부 노드 바퀴 명령 공격': 4,
+      'AI 정상 팔 이동 명령': 3, '센서 연결 끊김 시험': 4, '센서 검증 표적 사라짐': 4, '외부 노드 바퀴 명령 공격': 4,
       '두 번째 바퀴 이동': 5, '서명된 명령 재전송 공격': 6 };
     if (phaseStages[row.label]) showStage(phaseStages[row.label]);
     const copy = phaseCopy[row.label] || [row.label, 'Gazebo에서 실험을 진행하고 있습니다.', '로봇 장면과 판정을 함께 확인해 주세요.'];
