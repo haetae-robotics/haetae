@@ -61,7 +61,7 @@ class Roles:
             directory.mkdir()
             self.directories[role] = directory
             shutil.copytree(keystore / ("enclaves/haetae/" + ENCLAVES[role]),
-                            directory / ("keystore/enclaves/haetae/" + role))
+                            directory / ("keystore/enclaves/haetae/" + ENCLAVES[role]))
             (directory / "logs").mkdir()
             shutil.copy2(root / "trust.json", directory / "trust.json")
             key_roles = ("world", "fault") if role == "world" else ("vla",) if role == "vla" else ("log",) if role == "gate" else ()

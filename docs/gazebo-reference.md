@@ -165,7 +165,7 @@ still. The attacker runs as an unprivileged OS user with a keystore containing
 only its VLA enclave; the trusted processes use a separate owner-only
 keystore. Fast DDS uses UDPv4 here so those different users can exchange DDS
 traffic without relying on shared-memory permissions. The secured Linux container runs the gateway as UID 2001, the world/fault
-signer as UID 2002, and the VLA signer/proposal writer as UID 2003. Each has only
+signer as UID 2002, and the VLA signer as UID 2003 and the proposal writer as UID 2004. Each has only
 its private role keystore and permitted signing keys. The gateway has an audit
 key but no source signing keys, and accepts role-bound signed topic inputs.
 Fresh unpredictable per-run keys replace the legacy demo seeds. Source counters
