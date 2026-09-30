@@ -575,6 +575,9 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             logs.append(log)
             wait_for(lambda: Path("/tmp/.X11-unix/X99").exists(), 5, processes, "sensor render display")
         os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+        # Mesa otherwise starts a worker pool sized to the host CPU count,
+        # oversubscribing container quotas and competing with sensor/ROS work.
+        os.environ["LP_NUM_THREADS"] = "2"
         gazebo_env = role_env("sim")
         gazebo_env["GZ_SIM_SYSTEM_PLUGIN_PATH"] = os.pathsep.join(filter(None, [
             "/opt/ros/jazzy/lib", gazebo_env.get("GZ_SIM_SYSTEM_PLUGIN_PATH", "")]))

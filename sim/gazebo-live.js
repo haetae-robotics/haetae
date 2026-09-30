@@ -129,8 +129,8 @@ function chooseViewer(mode) {
     ? '실제 Gazebo 시뮬레이터 창'
     : renderError || 'Gazebo 측정값 · 3D 재구성';
   $('scene-note').textContent = original
-    ? '실제 Gazebo 창입니다. 사람 보고 표시는 라이브 3D에서 확인할 수 있습니다.'
-    : 'Gazebo 위치·관절 측정값을 재구성합니다. 사람은 테스트 보고 표시입니다. 드래그로 회전 · 스크롤로 확대';
+    ? '실제 Gazebo 창입니다. 로봇과 사람 형상이 같은 물리 공간에서 움직입니다.'
+    : 'Gazebo 위치·관절과 사람 형상을 재구성합니다. 청록 점은 라이다 측정입니다. 드래그로 회전 · 스크롤로 확대';
 }
 
 $('show-gazebo').addEventListener('click', () => chooseViewer('gazebo'));

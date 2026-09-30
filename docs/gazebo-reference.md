@@ -301,3 +301,7 @@ non-rearm after recovery. Native person approach, departure, surface-to-torso
 agreement and no invented safe world are checked separately from the test path.
 Teal points in the live page are measured surface positions, not generated rays.
 The source signer, gateway and controller retain the Stage 2 UID/DDS isolation.
+
+Software rendering uses two Mesa worker threads per process to avoid
+oversubscribing container CPU quotas. Sensor freshness and stop budgets remain
+unchanged; rendering overload still fails closed rather than extending them.
