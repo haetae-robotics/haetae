@@ -333,6 +333,10 @@ def exercise_arm_fault(world, processes, case):
         controller_stop_wall = world.guard_states[-1][1]["stop_wall_ns"] / 1_000_000_000
         if stop_sim-fault_sim > 320 or controller_stop_wall-fault_wall > 0.4:
             raise AssertionError("controller missed its independent stop deadline")
+        wait_for(lambda: world.joint.header.stamp.sec * 1000 +
+                 world.joint.header.stamp.nanosec // 1_000_000 >= stop_sim and
+                 all(abs(world.joint.velocity[list(world.joint.name).index(j)]) < 0.03
+                     for j in ARM_JOINTS), 2, processes, "fresh stopped-joint feedback")
         positions = world.arm_positions()
         time.sleep(0.4)
         drift = max(abs(a-b) for a,b in zip(positions, world.arm_positions()))
