@@ -1,5 +1,5 @@
-// Articulated test-report silhouette. Travel comes from the runner; this
-// illustrative gait is not a measured human skeleton or a Gazebo actor.
+// Browser illustration of the native Gazebo person. Root position is
+// observed in Gazebo; this gait is not a measured human skeleton.
 export function createPersonRig(THREE, material) {
   const root = new THREE.Group();
   const body = new THREE.Group(); root.add(body);

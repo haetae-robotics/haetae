@@ -13,7 +13,9 @@ The runner remaps Haetae's `/cmd_vel` publisher directly to the controller's
 The test checks approved base motion, a human-triggered zero command and base
 stop, out-of-bounds arm denial, arm action cancellation, a sealed incident log,
 and the base controller's command timeout after the bridge is killed. The
-human report is injected from test code, not inferred from a camera. The
+person geometry is native Gazebo geometry. A GPU lidar measures its surface;
+the controlled-bay occupancy adapter conservatively treats obstacles as people.
+This is not a camera classifier or a real perception sensor. The
 reference arm uses `haetae_arm_guard/LeaseTrajectoryController`, a position-only
 ros2_control plugin with an independent 250 ms gateway lease. It checks both
 simulator time and monotonic wall time, rejects replayed, delayed and far-future
@@ -38,11 +40,11 @@ The [CI job](../.github/workflows/ci.yml) uses the same package set:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp \
+sudo apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp xvfb libgl1-mesa-dri \
   ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
   ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
 source /opt/ros/jazzy/setup.bash
-colcon --log-base /tmp/guard-log build --base-paths ros/haetae_arm_guard \
+colcon --log-base /tmp/guard-log build --base-paths ros/haetae_arm_guard ros/haetae_scene \
   --merge-install --build-base /tmp/guard-build --install-base /tmp/haetae-guard
 source /tmp/haetae-guard/setup.bash
 cargo build --release --locked -p haetae
@@ -70,15 +72,16 @@ runner sends its first movement command only after that click. The large scene
 shows the robot; the panel next to it explains each step in plain language.
 The Docker viewer runs one scene at a time. After each measured stop or
 completed check, it holds the scene until you press **다음 단계** in the same
-bottom transport. Injected person reports remain present while you inspect a
-stop; advancing explicitly clears the report before the next scene. Marker
+bottom transport. Native people remain present while you inspect a
+stop; advancing makes the person depart before the next scene. Marker
 appearance fades in the reconstruction, but safety inputs and stop commands
 are never delayed. Normal base movement lasts at least three seconds in the
 live view; headless checks keep their original timing. Physics and monitoring
 continue between scenes. Each wait, and the final result view, lasts up to one
 hour. `--step-through` enables this behavior when launching the runner directly.
 The default **라이브 3D** tab rebuilds the robot from Gazebo odometry and
-joint telemetry and shows injected person reports. It is explicitly labeled
+joint telemetry and the observed native person torso pose. Teal points show
+actual lidar obstacle surface measurements. It is explicitly labeled
 as a reconstruction. **Gazebo 원본** opens the actual Gazebo GUI relayed
 from the container through a local noVNC connection.
 The studio uses a compact graphite interface, a light test bay, and a persistent
@@ -112,26 +115,25 @@ python3 tools/build_product_visuals.py
 The native Gazebo scene uses `ros/gazebo/studio.sdf`; its ground collision and
 physics settings match the previous empty world. Bay marks are visual only. The live run moves farther than the headless reference check so the
 movement is easier to see.
-The person marker appears in **라이브 3D**, represents the runner's injected
-report, and is not an object detected by a camera. It is not a native Gazebo
-human actor; the original GUI shows robot motion and the shared robot mesh.
-The adult-sized silhouette has articulated knees, feet and arm swing. Its
-illustrative gait follows the report's travelled distance; at least one sole
-remains on the floor, and the gait settles when the person stops. It is not a
-measured human skeleton. Reduced motion suppresses the gait, and a delayed
-telemetry feed stops striding without extrapolating the report position.
+The person is assembled from adult-sized native Gazebo visual/collision parts.
+Its torso pose from `/world/empty/pose/info` anchors the browser illustration;
+both views show the same world position. The native gait and browser gait use
+planted-foot kinematics driven by Gazebo time. The browser skeleton is an
+illustration, not a measured human skeleton. Reduced motion suppresses its gait;
+delayed telemetry stops striding without extrapolating the root pose.
 
 In the live run, the person enters 0.40 m forward and 1.90 m to the robot's left
 and walks toward a point 0.40 m forward and 0.78 m left at 0.24 m/s on the
 Gazebo clock. These are world paths anchored to the robot pose at entry, not
-markers attached to the moving robot. The world publisher sends each sampled
-position to both Haetae and the reconstruction. The base continues receiving
+markers attached to the moving robot. The path moves native geometry only;
+Haetae receives independent lidar surface measurements, not that path. The base continues receiving
 movement proposals while the person is far away, then the existing swept-path
 proximity rule stops it (0.65 m plus the 0.25 m base footprint). The person
 pauses beside the robot as soon as the zero command is observed and stays
-there until **다음 단계**. After that click, the person walks away at 0.35 m/s;
-the report is removed only at the far endpoint. The fixed headless reference
-keeps its immediate near-report injection for CI speed.
+there until **다음 단계**. After that click, the person walks away at 0.24 m/s;
+the native person is parked off-scene only at the far endpoint. The headless
+reference places the native person near the robot, then waits for actual lidar
+detection for CI speed.
 The transition requires a person verdict in the engine log and a subsequent
 observed zero command. A world-triggered revocation does not necessarily emit
 a proposal Decision outcome; the scene must not wait for that separate event.
@@ -244,8 +246,9 @@ reference process and streams only selected telemetry and verdict fields.
 ## Boundaries
 
 The world publisher trusts Gazebo odometry and joint states, adds the model's
-(5, 5) spawn offset to odometry, and injects a person report during the test.
-There is no real perception sensor, noise model, sensor-content poisoning test, SROS2
+(5, 5) spawn offset to odometry, and uses actual Gazebo lidar ranges for
+occupancy. There is no physical perception sensor, noise model, adversarial
+real-world perception validation, SROS2
 permission test on physical ROSbot XL hardware, or isolation of Gazebo
 Transport from an attacker. The browser demo and Python kinematic fixture remain quicker
 ways to explore policy behavior; this reference exercises actual ROS
@@ -268,3 +271,48 @@ The proposal writer owns only the `/haetae/vla` DDS certificate (UID 2004).
 The VLA signer owns a separate `/haetae/vla_signer` certificate and signing
 seed (UID 2003). Only that signer can publish `/haetae_gate/signed/vla`;
 ROS node names within an enclave are not an authentication boundary.
+
+## Native sensor boundary
+
+The world includes a fixed 360-degree GPU lidar at `(3, 5, 1.16)` with 720 rays,
+30 Hz target update rate and 0.1–10 m range. The calibrated bay is `[1,10]` in
+both horizontal axes; the robot must remain 1.5 m inside its edges, covering
+its footprint, proximity rule and maximum configured braking horizon. A fixed
+cylinder at `(3,7)` proves the scan renderer sees a known calibration target.
+All non-calibration returns in the bay become conservative person obstacles;
+this single torso-height plane is **not** semantic human recognition. It cannot
+establish safety for children below the scan plane, crawling, complex occlusion,
+reflectivity failures or unvalidated clutter. Gazebo geometry/Transport and the
+calibrated empty-bay assumption remain trusted. Use a validated perception stack
+and appropriate sensors before adapting this reference to a real robot.
+
+The adapter checks the complete range vector, configured pose/angles/range,
+original simulator stamp, receipt age and calibration return. NaN, malformed,
+missing, out-of-order, future, stale (200 ms) or uncovered measurements cannot
+refresh Haetae's world. Healthy fusion uses the oldest lidar/joint/odom stamp;
+it never stamps old sensor data as new. Unknown telemetry stays visible while
+the enforcer's existing 200 ms world-age stop applies. Sensor recovery cannot
+rearm a stopped source without an explicit zero command.
+
+The test removes the **native calibration geometry** to exercise lost coverage,
+and disconnects the lidar receiver to exercise stale input while the robot is
+moving. `sensor-faults.json` records unknown status, measured zero latency and
+non-rearm after recovery. Native person approach, departure, surface-to-torso
+agreement and no invented safe world are checked separately from the test path.
+Teal points in the live page are measured surface positions, not generated rays.
+The source signer, gateway and controller retain the Stage 2 UID/DDS isolation.
+
+Software rendering uses two Mesa worker threads per process to avoid
+oversubscribing container CPU quotas. Sensor freshness and stop budgets remain
+unchanged; rendering overload still fails closed rather than extending them.
+
+Native person targets and calibration services run in a spawned process. Blocking Gazebo Transport
+requests cannot hold the ROS world publisher or lidar callback's Python GIL.
+Only the latest desired geometry is shared; measured lidar input and its original
+200 ms freshness budget remain independent of the pose driver.
+
+Native person geometry follows the latest target in a Gazebo system plugin.
+The plugin interpolates all body parts on each physics step and caps root motion
+at 0.24 m/s, so delayed transport targets cannot create catch-up jumps. It only
+controls the twelve named person parts; robot control remains independent. Live
+continuity checks pair measured native poses with their own source timestamps.

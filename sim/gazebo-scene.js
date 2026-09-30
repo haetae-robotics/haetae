@@ -115,7 +115,7 @@ export function createGazeboScene(canvas) {
       rosFrame.add(productRig.root); productRig.update(latestJoints);
     });
 
-  // Amber silhouette denotes an injected report, not a Gazebo human actor.
+  // Body root follows the native Gazebo torso pose; gait is an illustration.
   const personMaterial = new THREE.MeshStandardMaterial({ color: 0xd2a35d, roughness: 0.8, transparent: true, opacity: 0 });
   const personRig = createPersonRig(THREE, personMaterial);
   const person = personRig.root;
@@ -127,6 +127,9 @@ export function createGazeboScene(canvas) {
   person.visible = false;
   scene.add(person);
 
+  const measuredPoints = new THREE.Group(); scene.add(measuredPoints);
+  const pointGeometry = new THREE.SphereGeometry(0.025, 8, 6);
+  const pointMaterial = new THREE.MeshBasicMaterial({ color: 0x2ac6bb });
   let targetX = 0, targetZ = 0, targetYaw = 0;
   let first = true, personPresent = false, personOpacity = 0;
   let walkDistance = 0, walking = false, strideWeight = 0;
@@ -141,6 +144,12 @@ export function createGazeboScene(canvas) {
     if (first || canvas.hidden) {
       robot.position.set(targetX, 0, targetZ);
       robot.rotation.y = targetYaw; first = false;
+    }
+    measuredPoints.clear();
+    for (const detection of row.detections || []) {
+      const point = new THREE.Mesh(pointGeometry, pointMaterial);
+      point.position.set(Number(detection.pos.x) - 5, 1.16, 5 - Number(detection.pos.y));
+      measuredPoints.add(point);
     }
     const human = row.humans?.[0];
     personPresent = Boolean(human);
@@ -165,7 +174,7 @@ export function createGazeboScene(canvas) {
     personMaterial.opacity = personOpacity; reportRing.material.opacity = personOpacity;
     person.visible = personOpacity > 0;
     // Stop the illustrative stride if telemetry stalls. The person's root
-    // position always uses the report coordinates without display-only drift.
+    // position follows the observed native pose without display-only drift.
     const strideTarget = walking && now - lastPersonAt < 400 && !reducedMotion ? 1 : 0;
     strideWeight += (strideTarget - strideWeight) * (1 - Math.exp(-12 * elapsed));
     personRig.pose(walkDistance, strideWeight);

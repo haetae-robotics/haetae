@@ -2,8 +2,8 @@
 """Exercise Haetae against Gazebo Harmonic and real ros2_control controllers.
 
 This is a physics-backed reference test, not a robot safety certification.
-The world publisher uses simulator ground truth, and Gazebo / ros2_control are
-trusted. The four-joint controller checks an independent 250 ms gateway lease.
+Person occupancy comes from the native Gazebo GPU lidar; robot feedback,
+Gazebo Transport and ros2_control are trusted. The four-joint controller checks an independent 250 ms gateway lease.
 """
 
 import argparse
@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import traceback
+from xml.etree import ElementTree
 
 import rclpy
 from geometry_msgs.msg import TwistStamped
@@ -37,6 +38,8 @@ from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
 from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy, resolve_meshes  # noqa: E402
 from role_isolation import Roles, UIDS
+from lidar_perception import Perception
+from native_person import NativeScene, add_native_scene
 from stop_evidence import person_stop_report, person_stop_observed  # noqa: E402
 from attack_probe import (prepare_gazebo_security, probe_gazebo_permissions,
                           probe_permissions, probe_signed_inputs)  # noqa: E402
@@ -59,6 +62,9 @@ class GazeboWorld(Node):
         self.joint = None
         self.odom_received = 0.0
         self.joint_received = 0.0
+        self.perception = Perception()
+        self.native = None
+        self.sensor_info = {}
         self.human = None
         self.human_walk = None
         self.human_motion = None
@@ -168,6 +174,13 @@ class GazeboWorld(Node):
             self.human_walk = PersonWalk(start, end, stamp, speed, distance)
             self.human, self.human_motion = self.human_walk.sample(stamp)
 
+    def desired_person(self):
+        with self.human_lock:
+            if self.human_walk:
+                stamp = self.get_clock().now().nanoseconds // 1_000_000
+                self.human, self.human_motion = self.human_walk.sample(stamp)
+            return self.human, self.human_motion
+
     def person_walk_finished(self):
         with self.human_lock:
             return self.human_walk is None or not self.human_motion["moving"]
@@ -200,26 +213,39 @@ class GazeboWorld(Node):
         yaw = self.heading()
         joints = self.measured_joints()
         x, y = self.pose()
+        humans, confidence, sensor = self.perception.snapshot(
+            self.get_clock().now().nanoseconds // 1_000_000, (x, y))
+        self.sensor_info = sensor
+        # Fuse at the oldest source timestamp; never disguise a stale scan as
+        # a new world. Joint/odom freshness was checked above independently.
+        if sensor["healthy"]:
+            stamp = min(stamp, odom_stamp, sensor["stamp_ms"])
         with self.human_lock:
-            if self.human_walk:
-                self.human, self.human_motion = self.human_walk.sample(stamp)
-            humans = ([] if self.human is None else
-                      [{"id": "sim-person", "class": "adult",
-                        "pos": {"x": self.human[0], "y": self.human[1]}}])
             human_motion = self.human_motion
+            present = self.human is not None
+        observed, native_stamp = self.native.observed_sample() if self.native else (None, None)
+        render_humans = ([{"id": "sim-person", "class": "adult",
+                          "pos": {"x": observed[0], "y": observed[1]}}]
+                         if present and observed and observed[2] > 0 else [])
         payload = {"stamp_ms": stamp,
                    "robot": {"pose": {"x": x, "y": y}, "yaw": yaw,
                              "twist": {"linear": self.speed(), "angular": self.odom.twist.twist.angular.z},
                              "joints": [j for name in ARM_JOINTS for j in joints if j["name"] == name]},
                    "humans": humans,
-                   "confidence": 1.0}
-        if humans:
+                   "confidence": confidence}
+        if confidence and humans:
+            nearest = min(humans, key=lambda h: math.hypot(h["pos"]["x"]-x, h["pos"]["y"]-y))
             self.person_reports.append({"wall": time.monotonic(), "stamp_ms": stamp,
-                                        "robot": (x, y), "human": (humans[0]["pos"]["x"], humans[0]["pos"]["y"])})
-        self.world_pub.publish(String(data=json.dumps(payload)))
-        self.world_count += 1
-        self._emit("telemetry", sim_ms=stamp, x=x, y=y, speed=self.speed(),
-                   joint=self.primary_joint(), joints=joints, yaw=yaw, humans=payload["humans"],
+                                        "robot": (x, y), "human": (nearest["pos"]["x"], nearest["pos"]["y"])})
+        if confidence:
+            self.world_pub.publish(String(data=json.dumps(payload)))
+            self.world_count += 1
+        # Unknown coverage is visible in telemetry, but cannot refresh the
+        # enforcer world: its original 200 ms source-age stop remains active.
+        self._emit("telemetry", sim_ms=joint_stamp, x=x, y=y, speed=self.speed(),
+                   joint=self.primary_joint(), joints=joints, yaw=yaw, humans=render_humans,
+                   detections=humans, sensor=sensor,
+                   native_person_stamp_ms=native_stamp,
                    human_motion=human_motion, model=MODEL_NAME)
 
     def propose_base(self, linear):
@@ -265,6 +291,76 @@ def wait_for(predicate, timeout, processes, description, action=None):
             last_action = time.monotonic()
         time.sleep(0.01)
     raise TimeoutError(description)
+
+
+def check_person_sensor(world, label, processes):
+    def detected():
+        frame = world.perception.frame
+        pose, _ = world.native.observed_sample()
+        desired = world.human
+        return (frame and frame.healthy and len(frame.points) >= 3 and pose and desired
+                and math.dist(pose[:2], desired) < 0.025
+                and min(math.dist(point, pose[:2]) for point in frame.points) < 0.25)
+    try:
+        wait_for(detected, 3, processes, "native person and lidar agreement")
+    except TimeoutError as exc:
+        raise AssertionError("native person / lidar disagreement: " + json.dumps({
+            "native_pose": world.native.observed_sample(), "desired": world.human,
+            "sensor": world.sensor_info, "driver_error": world.native.error})) from exc
+    frame = world.perception.frame
+    pose, _ = world.native.observed_sample()
+    return {"case": label, "input": "gazebo_gpu_lidar", "sensor_stamp_ms": frame.stamp_ms,
+            "native_torso": list(pose), "test_path": list(world.human),
+            "surface_to_torso_m": round(min(math.dist(point, pose[:2]) for point in frame.points), 4),
+            "returns": len(frame.points), "ok": True}
+
+
+def exercise_sensor_fault(world, processes, case):
+    world.marker("센서 연결 끊김 시험" if case == "disconnect" else "센서 검증 표적 사라짐")
+    wait_for(lambda: world.sensor_info.get("healthy") and not world.perception.snapshot(
+        world.get_clock().now().nanoseconds // 1_000_000, world.pose())[0],
+        5, processes, "fresh empty calibrated bay")
+    world.states.clear()
+    world.outcomes.clear()
+    wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and
+             sum(1 for _, row in world.outcomes if row.get("decision", {}).get("verdict") == "yun"
+                 and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
+             8, processes, "sensor fixture explicit rearm", action=lambda: world.propose_base(0.0))
+    wait_for(lambda: world.speed() > 0.06, 5, processes, "sensor fixture actual motion",
+             action=lambda: world.propose_base(0.12))
+    fault_at = time.monotonic()
+    last_sensor_ms = world.sensor_info["stamp_ms"]
+    if case == "disconnect":
+        with world.perception.lock:
+            world.perception.drop_frames = True
+    elif not world.native.calibration_visible(False):
+        raise AssertionError("could not remove native calibration target")
+    wait_for(lambda: not world.sensor_info.get("healthy") and any(t >= fault_at and value.get("stop") == "stale_world"
+                        for t, value in world.states) and abs(world.speed()) < 0.03,
+             3, processes, "sensor fault causes stale-world stop",
+             action=lambda: world.propose_base(0.12))
+    zero_at = next(t for t, _ in world.zero_commands if t >= fault_at)
+    unknown = dict(world.sensor_info)
+    if unknown["healthy"] or zero_at - fault_at > 0.4:
+        raise AssertionError("sensor fault " + case + " zero_ms=" + str(round((zero_at-fault_at)*1000,1)) + " unknown=" + json.dumps(unknown))
+    if case == "disconnect":
+        with world.perception.lock:
+            world.perception.drop_frames = False
+    elif not world.native.calibration_visible(True):
+        raise AssertionError("could not restore native calibration target")
+    wait_for(lambda: world.sensor_info.get("healthy"), 5, processes, "sensor recovers")
+    # Sensor recovery alone cannot reactivate a disarmed motion source.
+    world.propose_base(0.12)
+    time.sleep(0.3)
+    if abs(world.speed()) >= 0.03 or "vla" in world.states[-1][1]["armed"]:
+        raise AssertionError("sensor recovery automatically rearmed motion")
+    result = {"ok": True, "case": case, "input": "gazebo_gpu_lidar",
+              "last_sensor_ms": last_sensor_ms, "unknown": unknown,
+              "fault_to_zero_wall_ms": round((zero_at-fault_at)*1000, 1),
+              "stop_reason": "stale_world", "recovery_did_not_rearm": True}
+    world._emit("sensor_fault_result", **result)
+    world.marker("센서 이상 → 정지")
+    return result
 
 
 def command(argv, root, timeout=35, env=None):
@@ -388,6 +484,10 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     params["haetae_gate"]["ros__parameters"].update({"use_sim_time": True,
         "heartbeat_topic": "/haetae_gate/heartbeat"})
     params_path.write_text(json.dumps(params))
+    studio = ElementTree.parse(HERE / "studio.sdf")
+    add_native_scene(studio.getroot().find("world"))
+    studio_path = root / "sensor-studio.sdf"
+    studio.write(studio_path, encoding="UTF-8", xml_declaration=True)
     controllers = HERE / "controllers.yaml"
     model = root / "reference_bot.urdf"
     model.write_text(resolve_meshes(command(["xacro", str(HERE / "rosbot_xl.urdf.xacro"),
@@ -450,23 +550,53 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             world.marker("다음 장면 준비", detail=detail)
             presentation_wait(2.5)
 
+    def freeze_native_person():
+        world.freeze_person()
+        # The path agreement oracle allows normal measurement latency while
+        # walking. A user checkpoint also requires the native body to finish
+        # reaching the frozen target, so it cannot drift during the hold.
+        def settled():
+            pose, _ = world.native.observed_sample()
+            return pose and world.human and math.dist(pose[:2], world.human) < 1e-6
+        wait_for(settled, 3, processes, "native person settles before checkpoint")
+
+    sensor_person_evidence = []
+
     def clear_person():
         if live and world.human is not None:
             world.marker("사람이 걸어 나갑니다", detail="정지 장면 확인이 끝났습니다. 사람의 이동이 끝나면 다음 시험을 준비합니다.")
-            world.begin_person_walk(world.human, person_entry(*world.pose(), world.heading()), speed=0.35)
+            world.begin_person_walk(world.human, person_entry(*world.pose(), world.heading()), speed=0.24)
             wait_for(world.person_walk_finished, 20, processes, "person exit path")
-            world.freeze_person()
+            freeze_native_person()
+        if world.human is not None:
+            sensor_person_evidence.append(check_person_sensor(world, "before_departure", processes))
         world.remove_person()
+        wait_for(lambda: world.native.observed and world.native.observed[2] < 0 and
+                 world.sensor_info.get("healthy") and not world.perception.snapshot(
+                     world.get_clock().now().nanoseconds // 1_000_000, world.pose())[0],
+                 5, processes, "native person departed and measured bay cleared")
+        sensor_person_evidence.append({"case": "departure", "ok": True,
+                                       "native_person_parked": True, "fresh_empty_scan": True})
         if live:
             world.marker("사람 보고 해제", detail="방금 장면의 사람 근접 보고를 해제했습니다. 다음 시험을 준비합니다.")
             presentation_wait(2)
 
     rclpy.init()
     try:
+        if not os.environ.get("DISPLAY"):
+            os.environ["DISPLAY"] = ":99"
+            _, log = start(["Xvfb", ":99", "-screen", "0", "1280x720x24", "-nolisten", "tcp"],
+                           root, "sensor_display", processes)
+            logs.append(log)
+            wait_for(lambda: Path("/tmp/.X11-unix/X99").exists(), 5, processes, "sensor render display")
+        os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+        # Mesa otherwise starts a worker pool sized to the host CPU count,
+        # oversubscribing container quotas and competing with sensor/ROS work.
+        os.environ["LP_NUM_THREADS"] = "2"
         gazebo_env = role_env("sim")
         gazebo_env["GZ_SIM_SYSTEM_PLUGIN_PATH"] = os.pathsep.join(filter(None, [
-            "/opt/ros/jazzy/lib", gazebo_env.get("GZ_SIM_SYSTEM_PLUGIN_PATH", "")]))
-        _, log = start(["gz", "sim", "-s", "-r", "-v", "2", str(HERE / "studio.sdf")],
+            "/opt/haetae/lib", "/opt/ros/jazzy/lib", gazebo_env.get("GZ_SIM_SYSTEM_PLUGIN_PATH", "")]))
+        _, log = start(["gz", "sim", "-s", "-r", "-v", "2", str(studio_path)],
                        root, "gazebo", processes, gazebo_env)
         logs.append(log)
         _, log = start(["ros2", "run", "ros_gz_bridge", "parameter_bridge",
@@ -483,6 +613,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         thread = threading.Thread(target=executor.spin, daemon=True)
         thread.start()
         wait_for(lambda: world.get_clock().now().nanoseconds > 0, 30, processes, "Gazebo clock")
+        world.native = NativeScene(world.desired_person, world.perception)
         if gazebo_gui:
             _, log = start(["gz", "sim", "-g", "-v", "2", "--gui-config",
                             str(HERE / "viewer.config")], root, "gazebo_gui", processes,
@@ -496,7 +627,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             command(["ros2", "run", "controller_manager", "spawner", controller,
                      "--controller-manager-timeout", "30", "--param-file", str(controllers)],
                     root, env=gazebo_env)
-        wait_for(lambda: world.world_count >= 3, 20, processes, "odom and four-joint feedback")
+        wait_for(lambda: world.world_count >= 3 and world.sensor_info.get("healthy"),
+                 30, processes, "lidar, odom and four-joint feedback")
 
         if roles:
             for role in ("world", "vla"):
@@ -585,12 +717,14 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                                                     world.zero_commands, entry_sim_ms),
                                20, processes, "walking person triggers base stop",
                                action=lambda: world.propose_base(0.12))
-            world.freeze_person()
+            freeze_native_person()
         else:
             world.human = nearby_person(*world.pose(), world.heading())
             world.marker("사람 등장")
-            wait_for(lambda: any(t >= entry_at and value == 0 for t, value in world.commands),
-                               3, processes, "world-triggered zero base command")
+            wait_for(lambda: person_stop_observed(gate_directory / "sillok.jsonl", world.person_reports,
+                                                 world.zero_commands, entry_sim_ms),
+                     5, processes, "native lidar person causes base stop",
+                     action=lambda: world.propose_base(0.2))
         wait_for(lambda: person_stop_report(gate_directory / "sillok.jsonl", world.person_reports, entry_sim_ms),
                  3, processes, "recorded world sample causing person denial")
         trigger = person_stop_report(gate_directory / "sillok.jsonl", world.person_reports, entry_sim_ms)
@@ -599,6 +733,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         zero_at, zero_sim_ms = next((t, stamp) for t, stamp in world.zero_commands if t >= revoked_at)
         world.marker("해태가 바퀴 0속도 명령")
         wait_for(lambda: abs(world.speed()) < 0.03, 3, processes, "base stopped after human")
+        sensor_person_evidence.append(check_person_sensor(world, "base_stop", processes))
         base_stop_x = world.pose()[0]
         world.marker("Gazebo 바퀴 정지")
         review_scene("바퀴 정지 장면", "사람 근접 보고를 받고 바퀴가 멈췄습니다. 사람 표시와 정지 상태를 천천히 확인하세요.",
@@ -648,13 +783,21 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         time.sleep(0.35)
         if max(abs(a - b) for a, b in zip(world.arm_positions(), arm_cancel_positions)) > 0.02:
             raise AssertionError("arm kept moving after cancellation")
+        sensor_person_evidence.append(check_person_sensor(world, "arm_stop", processes))
         world.marker("Gazebo 팔 관절 정지")
         if live:
             wait_for(world.person_walk_finished, 20, processes, "person approaches stopped arm")
-            world.freeze_person()
+            freeze_native_person()
         review_scene("팔 정지 장면", "사람 근접 보고 뒤 팔 동작이 취소됐습니다. 사람 표시는 다음 단계까지 유지됩니다.",
                      "외부 노드 공격 시험" if attack_probes and secure_graph else "연결 끊김 시험")
         clear_person()
+
+        sensor_faults = {}
+        for case in ("disconnect", "coverage"):
+            sensor_faults[case] = exercise_sensor_fault(world, processes, case)
+            presentation_wait(3)
+        (root / "sensor-faults.json").write_text(json.dumps(sensor_faults, indent=2))
+        (root / "sensor-person.json").write_text(json.dumps(sensor_person_evidence, indent=2))
 
         snapshot = root / "sealed-snapshot.jsonl"
         wait_for(lambda: sealed_incident_snapshot(gate_directory / "sillok.jsonl", snapshot),
@@ -800,6 +943,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                   "robot_model": MODEL_NAME,
                   "arm_joints": list(ARM_JOINTS),
                   "arm_faults": arm_fault_results,
+                  "sensor_faults": sensor_faults,
+                  "native_person_measurements": sensor_person_evidence,
                   "arm_cancelled_positions_rad": arm_cancel_positions,
                   "controller": "Gazebo Harmonic gz_ros2_control",
                   "base_moved_m": round(moving_x - start_x, 3),
@@ -808,6 +953,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                   "person_entry_to_stop_report_sim_ms": revoked_sim_ms - entry_sim_ms,
                   "person_stop_report_distance_m": round(math.dist(trigger["robot"], trigger["human"]), 3),
                   "person_walk_clock": "gazebo_sim_time" if live else None,
+                  "person_input": "gazebo_gpu_lidar",
                   "base_stop_distance_m": round(base_stop_x - moving_x, 3),
                   "arm_out_of_bounds_denied": True,
                   "arm_cancelled_at_rad": round(arm_cancel_position, 4),
@@ -831,6 +977,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         if executor is not None:
             executor.shutdown()
         if world is not None:
+            if world.native:
+                world.native.close()
             world.destroy_node()
         rclpy.shutdown()
         if thread is not None:
@@ -916,7 +1064,7 @@ def main():
                             for artifact in ("result.json", "gate.log", "sillok.jsonl"):
                                 if (src / artifact).exists():
                                     shutil.copy2(src / artifact, dst / artifact)
-                    for name in ("result.json", "error.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
+                    for name in ("result.json", "error.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "sensor-faults.json", "sensor-person.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
                                  "clock_bridge.log", "robot_state_publisher.log",
                                  "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
                         source = Path(directory) / name

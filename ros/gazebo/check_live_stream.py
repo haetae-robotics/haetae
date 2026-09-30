@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 from pathlib import Path
 import time
 from urllib.error import URLError
@@ -43,6 +44,24 @@ def run(port, output):
     rejected_arm = any(row["kind"] == "decision" and
                        "envelope:arm-position" in row.get("fired", [])
                        for row in received)
+    # Compare measured person geometry against its own Gazebo source stamp,
+    # rather than an unrelated joint-state stamp from another ROS callback.
+    previous_person = None
+    for row in received:
+        if row["kind"] != "telemetry":
+            continue
+        if not row.get("humans"):
+            previous_person = None
+            continue
+        point = row["humans"][0]["pos"]
+        stamp = row.get("native_person_stamp_ms")
+        assert isinstance(stamp, int) and stamp > 0, "missing native pose timestamp"
+        if previous_person:
+            old, old_stamp = previous_person
+            delta = math.hypot(point["x"] - old["x"], point["y"] - old["y"])
+            limit = .35 * max(0, stamp - old_stamp) / 1000 + .002
+            assert delta <= limit, f"native person jumped: {delta} m > {limit} m"
+        previous_person = (point, stamp)
     positive_command = False
     zero_after_positive = False
     for row in received:
