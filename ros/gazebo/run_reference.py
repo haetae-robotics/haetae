@@ -214,7 +214,7 @@ class GazeboWorld(Node):
                                         "robot": (x, y), "human": (humans[0]["pos"]["x"], humans[0]["pos"]["y"])})
         self.world_pub.publish(String(data=json.dumps(payload)))
         self.world_count += 1
-        self._emit("telemetry", x=x, y=y, speed=self.speed(),
+        self._emit("telemetry", sim_ms=stamp, x=x, y=y, speed=self.speed(),
                    joint=self.primary_joint(), joints=joints, yaw=yaw, humans=payload["humans"],
                    human_motion=human_motion, model=MODEL_NAME)
 
