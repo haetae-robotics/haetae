@@ -30,10 +30,12 @@ def run(port, output):
                 continue
             row = json.loads(line[6:])
             received.append(row)
-            if row["kind"] == "result":
+            if row["kind"] in ("result", "error"):
                 break
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("".join(json.dumps(row) + "\n" for row in received))
+    if received and received[-1]["kind"] == "error":
+        raise RuntimeError("live runner failed: " + received[-1].get("detail", "unknown error"))
 
     moving = any(row["kind"] == "telemetry" and abs(row["speed"]) > 0.05
                  for row in received)
@@ -52,7 +54,8 @@ def run(port, output):
     result = received[-1] if received else {}
     assert moving, "no live Gazebo motion telemetry"
     assert zero_after_positive, "no live ROS zero command after motion"
-    assert "사람 등장" in phases and "Gazebo 바퀴 정지" in phases
+    assert any(phase in phases for phase in ("사람 등장", "사람이 걸어 접근합니다"))
+    assert "Gazebo 바퀴 정지" in phases
     assert rejected_arm, "no live arm denial"
     assert "Gazebo 팔 관절 정지" in phases
     assert result.get("kind") == "result" and result["result"]["ok"]

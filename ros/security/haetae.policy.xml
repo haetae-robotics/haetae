@@ -13,6 +13,7 @@
             <topic>/haetae_gate/outcome</topic>
             <topic>/haetae_gate/decision</topic>
             <topic>rosout</topic>
+            <topic>ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
           <topics subscribe="ALLOW">
@@ -21,6 +22,7 @@
             <topic>/vla/cmd_vel</topic>
             <topic>/vla/arm</topic>
             <topic>/clock</topic>
+            <topic>ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
           <actions call="ALLOW">
@@ -45,10 +47,12 @@
             <topic>/haetae_gate/world</topic>
             <topic>/haetae_gate/fault</topic>
             <topic>rosout</topic>
+            <topic>ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
           <topics subscribe="ALLOW">
             <topic>/clock</topic>
+            <topic>ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
           <services request="ALLOW" reply="ALLOW">
@@ -70,10 +74,12 @@
             <topic>/vla/cmd_vel</topic>
             <topic>/vla/arm</topic>
             <topic>rosout</topic>
+            <topic>ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
           <topics subscribe="ALLOW">
             <topic>/clock</topic>
+            <topic>ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
           <services request="ALLOW" reply="ALLOW">
@@ -93,11 +99,13 @@
         <profile ns="/" node="joint_trajectory_controller">
           <topics publish="ALLOW">
             <topic>rosout</topic>
+            <topic>ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
           <topics subscribe="ALLOW">
             <topic>/cmd_vel</topic>
             <topic>/clock</topic>
+            <topic>ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
           <actions execute="ALLOW">

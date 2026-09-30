@@ -102,11 +102,19 @@ the SROS2 policy template is `ros/security/haetae.policy.xml`. Their CI results
 measure only the simulated controller and hosted ROS setup.
 
 For a physics-backed virtual robot, `ros/gazebo/` connects the same gate to a
-Gazebo Harmonic mobile base and one-joint arm through real `ros2_control`
-controllers. Its [live browser view](sim/gazebo-live.html) streams measurements
-and decisions while the reference runs. On macOS or Linux with Docker, run
-`ros/gazebo/run_docker.sh` and open `http://127.0.0.1:8765/`. The
-[Gazebo runbook](docs/gazebo-reference.md) has the native Ubuntu command. The
+Gazebo Harmonic **Husarion ROSbot XL + ROBOTIS OpenMANIPULATOR-X** through real
+`ros2_control` controllers (four standard wheels and four monitored arm joints).
+The manufacturer URDF and meshes are pinned locally with their licenses. Its [live browser view](sim/gazebo-live.html) shows the Gazebo 3D
+window beside streamed measurements and decisions while the reference runs.
+On macOS or Linux with Docker, run
+`ros/gazebo/run_docker.sh`, wait for `Live view:` in the terminal, then open
+`http://127.0.0.1:8765/` and press **시뮬레이션 시작** when the robot appears. The
+page also shows direct-command and forged-world attacks from a restricted
+ROS node on the same Gazebo graph. The replay check uses a fresh production
+enforcer. See the
+[Gazebo scope and evidence](docs/gazebo-reference.md) before treating those
+probe results as deployment evidence.
+The [Gazebo runbook](docs/gazebo-reference.md) has the native Ubuntu command. The
 [recorded replay](sim/gazebo-replay.html) works without Gazebo installed. These
 references still cannot establish a real robot's stop behavior or arm
 collision safety.

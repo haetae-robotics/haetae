@@ -31,7 +31,7 @@ def public(seed):
         Encoding.Raw, PublicFormat.Raw).hex()
 
 
-def fixture(root, binary, arm=False):
+def fixture(root, binary, arm=False, arm_policy=None, person_distance=0.3):
     policy = {
         "allowed_sources": ["vla"],
         "freshness": {"world_max_age_ms": 200, "proposal_max_age_ms": 1000,
@@ -42,11 +42,11 @@ def fixture(root, binary, arm=False):
                  "max_angular": 1.0, "latency_ms": 50, "max_ttl_ms": 200},
         "zones": [{"id": "child-room", "area": {"min": {"x": 7, "y": 4},
                                                  "max": {"x": 8, "y": 6}}, "no_entry": True}],
-        "rules": [{"id": "person", "when": {"human_within": {"distance": 0.3}},
+        "rules": [{"id": "person", "when": {"human_within": {"distance": person_distance}},
                    "then": "bul"}],
     }
     if arm:
-        policy["arm"] = {"joints": [{"name": "shoulder", "min_position": -1.0,
+        policy["arm"] = arm_policy if arm_policy is not None else {"joints": [{"name": "shoulder", "min_position": -1.0,
                                     "max_position": 1.0, "max_velocity": 2.0,
                                     "max_acceleration": 40.0}],
                          "max_points": 8, "max_duration_ms": 1000,

@@ -1,6 +1,8 @@
 .git
 target
 artifacts
+.omx
+.playwright-cli
 sim/pkg
 sim/examples
 **/__pycache__

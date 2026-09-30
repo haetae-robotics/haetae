@@ -45,7 +45,8 @@ base. A compromised bridge or privileged host can still command the robot.
 - The Rust core, subprocess and signed ROS bridge smoke tests run in CI on
   Jazzy. The kinematic base simulator and mock arm action server are software
   models. The Gazebo Harmonic reference also exercises a differential-drive
-  controller and a one-joint trajectory controller under physics, including
+  controller and a four-joint OpenMANIPULATOR-X trajectory controller on the
+  manufacturer ROSbot XL model under physics, including
   base timeout after gate death. It still cannot measure hardware stopping or
   prove an independent arm stop after gate death.
 - The arm check covers joint space. It does not compute 3D link geometry,
@@ -62,6 +63,15 @@ base. A compromised bridge or privileged host can still command the robot.
   controller and OS isolation remain untested. Publisher counting detects a
   discovered extra writer; it cannot prevent a command that reaches the
   controller first.
+- The Docker Gazebo run has a separate SROS2 enclave for its attacker process.
+  That process's direct base command and forged world publisher are denied on
+  the actual Gazebo ROS graph while an authorized VLA proposal succeeds.
+  The attacker has only VLA credentials and runs under a separate unprivileged
+  OS user. Trusted simulator, world and gate enclaves have broad permissions,
+  and their keys share the container's trusted OS account. Gazebo Transport remains outside this
+  ACL. An exact signed-command replay and a modified signed world report are
+  also rejected by a fresh production enforcer with zero output. This is
+  reference evidence, not a robot-specific security boundary.
 - EOF from the bridge now leaves the persistent `running` marker set, so a
   restart enters Hold. The enforcement incident recorder seals each incident
   before continuing. A crash during the append itself can still leave an
@@ -92,7 +102,7 @@ untrusted or compromised AI commands:
    and its timeout. Repeat this on the selected real controller and measure
    its stop distance, latency and minimum human gap.
 2. The mock arm action server covers replacement, cancellation, kill and
-   tracking faults; Gazebo exercises one-joint action cancellation. A
+   tracking faults; Gazebo exercises four-joint action cancellation. A
    configured real arm controller and independent stop path must pass those
    tests with measured latency and position error. A
    robot-specific 3D collision model is required before claiming spatial arm

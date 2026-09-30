@@ -3,10 +3,11 @@
 
 This is a physics-backed reference test, not a robot safety certification.
 The world publisher uses simulator ground truth, and Gazebo / ros2_control are
-trusted. The one-joint arm controller has no independent gate-loss watchdog.
+trusted. The four-joint arm controller has no independent gate-loss watchdog.
 """
 
 import argparse
+from collections import deque
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 import rclpy
 from geometry_msgs.msg import TwistStamped
@@ -32,6 +34,11 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
 from run_scenario import fixture, public  # noqa: E402
 from live_stream import LiveHub, start_server  # noqa: E402
+from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
+from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy, resolve_meshes  # noqa: E402
+from stop_evidence import person_stop_report, person_stop_observed  # noqa: E402
+from attack_probe import (prepare_gazebo_security, probe_gazebo_permissions,
+                          probe_permissions, probe_signed_inputs)  # noqa: E402
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -50,9 +57,15 @@ class GazeboWorld(Node):
         self.odom_received = 0.0
         self.joint_received = 0.0
         self.human = None
+        self.human_walk = None
+        self.human_motion = None
+        self.human_lock = threading.RLock()
+        self.person_reports = deque(maxlen=512)
+        self.zero_commands = deque(maxlen=512)
         self.states = []
         self.outcomes = []
         self.commands = []
+        self.attack_world_received = 0
         self.world_count = 0
         self.world_pub = self.create_publisher(String, "/haetae_gate/world", 1)
         self.vla_pub = self.create_publisher(TwistStamped, "/vla/cmd_vel", 1)
@@ -62,6 +75,7 @@ class GazeboWorld(Node):
         self.create_subscription(TwistStamped, BASE_CONTROLLER_TOPIC, self._command, 10)
         self.create_subscription(String, "/haetae_gate/state", self._state, 10)
         self.create_subscription(String, "/haetae_gate/outcome", self._outcome, 10)
+        self.create_subscription(String, "/haetae_gate/world", self._observe_world_attack, 10)
         self.create_timer(0.05, self._publish_world)
 
     def _emit(self, kind, **values):
@@ -70,8 +84,8 @@ class GazeboWorld(Node):
                                "sim_ms": self.get_clock().now().nanoseconds // 1_000_000,
                                **values})
 
-    def marker(self, label):
-        self._emit("phase", label=label)
+    def marker(self, label, **values):
+        self._emit("phase", label=label, **values)
 
     def _state(self, msg):
         value = json.loads(msg.data)
@@ -89,17 +103,27 @@ class GazeboWorld(Node):
                        action=decision.get("action", {}).get("type")
                        if decision.get("action") else None)
 
+    def _observe_world_attack(self, msg):
+        try:
+            if json.loads(msg.data).get("confidence") == 0.314159:
+                self.attack_world_received += 1
+        except (ValueError, TypeError):
+            pass
+
     def _odom(self, msg):
         self.odom = msg
         self.odom_received = time.monotonic()
 
     def _joint(self, msg):
-        if "shoulder" in msg.name:
+        if all(name in msg.name for name in ARM_JOINTS):
             self.joint = msg
             self.joint_received = time.monotonic()
 
     def _command(self, msg):
-        self.commands.append((time.monotonic(), msg.twist.linear.x))
+        now = time.monotonic()
+        self.commands.append((now, msg.twist.linear.x))
+        if msg.twist.linear.x == 0:
+            self.zero_commands.append((now, self.get_clock().now().nanoseconds // 1_000_000))
         self._emit("base_command", linear=msg.twist.linear.x)
 
     def pose(self):
@@ -109,13 +133,47 @@ class GazeboWorld(Node):
         # The odom frame starts at the model's spawn pose (5, 5).
         return (5.0 + p.x, 5.0 + p.y)
 
-    def shoulder(self):
+    def primary_joint(self):
         if self.joint is None:
             return None
-        return self.joint.position[list(self.joint.name).index("shoulder")]
+        return self.joint.position[list(self.joint.name).index(ARM_JOINTS[0])]
+
+    def arm_positions(self):
+        return [self.joint.position[list(self.joint.name).index(name)] for name in ARM_JOINTS]
+
+    def measured_joints(self):
+        return [{"name": name, "position": self.joint.position[i],
+                 "velocity": self.joint.velocity[i] if i < len(self.joint.velocity) else 0.0}
+                for i, name in enumerate(self.joint.name)]
 
     def speed(self):
         return 0.0 if self.odom is None else self.odom.twist.twist.linear.x
+
+    def heading(self):
+        q = self.odom.pose.pose.orientation
+        return math.atan2(2 * (q.w * q.z + q.x * q.y),
+                          1 - 2 * (q.y * q.y + q.z * q.z))
+
+    def begin_person_walk(self, start, end, speed=0.24):
+        with self.human_lock:
+            stamp = self.get_clock().now().nanoseconds // 1_000_000
+            distance = self.human_motion["distance_m"] if self.human_motion else 0.0
+            self.human_walk = PersonWalk(start, end, stamp, speed, distance)
+            self.human, self.human_motion = self.human_walk.sample(stamp)
+
+    def person_walk_finished(self):
+        with self.human_lock:
+            return self.human_walk is None or not self.human_motion["moving"]
+
+    def freeze_person(self):
+        with self.human_lock:
+            self.human_walk = None
+            if self.human_motion:
+                self.human_motion = {**self.human_motion, "moving": False, "speed_mps": 0.0}
+
+    def remove_person(self):
+        with self.human_lock:
+            self.human = self.human_walk = self.human_motion = None
 
     def _publish_world(self):
         now = time.monotonic()
@@ -123,25 +181,30 @@ class GazeboWorld(Node):
         if (not stamp or self.odom is None or self.joint is None or
                 now - self.odom_received > 0.2 or now - self.joint_received > 0.2):
             return
-        q = self.odom.pose.pose.orientation
-        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y),
-                         1 - 2 * (q.y * q.y + q.z * q.z))
-        index = list(self.joint.name).index("shoulder")
-        velocity = self.joint.velocity[index] if len(self.joint.velocity) > index else 0.0
+        yaw = self.heading()
+        joints = self.measured_joints()
         x, y = self.pose()
+        with self.human_lock:
+            if self.human_walk:
+                self.human, self.human_motion = self.human_walk.sample(stamp)
+            humans = ([] if self.human is None else
+                      [{"id": "sim-person", "class": "adult",
+                        "pos": {"x": self.human[0], "y": self.human[1]}}])
+            human_motion = self.human_motion
         payload = {"stamp_ms": stamp,
                    "robot": {"pose": {"x": x, "y": y}, "yaw": yaw,
                              "twist": {"linear": self.speed(), "angular": self.odom.twist.twist.angular.z},
-                             "joints": [{"name": "shoulder", "position": self.shoulder(),
-                                         "velocity": velocity}]},
-                   "humans": ([] if self.human is None else
-                              [{"id": "sim-person", "class": "adult",
-                                "pos": {"x": self.human[0], "y": self.human[1]}}]),
+                             "joints": [j for name in ARM_JOINTS for j in joints if j["name"] == name]},
+                   "humans": humans,
                    "confidence": 1.0}
+        if humans:
+            self.person_reports.append({"wall": time.monotonic(), "stamp_ms": stamp,
+                                        "robot": (x, y), "human": (humans[0]["pos"]["x"], humans[0]["pos"]["y"])})
         self.world_pub.publish(String(data=json.dumps(payload)))
         self.world_count += 1
         self._emit("telemetry", x=x, y=y, speed=self.speed(),
-                   joint=self.shoulder(), humans=payload["humans"])
+                   joint=self.primary_joint(), joints=joints, yaw=yaw, humans=payload["humans"],
+                   human_motion=human_motion, model=MODEL_NAME)
 
     def propose_base(self, linear):
         msg = TwistStamped()
@@ -150,13 +213,13 @@ class GazeboWorld(Node):
         self.vla_pub.publish(msg)
 
     def propose_arm(self, target):
-        start = self.shoulder()
-        assert start is not None
+        start = self.arm_positions()
+        end = [target, *start[1:]]
         msg = JointTrajectory()
-        msg.joint_names = ["shoulder"]
-        for millis, value in ((0, start), (500, target), (1000, target)):
+        msg.joint_names = list(ARM_JOINTS)
+        for millis, value in ((0, start), (800, end), (1000, end)):
             p = JointTrajectoryPoint()
-            p.positions = [value]
+            p.positions = value
             p.time_from_start.sec, p.time_from_start.nanosec = divmod(millis, 1000)
             p.time_from_start.nanosec *= 1_000_000
             msg.points.append(p)
@@ -179,8 +242,8 @@ def wait_for(predicate, timeout, processes, description, action=None):
     raise TimeoutError(description)
 
 
-def command(argv, root, timeout=35):
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+def command(argv, root, timeout=35, env=None):
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
     (root / "setup.log").open("a").write("$ " + " ".join(argv) + "\n" +
                                          result.stdout + result.stderr + "\n")
     if result.returncode:
@@ -227,17 +290,20 @@ def sealed_incident_snapshot(log_path, snapshot_path):
     return True
 
 
-def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0):
+def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
+        gazebo_gui=False, manual_start=False, attack_probes=False,
+        secure_graph=False, step_through=False):
     root.mkdir(parents=True, exist_ok=True)
-    fixture(root, binary, arm=True)
+    fixture(root, binary, arm=True, arm_policy=arm_policy(), person_distance=PERSON_DISTANCE_M)
     params_path = root / "params.yaml"
     params = json.loads(params_path.read_text())
     params["haetae_gate"]["ros__parameters"]["use_sim_time"] = True
     params_path.write_text(json.dumps(params))
     controllers = HERE / "controllers.yaml"
     model = root / "reference_bot.urdf"
-    model.write_text(command(["xacro", str(HERE / "reference_bot.urdf.xacro"),
-                              "controllers_file:=" + str(controllers)], root))
+    model.write_text(resolve_meshes(command(["xacro", str(HERE / "rosbot_xl.urdf.xacro"),
+                              "controllers_file:=" + str(controllers),
+                              "vendor_dir:=" + str(HERE / "vendor")], root)))
     description_params = root / "robot_description.yaml"
     description_params.write_text(json.dumps({"robot_state_publisher": {"ros__parameters": {
         "robot_description": model.read_text(), "use_sim_time": True}}}))
@@ -247,21 +313,72 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0):
     world = None
     executor = None
     thread = None
+    if secure_graph:
+        keystore = prepare_gazebo_security(root / "gazebo-security")
+        os.environ.update({"ROS_SECURITY_ENABLE": "true",
+                           "ROS_SECURITY_STRATEGY": "Enforce",
+                           "ROS_SECURITY_KEYSTORE": str(keystore),
+                           "ROS_SECURITY_ENCLAVE_OVERRIDE": "/haetae/world",
+                           "FASTDDS_BUILTIN_TRANSPORTS": "UDPv4"})
+
+    def role_env(role):
+        env = os.environ.copy()
+        if secure_graph:
+            env["ROS_SECURITY_ENCLAVE_OVERRIDE"] = "/haetae/" + role
+        return env
+
+    def presentation_wait(seconds):
+        if live:
+            until = time.monotonic() + seconds
+            wait_for(lambda: time.monotonic() >= until, seconds + 2,
+                     processes, "scene presentation")
+
+    def review_scene(label, detail, next_label):
+        if not live:
+            return
+        # Only call after the controller has stopped. ROS callbacks, physics
+        # and watchdogs continue while the viewer reads the result.
+        if abs(world.speed()) >= 0.03:
+            raise AssertionError("cannot wait for viewer while base is moving")
+        if step_through:
+            token = live.begin_checkpoint(label=label, detail=detail, next_label=next_label,
+                                          sim_ms=world.get_clock().now().nanoseconds // 1_000_000)
+            wait_for(lambda: not live.checkpoint_active(token), 3600, processes,
+                     "viewer next step")
+        else:
+            presentation_wait(4)
+
+    def prepare_scene(detail):
+        if live:
+            world.marker("다음 장면 준비", detail=detail)
+            presentation_wait(2.5)
+
+    def clear_person():
+        if live and world.human is not None:
+            world.marker("사람이 걸어 나갑니다", detail="정지 장면 확인이 끝났습니다. 사람의 이동이 끝나면 다음 시험을 준비합니다.")
+            world.begin_person_walk(world.human, person_entry(*world.pose(), world.heading()), speed=0.35)
+            wait_for(world.person_walk_finished, 20, processes, "person exit path")
+            world.freeze_person()
+        world.remove_person()
+        if live:
+            world.marker("사람 보고 해제", detail="방금 장면의 사람 근접 보고를 해제했습니다. 다음 시험을 준비합니다.")
+            presentation_wait(2)
+
     rclpy.init()
     try:
-        gazebo_env = os.environ.copy()
+        gazebo_env = role_env("sim")
         gazebo_env["GZ_SIM_SYSTEM_PLUGIN_PATH"] = os.pathsep.join(filter(None, [
             "/opt/ros/jazzy/lib", gazebo_env.get("GZ_SIM_SYSTEM_PLUGIN_PATH", "")]))
-        _, log = start(["gz", "sim", "-s", "-r", "-v", "2", "empty.sdf"],
+        _, log = start(["gz", "sim", "-s", "-r", "-v", "2", str(HERE / "studio.sdf")],
                        root, "gazebo", processes, gazebo_env)
         logs.append(log)
         _, log = start(["ros2", "run", "ros_gz_bridge", "parameter_bridge",
                         "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
-                       root, "clock_bridge", processes)
+                       root, "clock_bridge", processes, gazebo_env)
         logs.append(log)
         _, log = start(["ros2", "run", "robot_state_publisher", "robot_state_publisher",
                         "--ros-args", "--params-file", str(description_params)],
-                       root, "robot_state_publisher", processes)
+                       root, "robot_state_publisher", processes, gazebo_env)
         logs.append(log)
         world = GazeboWorld(live)
         executor = MultiThreadedExecutor(num_threads=3)
@@ -269,18 +386,25 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0):
         thread = threading.Thread(target=executor.spin, daemon=True)
         thread.start()
         wait_for(lambda: world.get_clock().now().nanoseconds > 0, 30, processes, "Gazebo clock")
+        if gazebo_gui:
+            _, log = start(["gz", "sim", "-g", "-v", "2", "--gui-config",
+                            str(HERE / "viewer.config")], root, "gazebo_gui", processes,
+                           gazebo_env)
+            logs.append(log)
         command(["ros2", "run", "ros_gz_sim", "create", "-file", str(model),
-                 "-name", "haetae_reference", "-x", "5", "-y", "5", "-z", "0"], root)
+                 "-name", "haetae_reference", "-x", "5", "-y", "5", "-z", "0"], root,
+                env=gazebo_env)
         for controller in ("joint_state_broadcaster", "diff_drive_base_controller",
-                           "joint_trajectory_controller"):
+                           "joint_trajectory_controller", "gripper_hold_controller"):
             command(["ros2", "run", "controller_manager", "spawner", controller,
-                     "--controller-manager-timeout", "30", "--param-file", str(controllers)], root)
-        wait_for(lambda: world.world_count >= 3, 20, processes, "odom and shoulder feedback")
+                     "--controller-manager-timeout", "30", "--param-file", str(controllers)],
+                    root, env=gazebo_env)
+        wait_for(lambda: world.world_count >= 3, 20, processes, "odom and four-joint feedback")
 
         _, log = start([sys.executable, str(REPO / "ros/haetae_gate/node.py"),
                         "--ros-args", "--params-file", str(params_path),
                         "-r", "/cmd_vel:=" + BASE_CONTROLLER_TOPIC],
-                       root, "gate", processes)
+                       root, "gate", processes, role_env("gate"))
         logs.append(log)
         wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal",
                  10, processes, "Haetae normal state")
@@ -290,64 +414,105 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0):
         if live:
             world.marker("실험 준비 완료")
             if wait_for_viewer:
-                wait_for(lambda: live.status()["viewers"] > 0, 120, processes,
+                wait_for(lambda: live.status()["viewers"] > 0, 3600, processes,
                          "browser live viewer")
+            if manual_start:
+                world.marker("3D 화면 준비 · 시작 버튼을 누르세요")
+                wait_for(lambda: live.start_requested.is_set(), 3600, processes,
+                         "browser start command")
             world.marker("AI 바퀴 이동 명령")
         start_x = world.pose()[0]
-        wait_for(lambda: world.pose()[0] >= start_x + 0.03 and world.speed() > 0.08,
-                 8, processes, "approved base motion", action=lambda: world.propose_base(0.2))
+        visible_motion = 0.35 if live else 0.03
+        motion_at = time.monotonic()
+        wait_for(lambda: world.pose()[0] >= start_x + visible_motion and world.speed() > 0.08
+                 and (not live or time.monotonic() - motion_at >= 3),
+                 12, processes, "approved base motion",
+                 action=lambda: world.propose_base(0.12 if live else 0.2))
         moving_x = world.pose()[0]
-        revoked_at = time.monotonic()
-        revoked_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
-        world.human = (moving_x + 0.1, world.pose()[1])
-        world.marker("사람 등장")
-        zero_at = wait_for(lambda: any(t >= revoked_at and value == 0 for t, value in world.commands),
-                           3, processes, "world-triggered zero base command")
+        entry_at = time.monotonic()
+        entry_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
+        if live:
+            world.begin_person_walk(person_entry(*world.pose(), world.heading()),
+                                    nearby_person(*world.pose(), world.heading()))
+            world.marker("사람이 걸어 접근합니다")
+            # Keep submitting approved motion during the approach. A denied
+            # proposal cannot rearm the robot: only a zero proposal can do so.
+            # A world update can revoke active motion without a Decision
+            # outcome. Require the causal engine record and observed zero.
+            wait_for(lambda: any(t >= entry_at for t, _ in list(world.zero_commands)) and
+                               person_stop_observed(root / "sillok.jsonl", world.person_reports,
+                                                    world.zero_commands, entry_sim_ms),
+                               20, processes, "walking person triggers base stop",
+                               action=lambda: world.propose_base(0.12))
+            world.freeze_person()
+        else:
+            world.human = nearby_person(*world.pose(), world.heading())
+            world.marker("사람 등장")
+            wait_for(lambda: any(t >= entry_at and value == 0 for t, value in world.commands),
+                               3, processes, "world-triggered zero base command")
+        wait_for(lambda: person_stop_report(root / "sillok.jsonl", world.person_reports, entry_sim_ms),
+                 3, processes, "recorded world sample causing person denial")
+        trigger = person_stop_report(root / "sillok.jsonl", world.person_reports, entry_sim_ms)
+        revoked_at, revoked_sim_ms = trigger["wall"], trigger["stamp_ms"]
+        moving_x = trigger["robot"][0]
+        zero_at, zero_sim_ms = next((t, stamp) for t, stamp in world.zero_commands if t >= revoked_at)
         world.marker("해태가 바퀴 0속도 명령")
-        zero_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         wait_for(lambda: abs(world.speed()) < 0.03, 3, processes, "base stopped after human")
         base_stop_x = world.pose()[0]
         world.marker("Gazebo 바퀴 정지")
-        if live:
-            time.sleep(0.8)
-        world.human = None
+        review_scene("바퀴 정지 장면", "사람 근접 보고를 받고 바퀴가 멈췄습니다. 사람 표시와 정지 상태를 천천히 확인하세요.",
+                     "팔 범위 제한 시험")
+        clear_person()
         time.sleep(0.3)
 
         world.propose_base(0.0)
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                  5, processes, "arm rearm", action=lambda: world.propose_base(0.0))
+        prepare_scene("다음은 허용 범위를 넘는 팔 명령입니다. 팔이 움직이지 않는지 확인하세요.")
         bad_at = time.monotonic()
+        denied_start = world.arm_positions()
         world.marker("AI 팔 범위 초과 명령")
-        world.propose_arm(2.0)
-        wait_for(lambda: any(t >= bad_at and value.get("decision", {}).get("verdict") == "bul"
+        world.propose_arm(4.0)
+        wait_for(lambda: any(t >= bad_at and "envelope:arm-position" in value.get("decision", {}).get("fired", [])
                              for t, value in world.outcomes), 5, processes, "out-of-bounds arm denial")
-        denied_position = world.shoulder()
-        if abs(denied_position) > 0.02:
+        if max(abs(a - b) for a, b in zip(world.arm_positions(), denied_start)) > 0.02:
             raise AssertionError("denied arm command moved the joint")
         world.marker("해태가 팔 명령 거부")
-        if live:
-            time.sleep(0.8)
+        review_scene("팔 명령 거부 장면", "허용 범위를 넘는 명령을 거부했고 팔 관절이 움직이지 않았습니다.",
+                     "움직이는 팔 중단 시험")
         world.propose_base(0.0)
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                  5, processes, "arm rearm after denial", action=lambda: world.propose_base(0.0))
+        prepare_scene("이번에는 정상 팔 동작 중 사람 근접 보고를 넣습니다. 팔 움직임과 취소 결과를 확인하세요.")
         world.marker("AI 정상 팔 이동 명령")
-        world.propose_arm(0.12)
-        wait_for(lambda: world.shoulder() > 0.01, 5, processes, "approved arm motion")
+        world.propose_arm(0.65)
+        wait_for(lambda: world.primary_joint() > 0.40, 6, processes, "approved arm motion")
         arm_at = time.monotonic()
-        world.human = (5.5, 5.5)
-        world.marker("사람 등장, 팔 취소 요청")
+        if live:
+            world.begin_person_walk(person_entry(*world.pose(), world.heading()),
+                                    nearby_person(*world.pose(), world.heading()))
+            world.marker("사람 접근 · 팔 중단 시험")
+        else:
+            world.human = nearby_person(*world.pose(), world.heading())
+        # Existing arm policy stops on any human report, including a far
+        # report. Do not wait for the person to cross the base's boundary.
         wait_for(lambda: any(t >= arm_at and value["arm_cancelling"]
                              for t, value in world.states), 3, processes, "arm cancellation request")
+        world.marker("사람 감지, 팔 취소 요청")
         wait_for(lambda: world.states and not world.states[-1][1]["arm_cancelling"],
                  3, processes, "arm cancelled result")
-        arm_cancel_position = world.shoulder()
+        arm_cancel_position = world.primary_joint()
+        arm_cancel_positions = world.arm_positions()
         time.sleep(0.35)
-        if abs(world.shoulder() - arm_cancel_position) > 0.02:
+        if max(abs(a - b) for a, b in zip(world.arm_positions(), arm_cancel_positions)) > 0.02:
             raise AssertionError("arm kept moving after cancellation")
         world.marker("Gazebo 팔 관절 정지")
         if live:
-            time.sleep(0.8)
-        world.human = None
+            wait_for(world.person_walk_finished, 20, processes, "person approaches stopped arm")
+            world.freeze_person()
+        review_scene("팔 정지 장면", "사람 근접 보고 뒤 팔 동작이 취소됐습니다. 사람 표시는 다음 단계까지 유지됩니다.",
+                     "외부 노드 공격 시험" if attack_probes and secure_graph else "연결 끊김 시험")
+        clear_person()
 
         snapshot = root / "sealed-snapshot.jsonl"
         wait_for(lambda: sealed_incident_snapshot(root / "sillok.jsonl", snapshot),
@@ -357,12 +522,51 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0):
         if report.returncode or not json.loads(report.stdout)["fully_sealed"]:
             raise AssertionError("incident log is not fully sealed")
 
+        attacks = {}
+        if attack_probes and secure_graph:
+            world.propose_base(0.0)
+            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+                     5, processes, "base rearm before attacker",
+                     action=lambda: world.propose_base(0.0))
+            prepare_scene("공격자 노드가 바퀴에 직접 명령을 보내고 사람 정보를 위조합니다. 아래 공격 카드에서 결과를 확인하세요.")
+            world.marker("외부 노드 바퀴 명령 공격")
+            attack_at = time.monotonic()
+            world_count_before = world.attack_world_received
+            try:
+                probe = probe_gazebo_permissions(role_env("vla"))
+                wait_for(lambda: any(t >= attack_at and value.get("decision")
+                                     for t, value in world.outcomes),
+                         2, processes, "authorized VLA proposal from attacker enclave")
+                direct_received = sum(1 for t, value in world.commands
+                                      if t >= attack_at and abs(value - 9.0) < 0.001)
+                world_received = world.attack_world_received - world_count_before
+                attacks["direct"] = {"blocked": direct_received == 0 and
+                                     abs(world.speed()) < 0.03,
+                                     "scope": "gazebo_sros2_graph",
+                                     "unauthorized_received": direct_received,
+                                     "attacker_uid": probe["uid"],
+                                     "denied_at_publisher": probe["denied_at_publisher"]}
+                attacks["world"] = {"blocked": world_received == 0,
+                                    "scope": "gazebo_sros2_graph",
+                                    "unauthorized_received": world_received}
+            except Exception as exc:
+                attacks["direct"] = {"blocked": False, "error": str(exc)}
+                attacks["world"] = {"blocked": False, "error": str(exc)}
+            for name in ("direct", "world"):
+                world._emit("attack_result", attack=name, **attacks[name])
+            review_scene("외부 노드 공격 결과", "바퀴 직접 명령과 사람 정보 위조 시험이 끝났습니다. 아래 두 카드의 결과를 확인하세요.",
+                         "연결 끊김 시험")
+
         time.sleep(0.3)
         world.propose_base(0.0)
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                  5, processes, "base rearm before kill", action=lambda: world.propose_base(0.0))
-        wait_for(lambda: world.speed() > 0.08, 8, processes, "second base motion",
-                 action=lambda: world.propose_base(0.2))
+        prepare_scene("로봇을 다시 움직인 뒤 해태 프로세스를 종료합니다. 명령이 끊겼을 때 바퀴가 멈추는지 확인하세요.")
+        world.marker("두 번째 바퀴 이동")
+        motion_at = time.monotonic()
+        wait_for(lambda: world.speed() > 0.08 and (not live or time.monotonic() - motion_at >= 3),
+                 8, processes, "second base motion",
+                 action=lambda: world.propose_base(0.12 if live else 0.2))
         killed_at = time.monotonic()
         killed_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
         world.marker("해태 프로세스 강제 종료")
@@ -374,17 +578,63 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0):
         if live:
             x, y = world.pose()
             world._emit("telemetry", x=x, y=y, speed=world.speed(),
-                        joint=world.shoulder(), humans=[])
-        result = {"ok": True, "controller": "Gazebo Harmonic gz_ros2_control",
+                        joint=world.primary_joint(), joints=world.measured_joints(), yaw=world.heading(), humans=[])
+        if attack_probes:
+            review_scene("연결 끊김 뒤 정지 장면", "해태 프로세스가 종료된 뒤 바퀴 컨트롤러가 스스로 멈췄습니다.",
+                         "재전송·서명 변조 시험" if secure_graph else "외부 노드 공격 시험")
+            if not secure_graph:
+                world.marker("외부 노드 바퀴 명령 공격")
+                try:
+                    acl = probe_permissions(root / "permission-probe")
+                    attacks["direct"] = {"blocked": acl["direct_command_blocked"],
+                                         "scope": acl["scope"],
+                                         "unauthorized_received": acl["unauthorized_received"]["direct_base"]}
+                    attacks["world"] = {"blocked": acl["forged_world_blocked"],
+                                        "scope": acl["scope"],
+                                        "unauthorized_received": acl["unauthorized_received"]["forged_world"]}
+                except Exception as exc:
+                    attacks["direct"] = {"blocked": False, "error": str(exc)}
+                    attacks["world"] = {"blocked": False, "error": str(exc)}
+                for name in ("direct", "world"):
+                    world._emit("attack_result", attack=name, **attacks[name])
+                review_scene("외부 노드 공격 결과", "별도 ROS 그래프의 바퀴 명령과 사람 정보 위조 시험 결과를 확인하세요.",
+                             "재전송·서명 변조 시험")
+            prepare_scene("이미 승인된 명령을 다시 보내고, 서명된 사람 정보를 변조합니다. 별도 해태 엔진의 거부 결과를 확인하세요.")
+            world.marker("서명된 명령 재전송 공격")
+            try:
+                signed = probe_signed_inputs(root / "signed-probe", binary)
+                attacks["replay"] = {"blocked": signed["replay_blocked"],
+                                     "scope": signed["scope"],
+                                     "controller_command_mps": signed["replay_command_mps"],
+                                     "reason": signed["replay_reason"]}
+                attacks["signature"] = {"blocked": signed["forged_signature_blocked"],
+                                        "scope": signed["scope"],
+                                        "controller_command_mps": signed["forged_command_mps"],
+                                        "reason": signed["forged_reason"]}
+            except Exception as exc:
+                attacks["replay"] = {"blocked": False, "error": str(exc)}
+                attacks["signature"] = {"blocked": False, "error": str(exc)}
+            for name in ("replay", "signature"):
+                world._emit("attack_result", attack=name, **attacks[name])
+            (root / "attack-result.json").write_text(json.dumps(attacks, indent=2) + "\n")
+        result = {"ok": all(row["blocked"] for row in attacks.values()),
+                  "robot_model": MODEL_NAME,
+                  "arm_joints": list(ARM_JOINTS),
+                  "arm_cancelled_positions_rad": arm_cancel_positions,
+                  "controller": "Gazebo Harmonic gz_ros2_control",
                   "base_moved_m": round(moving_x - start_x, 3),
                   "human_to_zero_wall_ms": round((zero_at - revoked_at) * 1000, 1),
                   "human_to_zero_sim_ms": zero_sim_ms - revoked_sim_ms,
+                  "person_entry_to_stop_report_sim_ms": revoked_sim_ms - entry_sim_ms,
+                  "person_stop_report_distance_m": round(math.dist(trigger["robot"], trigger["human"]), 3),
+                  "person_walk_clock": "gazebo_sim_time" if live else None,
                   "base_stop_distance_m": round(base_stop_x - moving_x, 3),
                   "arm_out_of_bounds_denied": True,
                   "arm_cancelled_at_rad": round(arm_cancel_position, 4),
                   "gate_kill_to_base_stop_wall_ms": round((stopped_at - killed_at) * 1000, 1),
                   "gate_kill_to_base_stop_sim_ms": stopped_sim_ms - killed_sim_ms,
-                  "sillok_incident_snapshot_fully_sealed": True}
+                  "sillok_incident_snapshot_fully_sealed": True,
+                  "attack_probes": attacks}
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         if live:
             live.publish({"kind": "result", "sim_ms": stopped_sim_ms, "result": result})
@@ -416,6 +666,16 @@ def main():
                         help="start motion after a browser connects to the live page")
     parser.add_argument("--live-hold-seconds", type=float, default=5,
                         help="keep the completed live view connected for this many seconds")
+    parser.add_argument("--gazebo-gui", action="store_true",
+                        help="launch Gazebo's GUI on an existing display")
+    parser.add_argument("--manual-start", action="store_true",
+                        help="wait for a browser start button after the viewer connects")
+    parser.add_argument("--step-through", action="store_true",
+                        help="wait for the viewer between completed live scenes")
+    parser.add_argument("--attack-probes", action="store_true",
+                        help="run SROS2 and signed-input attack probes")
+    parser.add_argument("--secure-graph", action="store_true",
+                        help="run Gazebo and attacker with separate SROS2 enclaves")
     args = parser.parse_args()
     if args.wait_for_viewer and args.live_port is None:
         parser.error("--wait-for-viewer requires --live-port")
@@ -423,9 +683,20 @@ def main():
         parser.error("--live-port must be between 1 and 65535")
     if args.live_hold_seconds < 0:
         parser.error("--live-hold-seconds must be nonnegative")
+    if args.gazebo_gui and args.live_port is None:
+        parser.error("--gazebo-gui requires --live-port")
+    if args.manual_start and args.live_port is None:
+        parser.error("--manual-start requires --live-port")
+    if args.step_through and args.live_port is None:
+        parser.error("--step-through requires --live-port")
     binary = str(Path(args.binary).resolve())
     live = LiveHub() if args.live_port is not None else None
-    server = start_server(live, args.live_port, args.live_bind) if live else None
+    server = start_server(live, args.live_port, args.live_bind,
+                          gazebo_gui=args.gazebo_gui,
+                          manual_start=args.manual_start,
+                          attack_probes=args.attack_probes,
+                          secured_gazebo=args.secure_graph,
+                          step_through=args.step_through) if live else None
     if server:
         print(f"Live view: http://127.0.0.1:{args.live_port}/", flush=True)
     shared = Path("/dev/shm")
@@ -434,17 +705,36 @@ def main():
                                          else None) as directory:
             try:
                 run(Path(directory), binary, live, args.wait_for_viewer,
-                    args.live_hold_seconds if live else 0)
+                    args.live_hold_seconds if live else 0, args.gazebo_gui,
+                    args.manual_start, args.attack_probes, args.secure_graph,
+                    args.step_through)
+            except Exception as exc:
+                (Path(directory) / "error.json").write_text(json.dumps({
+                    "error_type": type(exc).__name__, "error": str(exc),
+                    "traceback": traceback.format_exc()}, indent=2) + "\n")
+                if live:
+                    live.fail({"kind": "error", "label": "시뮬레이션이 중단됐습니다",
+                               "detail": "장면 완료 조건을 제시간에 확인하지 못했습니다."
+                               if isinstance(exc, TimeoutError) else "시뮬레이터 실행 중 오류가 발생했습니다.",
+                               "error_type": type(exc).__name__})
+                raise
             finally:
                 if args.out:
                     output = args.out.resolve()
                     output.mkdir(parents=True, exist_ok=True)
-                    for name in ("result.json", "setup.log", "gazebo.log", "gate.log",
+                    for name in ("result.json", "error.json", "attack-result.json", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
                                  "clock_bridge.log", "robot_state_publisher.log",
                                  "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
                         source = Path(directory) / name
                         if source.exists():
                             shutil.copy2(source, output / name)
+    except Exception:
+        if live and args.live_hold_seconds:
+            # Physics and ROS have already been stopped by run's finally.
+            # Keep only the error page available, including after a refresh.
+            traceback.print_exc()
+            time.sleep(args.live_hold_seconds)
+        raise
     finally:
         if server:
             server.shutdown()

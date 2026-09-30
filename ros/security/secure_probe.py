@@ -161,17 +161,25 @@ def orchestrate(store):
             result = {role: json.loads(out.read_text()) for role, (_, _, out) in children.items()}
             gate = result["gate"]
             controller = result["controller"]
-            assert "trusted-world" in gate["world"]
-            assert "trusted-fault" in gate["fault"]
-            assert 0.5 in gate["vla"]
-            assert 1.0 in controller["cmd"]
-            assert 0.1 in controller["goals"]
-            assert "rogue-world" not in gate["world"]
-            assert "rogue-fault" not in gate["fault"]
-            assert 9.0 not in controller["cmd"]
-            assert 9.0 not in controller["goals"]
+            required = {"trusted world": "trusted-world" in gate["world"],
+                        "trusted fault": "trusted-fault" in gate["fault"],
+                        "VLA proposal": 0.5 in gate["vla"],
+                        "gate base command": 1.0 in controller["cmd"],
+                        "gate arm action": 0.1 in controller["goals"],
+                        "forged world blocked": "rogue-world" not in gate["world"],
+                        "forged fault blocked": "rogue-fault" not in gate["fault"],
+                        "direct base blocked": 9.0 not in controller["cmd"],
+                        "direct arm blocked": 9.0 not in controller["goals"]}
+            failed = [name for name, passed in required.items() if not passed]
+            if failed:
+                raise AssertionError("SROS2 permission probe failed: " + ", ".join(failed))
             print(json.dumps({"ok": True, "authorized": {"world": True, "fault": True,
                   "proposal": True, "base": True, "arm": True},
+                  "unauthorized_received": {
+                      "direct_base": controller["cmd"].count(9.0),
+                      "direct_arm": controller["goals"].count(9.0),
+                      "forged_world": gate["world"].count("rogue-world"),
+                      "forged_fault": gate["fault"].count("rogue-fault")},
                   "vla_denied": result["vla"]["denied"]}))
         finally:
             for role, (proc, err, _) in children.items():

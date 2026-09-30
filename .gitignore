@@ -10,3 +10,6 @@ sim/examples/
 *.seed
 /sillok*.jsonl
 /artifacts/
+# Local advisor evidence and browser automation logs.
+/.omx/
+/.playwright-cli/
