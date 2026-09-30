@@ -1,6 +1,7 @@
 #include "motion.hpp"
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <gz/msgs/pose_v.pb.h>
@@ -15,6 +16,7 @@ namespace haetae {
 class NativePerson final : public gz::sim::System,
     public gz::sim::ISystemConfigure, public gz::sim::ISystemPreUpdate {
  public:
+  ~NativePerson() override { node.Unsubscribe("/haetae/native/person_pose"); }
   void Configure(const gz::sim::Entity &, const std::shared_ptr<const sdf::Element> &,
       gz::sim::EntityComponentManager &, gz::sim::EventManager &) override {
     node.Subscribe("/haetae/native/person_pose", &NativePerson::Receive, this);
@@ -23,14 +25,18 @@ class NativePerson final : public gz::sim::System,
       gz::sim::EntityComponentManager &ecm) override {
     if (info.paused || info.dt <= std::chrono::steady_clock::duration::zero()) return;
     Body desired;
+    std::uint64_t version;
     {
       std::lock_guard<std::mutex> guard(mutex);
       if (!have_target) return;
       desired = target;
+      version = target_version;
     }
-    if (initialized && applied && current == desired) return;
+    if (initialized && applied && settled && version == applied_version) return;
     if (!initialized) { current = desired; initialized = true; }
     else advance(current, desired, std::chrono::duration<double>(info.dt).count());
+    settled = current[0].Pos().Distance(desired[0].Pos()) < 1e-12;
+    applied_version = version;
     applied = true;
     for (std::size_t i = 0; i < names.size(); ++i) {
       if (entities[i] == gz::sim::kNullEntity)
@@ -60,7 +66,7 @@ class NativePerson final : public gz::sim::System,
       seen[i] = true;
     }
     std::lock_guard<std::mutex> guard(mutex);
-    target = next; have_target = true;
+    target = next; have_target = true; ++target_version;
   }
   const std::array<std::string, 12> names{{"person_torso", "person_head",
     "person_thigh-1", "person_shin-1", "person_upper_arm-1", "person_forearm-1",
@@ -70,7 +76,8 @@ class NativePerson final : public gz::sim::System,
   std::mutex mutex;
   Body target{}, current{};
   std::array<gz::sim::Entity, 12> entities{};
-  bool have_target{false}, initialized{false}, applied{false};
+  std::uint64_t target_version{0}, applied_version{0};
+  bool have_target{false}, initialized{false}, applied{false}, settled{false};
 };
 }  // namespace haetae
 GZ_ADD_PLUGIN(haetae::NativePerson, gz::sim::System,

@@ -299,9 +299,14 @@ def check_person_sensor(world, label, processes):
         pose, _ = world.native.observed_sample()
         desired = world.human
         return (frame and frame.healthy and len(frame.points) >= 3 and pose and desired
-                and math.dist(pose[:2], desired) < 0.000001
+                and math.dist(pose[:2], desired) < 0.025
                 and min(math.dist(point, pose[:2]) for point in frame.points) < 0.25)
-    wait_for(detected, 3, processes, "native person and lidar agreement")
+    try:
+        wait_for(detected, 3, processes, "native person and lidar agreement")
+    except TimeoutError as exc:
+        raise AssertionError("native person / lidar disagreement: " + json.dumps({
+            "native_pose": world.native.observed_sample(), "desired": world.human,
+            "sensor": world.sensor_info, "driver_error": world.native.error})) from exc
     frame = world.perception.frame
     pose, _ = world.native.observed_sample()
     return {"case": label, "input": "gazebo_gpu_lidar", "sensor_stamp_ms": frame.stamp_ms,
@@ -545,6 +550,16 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             world.marker("다음 장면 준비", detail=detail)
             presentation_wait(2.5)
 
+    def freeze_native_person():
+        world.freeze_person()
+        # The path agreement oracle allows normal measurement latency while
+        # walking. A user checkpoint also requires the native body to finish
+        # reaching the frozen target, so it cannot drift during the hold.
+        def settled():
+            pose, _ = world.native.observed_sample()
+            return pose and world.human and math.dist(pose[:2], world.human) < 1e-6
+        wait_for(settled, 3, processes, "native person settles before checkpoint")
+
     sensor_person_evidence = []
 
     def clear_person():
@@ -552,7 +567,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             world.marker("사람이 걸어 나갑니다", detail="정지 장면 확인이 끝났습니다. 사람의 이동이 끝나면 다음 시험을 준비합니다.")
             world.begin_person_walk(world.human, person_entry(*world.pose(), world.heading()), speed=0.24)
             wait_for(world.person_walk_finished, 20, processes, "person exit path")
-            world.freeze_person()
+            freeze_native_person()
         if world.human is not None:
             sensor_person_evidence.append(check_person_sensor(world, "before_departure", processes))
         world.remove_person()
@@ -702,7 +717,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                                                     world.zero_commands, entry_sim_ms),
                                20, processes, "walking person triggers base stop",
                                action=lambda: world.propose_base(0.12))
-            world.freeze_person()
+            freeze_native_person()
         else:
             world.human = nearby_person(*world.pose(), world.heading())
             world.marker("사람 등장")
@@ -772,7 +787,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         world.marker("Gazebo 팔 관절 정지")
         if live:
             wait_for(world.person_walk_finished, 20, processes, "person approaches stopped arm")
-            world.freeze_person()
+            freeze_native_person()
         review_scene("팔 정지 장면", "사람 근접 보고 뒤 팔 동작이 취소됐습니다. 사람 표시는 다음 단계까지 유지됩니다.",
                      "외부 노드 공격 시험" if attack_probes and secure_graph else "연결 끊김 시험")
         clear_person()
