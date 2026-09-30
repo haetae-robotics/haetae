@@ -73,7 +73,7 @@ base. A compromised bridge or privileged host can still command the robot.
   That process's direct base command and forged world publisher are denied on
   the actual Gazebo ROS graph while an authorized VLA proposal succeeds.
   The secured container uses separate gateway, world/fault signer and VLA
-  signer UIDs (2001/2002/2003), private role keystores, unpredictable fresh keys
+  signer and proposal-writer UIDs (2001/2002/2003/2004), private role keystores, unpredictable fresh keys
   and role-scoped DDS permissions. Gateway and VLA principals fail to read
   perception signing/DDS keys; gateway cannot create raw/signed world/fault
   writers, and VLA/world cannot create controller or heartbeat writers or arm
@@ -136,3 +136,8 @@ untrusted or compromised AI commands:
 
 No release artifact or registry version should be labelled protective while
 one of these blockers is open.
+
+The proposal writer owns only the `/haetae/vla` DDS certificate (UID 2004).
+The VLA signer owns a separate `/haetae/vla_signer` certificate and signing
+seed (UID 2003). Only that signer can publish `/haetae_gate/signed/vla`;
+ROS node names within an enclave are not an authentication boundary.

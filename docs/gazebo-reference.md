@@ -263,3 +263,8 @@ rejects envelope roles that do not match the topic binding before passing the
 exact signed bytes to Rust. The root test driver has a private stdin pipe to a
 VLA-only proposal writer, rather than using perception DDS authority to issue
 AI commands. Legacy headless smoke scenarios remain explicitly non-isolated.
+
+The proposal writer owns only the `/haetae/vla` DDS certificate (UID 2004).
+The VLA signer owns a separate `/haetae/vla_signer` certificate and signing
+seed (UID 2003). Only that signer can publish `/haetae_gate/signed/vla`;
+ROS node names within an enclave are not an authentication boundary.

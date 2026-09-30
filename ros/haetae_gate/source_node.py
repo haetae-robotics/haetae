@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import TwistStamped
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -72,6 +73,8 @@ def main():
     node = SourceSigner()
     try:
         rclpy.spin(node)
+    except (ExternalShutdownException, KeyboardInterrupt):
+        pass
     finally:
         node.store.close()
         node.destroy_node()

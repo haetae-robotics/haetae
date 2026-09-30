@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import TwistStamped
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -44,6 +45,8 @@ def main():
     thread.start()
     try:
         rclpy.spin(node)
+    except (ExternalShutdownException, KeyboardInterrupt):
+        pass
     finally:
         node.destroy_node()
         rclpy.try_shutdown()

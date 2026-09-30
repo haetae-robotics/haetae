@@ -20,11 +20,16 @@ def main():
         forbidden = ["/haetae_input/world", "/haetae_input/fault",
                      "/haetae_gate/signed/world", "/haetae_gate/signed/fault"]
         allowed = node.create_publisher(TwistStamped, "/diff_drive_base_controller/cmd_vel", 1)
-    elif role == "vla":
+    elif role in ("vla", "proposal"):
         forbidden = ["/haetae_input/world", "/haetae_input/fault", "/haetae_gate/signed/world",
                      "/haetae_gate/signed/fault", "/haetae_gate/heartbeat",
                      "/diff_drive_base_controller/cmd_vel", "/joint_trajectory_controller/joint_trajectory"]
-        allowed = node.create_publisher(TwistStamped, "/vla/cmd_vel", 1)
+        if role == "proposal":
+            forbidden.append("/haetae_gate/signed/vla")
+            allowed = node.create_publisher(TwistStamped, "/vla/cmd_vel", 1)
+        else:
+            forbidden.extend(["/vla/cmd_vel", "/vla/arm"])
+            allowed = node.create_publisher(String, "/haetae_gate/signed/vla", 1)
     else:
         forbidden = ["/haetae_gate/heartbeat", "/diff_drive_base_controller/cmd_vel",
                      "/joint_trajectory_controller/joint_trajectory", "/haetae_gate/signed/vla"]
@@ -33,7 +38,7 @@ def main():
     for topic in forbidden:
         try:
             kind = (UInt64 if topic.endswith("heartbeat") else TwistStamped if topic.endswith("cmd_vel")
-                    else JointTrajectory if topic.endswith("joint_trajectory") else String)
+                    else JointTrajectory if topic.endswith("joint_trajectory") or topic == "/vla/arm" else String)
             node.create_publisher(kind, topic, 1)
             denied[topic] = False
         except Exception:

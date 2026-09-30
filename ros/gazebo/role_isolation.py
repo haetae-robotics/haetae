@@ -14,7 +14,8 @@ import sys
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-UIDS = {"gate": 2001, "world": 2002, "vla": 2003}
+UIDS = {"gate": 2001, "world": 2002, "vla": 2003, "proposal": 2004}
+ENCLAVES = {"gate": "gate", "world": "world", "vla": "vla_signer", "proposal": "vla"}
 
 
 def fresh_fixture(root):
@@ -59,11 +60,11 @@ class Roles:
             directory = root / ("principal-" + role)
             directory.mkdir()
             self.directories[role] = directory
-            shutil.copytree(keystore / ("enclaves/haetae/" + role),
+            shutil.copytree(keystore / ("enclaves/haetae/" + ENCLAVES[role]),
                             directory / ("keystore/enclaves/haetae/" + role))
             (directory / "logs").mkdir()
             shutil.copy2(root / "trust.json", directory / "trust.json")
-            key_roles = ("world", "fault") if role == "world" else ("vla",) if role == "vla" else ("log",)
+            key_roles = ("world", "fault") if role == "world" else ("vla",) if role == "vla" else ("log",) if role == "gate" else ()
             for key in key_roles:
                 shutil.copy2(root / (key + ".key"), directory / (key + ".key"))
             private_tree(directory, uid)
@@ -74,7 +75,7 @@ class Roles:
     def environment(self, role, base):
         directory = self.directories[role]
         return {**base, "ROS_SECURITY_KEYSTORE": str(directory / "keystore"),
-                "ROS_SECURITY_ENCLAVE_OVERRIDE": "/haetae/" + role,
+                "ROS_SECURITY_ENCLAVE_OVERRIDE": "/haetae/" + ENCLAVES[role],
                 "ROS_LOG_DIR": str(directory / "logs"), "HOME": str(directory)}
 
     def configure_gate(self, fixture_root):
@@ -114,7 +115,7 @@ class Roles:
         forbidden = [str(self.directories["world"] / key) for key in (
             "world.key", "fault.key", "keystore/enclaves/haetae/world/key.pem")]
         result = {}
-        for role in ("gate", "vla"):
+        for role in ("gate", "vla", "proposal"):
             code = "import json,sys; denied=[]\nfor p in sys.argv[1:]:\n try: open(p,'rb').read(); denied.append(False)\n except PermissionError: denied.append(True)\nprint(json.dumps(denied))"
             probe = subprocess.run([sys.executable, "-c", code, *forbidden], user=UIDS[role],
                                    group=UIDS[role], extra_groups=[], capture_output=True, text=True,
@@ -122,7 +123,18 @@ class Roles:
             denied = json.loads(probe.stdout)
             if not all(denied):
                 raise AssertionError(role + " could read trusted perception credentials")
-            result[role] = {"uid": UIDS[role], "perception_credentials_unreadable": denied}
+            other_keys = [str(entry) for owner, directory in self.directories.items() if owner != role
+                          for entry in directory.rglob("*.key")]
+            other_keys += [str(directory / ("keystore/enclaves/haetae/" + ENCLAVES[owner] + "/key.pem"))
+                           for owner, directory in self.directories.items() if owner != role]
+            cross = subprocess.run([sys.executable, "-c", code, *other_keys], user=UIDS[role],
+                                   group=UIDS[role], extra_groups=[], capture_output=True, text=True,
+                                   check=True, timeout=5)
+            cross_denied = json.loads(cross.stdout)
+            if not all(cross_denied):
+                raise AssertionError(role + " could read another principal's private credentials")
+            result[role] = {"uid": UIDS[role], "perception_credentials_unreadable": denied,
+                            "other_principal_credentials_unreadable": cross_denied}
         return result
 
     def probe_graph_boundaries(self, base):

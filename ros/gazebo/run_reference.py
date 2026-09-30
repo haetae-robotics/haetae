@@ -505,8 +505,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                                root, "source_" + role, processes, role_env(role), UIDS[role])
                 logs.append(log)
             driver, log = start([sys.executable, str(HERE / "scenario_source.py")],
-                                root, "scenario_vla", processes, role_env("vla"),
-                                UIDS["vla"], input_pipe=True)
+                                root, "scenario_vla", processes, role_env("proposal"),
+                                UIDS["proposal"], input_pipe=True)
             world.proposal_pipe = driver.stdin
             logs.append(log)
 
@@ -669,7 +669,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             attack_at = time.monotonic()
             world_count_before = world.attack_world_received
             try:
-                probe = probe_gazebo_permissions(role_env("vla"))
+                probe = probe_gazebo_permissions(role_env("proposal"))
                 wait_for(lambda: any(t >= attack_at and value.get("decision")
                                      for t, value in world.outcomes),
                          2, processes, "authorized VLA proposal from attacker enclave")

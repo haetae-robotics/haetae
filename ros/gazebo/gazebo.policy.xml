@@ -147,6 +147,34 @@
           <topics publish="ALLOW">
             <topic>/vla/cmd_vel</topic>
             <topic>/vla/arm</topic>
+            <topic>/rosout</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/clock</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <services reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
+            <service>~/query_state</service>
+            <service>~/get_logger_levels</service>
+            <service>~/set_logger_levels</service>
+          </services>
+        </profile>
+      </profiles>
+    </enclave>
+    <enclave path="/haetae/vla_signer">
+      <profiles>
+        <profile ns="/" node="*">
+          <topics publish="ALLOW">
             <topic>/haetae_gate/signed/vla</topic>
             <topic>/rosout</topic>
             <topic>/ros_discovery_info</topic>

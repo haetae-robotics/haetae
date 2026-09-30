@@ -13,15 +13,23 @@ class GazeboSecurityPolicyTest(unittest.TestCase):
         root = ElementTree.parse(POLICY).getroot()
         enclaves = {row.attrib["path"]: row for row in root.findall("./enclaves/enclave")}
         self.assertEqual(set(enclaves), {"/haetae/sim", "/haetae/world",
-                                          "/haetae/gate", "/haetae/vla"})
+                                          "/haetae/gate", "/haetae/vla", "/haetae/vla_signer"})
         vla = enclaves["/haetae/vla"]
         self.assertEqual([(row.attrib["ns"], row.attrib["node"])
                           for row in vla.findall("./profiles/profile")],
-                         [("/", "vla_source")])
+                         [("/", "*")])
         published = {topic.text for topic in vla.findall(
             "./profiles/profile/topics[@publish='ALLOW']/topic")}
-        self.assertEqual(published, {"/vla/cmd_vel", "/vla/arm", "rosout",
-                                     "ros_discovery_info", "/parameter_events"})
+        self.assertEqual(published, {"/vla/cmd_vel", "/vla/arm", "/rosout",
+                                     "/ros_discovery_info", "/parameter_events"})
+        # DDS certificates define the principal boundary. A ROS node name is
+        # caller-selected and cannot isolate two nodes sharing one certificate.
+        signer = enclaves["/haetae/vla_signer"]
+        signed = {topic.text for topic in signer.findall(
+            "./profiles/profile/topics[@publish='ALLOW']/topic")}
+        self.assertEqual(signed, {"/haetae_gate/signed/vla", "/rosout",
+                                 "/ros_discovery_info", "/parameter_events"})
+        self.assertFalse(signer.findall("./profiles/profile/actions[@call='ALLOW']"))
         self.assertFalse(vla.findall("./profiles/profile/actions[@call='ALLOW']"))
 
 
