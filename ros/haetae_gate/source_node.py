@@ -56,6 +56,12 @@ class SourceSigner(Node):
         self.pubs[role].publish(String(data=json.dumps(envelope, separators=(",", ":"))))
 
     def propose(self, parse):
+        stamp = self.get_clock().now().nanoseconds // 1_000_000
+        # A restarted simulation-time node starts at zero until its /clock
+        # reader discovers the publisher. Stops may be accepted by the engine
+        # at time zero; they must not masquerade as proof this signer is ready.
+        if stamp <= 0:
+            return
         try:
             action = parse()
         except InvalidProposal as exc:
@@ -64,7 +70,7 @@ class SourceSigner(Node):
             action = {"type": "stop"}
         self.seq += 1
         self.send("vla", {"id": self.seq, "source": "vla",
-                          "timestamp_ms": self.get_clock().now().nanoseconds // 1_000_000,
+                          "timestamp_ms": stamp,
                           "action": action})
 
 
