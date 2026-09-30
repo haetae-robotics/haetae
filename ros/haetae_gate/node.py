@@ -6,7 +6,6 @@ only from this node's SROS2 enclave, and independently stop when it dies.
 """
 
 import json
-import math
 import os
 import sys
 import time
@@ -23,10 +22,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from bridge import Bridge, BridgeFailure, StaleActuation, require_fresh_actuation, lease_renewable
 from signing import Signer
-
-
-class InvalidProposal(ValueError):
-    """A malformed command from an untrusted source; stop without exiting."""
+from proposals import InvalidProposal, base_action, arm_action
 
 
 class HaetaeGate(Node):
@@ -39,7 +35,7 @@ class HaetaeGate(Node):
             "arm_action": "/joint_trajectory_controller/follow_joint_trajectory",
             "response_timeout_ms": 500, "max_actuation_response_ms": 50,
             "tick_hz": 20.0, "output_stamped": True,
-            "heartbeat_topic": "",
+            "heartbeat_topic": "", "signed_inputs_only": False,
         }
         for key, value in defaults.items():
             self.declare_parameter(key, value)
@@ -53,7 +49,11 @@ class HaetaeGate(Node):
         if self.max_actuation_response_ms <= 0:
             raise ValueError("max_actuation_response_ms must be positive")
         self.arm_joints = [j["name"] for j in self.policy.get("arm", {}).get("joints", [])]
-        self.signer = Signer(param("trust_path"), param("state_path"), json.loads(param("keys_json")))
+        self.signed_inputs_only = param("signed_inputs_only")
+        if self.signed_inputs_only and any(json.loads(param(key)) != value for key, value in (
+                ("keys_json", {}), ("inputs_json", []), ("arm_inputs_json", []))):
+            raise ValueError("signed-only gateway must have no source signing keys or raw inputs")
+        self.signer = None if self.signed_inputs_only else Signer(param("trust_path"), param("state_path"), json.loads(param("keys_json")))
         argv = [param("haetae_bin"), "enforce", "--stdio", "--policy", param("policy_path"),
                 "--state", param("state_path"), "--sillok", param("sillok_path"),
                 "--key", param("key_path"), "--trust", param("trust_path"),
@@ -84,8 +84,14 @@ class HaetaeGate(Node):
         self.seq = {role: 0 for role in ("vla", "planner", "teleop", "peer")}
         reliable = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         best_effort = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.create_subscription(String, "~/world", self._world, best_effort)
-        self.create_subscription(String, "~/fault", self._fault, reliable)
+        if self.signed_inputs_only:
+            for role in ("world", "fault", "vla"):
+                self.create_subscription(String, "~/signed/" + role,
+                    lambda msg, role=role: self._signed(msg, role),
+                    best_effort if role == "world" else reliable)
+        else:
+            self.create_subscription(String, "~/world", self._world, best_effort)
+            self.create_subscription(String, "~/fault", self._fault, reliable)
         self._input_subscriptions = []
         for item in json.loads(param("inputs_json")):
             topic, role, ttl = item["topic"], item["source"], int(item["ttl_ms"])
@@ -123,7 +129,8 @@ class HaetaeGate(Node):
             else:
                 raise BridgeFailure("invalid arm output")
         if step.get("status") is not None:
-            self.state_pub.publish(String(data=json.dumps(step["status"])))
+            self.state_pub.publish(String(data=json.dumps({**step["status"],
+                "arm_controller_ready": self.arm_client.server_is_ready() if self.arm_joints else True})))
         if step.get("outcome") is not None:
             self.outcome_pub.publish(String(data=json.dumps(step["outcome"])))
             if "decision" in step["outcome"]:
@@ -270,54 +277,38 @@ class HaetaeGate(Node):
     def _fault(self, msg):
         self._receive(lambda: self._send("fault", msg.data))
 
-    def _twist(self, msg, role, ttl):
+    def _signed(self, msg, role):
         def send():
-            if any((msg.twist.linear.y, msg.twist.linear.z, msg.twist.angular.x, msg.twist.angular.y)):
-                raise InvalidProposal("unsupported TwistStamped component")
-            if not all(math.isfinite(v) for v in (msg.twist.linear.x, msg.twist.angular.z)):
-                raise InvalidProposal("nonfinite TwistStamped component")
-            self.seq[role] += 1
-            linear, angular = msg.twist.linear.x, msg.twist.angular.z
-            action = {"type": "stop"} if linear == 0.0 and angular == 0.0 else {
-                "type": "velocity", "linear": linear, "angular": angular, "ttl_ms": ttl}
-            payload = {"id": self.seq[role], "source": role, "timestamp_ms": self._now(), "action": action}
-            return self._send(role, payload)
+            try:
+                envelope = json.loads(msg.data)
+                if not isinstance(envelope, dict) or envelope.get("role") != role:
+                    raise InvalidProposal("signed input role does not match topic binding")
+            except (ValueError, TypeError) as exc:
+                raise InvalidProposal("malformed signed input") from exc
+            return self.bridge.request({"k": "signed", "t": self._now(), "data": msg.data})
         self._receive(send)
 
+    def _proposal(self, role, action):
+        self.seq[role] += 1
+        return self._send(role, {"id": self.seq[role], "source": role,
+                               "timestamp_ms": self._now(), "action": action})
+
+    def _twist(self, msg, role, ttl):
+        self._receive(lambda: self._proposal(role, base_action(msg, ttl)))
+
     def _arm(self, msg, role):
-        def send():
-            if list(msg.joint_names) != self.arm_joints:
-                raise InvalidProposal("wrong arm joint names")
-            if not msg.points:
-                self.seq[role] += 1
-                payload = {"id": self.seq[role], "source": role,
-                           "timestamp_ms": self._now(), "action": {"type": "stop"}}
-                return self._send(role, payload)
-            points = []
-            for p in msg.points:
-                if p.velocities or p.accelerations or p.effort:
-                    raise InvalidProposal("only positions are accepted")
-                if len(p.positions) != len(self.arm_joints) or not all(
-                    math.isfinite(v) for v in p.positions
-                ):
-                    raise InvalidProposal("invalid arm positions")
-                if p.time_from_start.sec < 0 or p.time_from_start.nanosec >= 1_000_000_000:
-                    raise InvalidProposal("invalid arm time")
-                millis = p.time_from_start.sec * 1000 + p.time_from_start.nanosec // 1_000_000
-                points.append({"time_from_start_ms": millis, "positions": list(p.positions)})
-            self.seq[role] += 1
-            payload = {"id": self.seq[role], "source": role, "timestamp_ms": self._now(),
-                       "action": {"type": "joint_trajectory", "points": points,
-                                  "ttl_ms": points[-1]["time_from_start_ms"]}}
-            return self._send(role, payload)
-        self._receive(send)
+        self._receive(lambda: self._proposal(role, arm_action(msg, self.arm_joints)))
 
     def _tick(self):
         def request():
             if self.arm_cancel_deadline is not None and time.monotonic() > self.arm_cancel_deadline:
                 raise BridgeFailure("arm cancellation did not complete in 250 ms")
             if self.count_publishers("/cmd_vel") > 1:
-                return self._send("fault", {"code": "rogue-cmd-vel-publisher", "timestamp_ms": self._now(), "raise_to": "hold"})
+                if self.signer:
+                    return self._send("fault", {"code": "rogue-cmd-vel-publisher",
+                        "timestamp_ms": self._now(), "raise_to": "hold"})
+                return self.bridge.request({"k": "reject", "t": self._now(),
+                                            "reason": "rogue-cmd-vel-publisher"})
             return self.bridge.request({"k": "tick", "t": self._now()})
         self._receive(request)
 

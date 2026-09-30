@@ -12,15 +12,17 @@ The intended deployment has three distinct processes or principals:
 1. Untrusted VLA/planner processes publish proposals to source-specific ROS 2
    topics. They have no permission to publish world, fault, `/cmd_vel`, or arm
    controller goals.
-2. A trusted perception and health path publishes world and faults. The Haetae
-   ROS bridge binds each input topic to a role, signs its JSON payload with a
-   different Ed25519 key per role, and supplies trusted receive time.
+2. A trusted perception and health path signs world and faults. In the secured
+   Gazebo container it has a separate OS identity and role signer; the VLA
+   signer owns only VLA authority. The signed-only gateway binds each topic
+   to its expected role and supplies trusted receive time. Legacy ROS smoke
+   transports still perform source signing within the bridge.
 3. The Rust enforcer verifies the signed trust bundle, exact policy hash,
    input signature, role, epoch and increasing counter before judgment. Only
    the ROS bridge publishes `/cmd_vel` and submits arm action goals. The base
    and arm controllers independently stop or cancel on lost bridge input.
 
-The bridge, its key files, the OS account, the trusted perception path, the
+The actuation bridge, its OS account, the trusted perception path, the
 controller configuration and the SROS2 keystore are in the trusted computing
 base. A compromised bridge or privileged host can still command the robot.
 
@@ -70,21 +72,29 @@ base. A compromised bridge or privileged host can still command the robot.
 - The Docker Gazebo run has a separate SROS2 enclave for its attacker process.
   That process's direct base command and forged world publisher are denied on
   the actual Gazebo ROS graph while an authorized VLA proposal succeeds.
-  The attacker has only VLA credentials and runs under a separate unprivileged
-  OS user. Trusted simulator, world and gate enclaves have broad permissions,
-  and their keys share the container's trusted OS account. Gazebo Transport remains outside this
-  ACL. An exact signed-command replay and a modified signed world report are
+  The secured container uses separate gateway, world/fault signer and VLA
+  signer and proposal-writer UIDs (2001/2002/2003/2004), private role keystores, unpredictable fresh keys
+  and role-scoped DDS permissions. Gateway and VLA principals fail to read
+  perception signing/DDS keys; gateway cannot create raw/signed world/fault
+  writers, and VLA/world cannot create controller or heartbeat writers or arm
+  clients. Matched authorized publishers and actual accepted motion are required
+  positive controls. The root scenario provisioner and simulator remain trusted;
+  Gazebo Transport remains outside this ACL. An exact signed-command replay and a modified signed world report are
   also rejected by a fresh production enforcer with zero output. This is
   reference evidence, not a robot-specific security boundary.
 - EOF from the bridge now leaves the persistent `running` marker set, so a
   restart enters Hold. The enforcement incident recorder seals each incident
   before continuing. A crash during the append itself can still leave an
   incomplete tail and must be handled as incomplete evidence.
-- The bridge enforces owner-only permissions on signing seed files, but holds
-  all configured seeds in one Python process. A bridge compromise can forge
-  every configured role. Use separate OS accounts
-  and enclaves for the source and trusted world paths; move key operations to
-  isolated signers before a protective release.
+- Legacy ROS smoke/kinematic transports still sign all configured input roles
+  in the bridge and do not provide key isolation. `--secure-graph` Gazebo instead
+  uses external role signers and a signed-only gateway. Source counters are
+  exclusively locked and durably reserved before publishing; source restart
+  continues increasing them. The gateway still has actuation and audit authority:
+  compromising it can command the controller directly or misuse its heartbeat.
+  This stage prevents perception impersonation by that UID, not arbitrary
+  malicious actuator behavior. Root, perception, simulator and controller
+  compromise and native Gazebo Transport injection remain outside the claim.
 - A counter checkpoint is fsynced before any nonzero base or arm execute
   output. Zero and arm cancel output go first so a stop does not wait for
   storage. A crash between a stop output and its checkpoint can still lose
@@ -126,3 +136,8 @@ untrusted or compromised AI commands:
 
 No release artifact or registry version should be labelled protective while
 one of these blockers is open.
+
+The proposal writer owns only the `/haetae/vla` DDS certificate (UID 2004).
+The VLA signer owns a separate `/haetae/vla_signer` certificate and signing
+seed (UID 2003). Only that signer can publish `/haetae_gate/signed/vla`;
+ROS node names within an enclave are not an authentication boundary.

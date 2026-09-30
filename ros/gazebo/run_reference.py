@@ -36,6 +36,7 @@ from run_scenario import fixture, public  # noqa: E402
 from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
 from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy, resolve_meshes  # noqa: E402
+from role_isolation import Roles, UIDS
 from stop_evidence import person_stop_report, person_stop_observed  # noqa: E402
 from attack_probe import (prepare_gazebo_security, probe_gazebo_permissions,
                           probe_permissions, probe_signed_inputs)  # noqa: E402
@@ -47,11 +48,13 @@ BASE_CONTROLLER_TOPIC = "/diff_drive_base_controller/cmd_vel"
 
 
 class GazeboWorld(Node):
-    def __init__(self, live=None):
+    def __init__(self, live=None, isolated=False):
         super().__init__("haetae_gazebo_world", parameter_overrides=[
             Parameter("use_sim_time", Parameter.Type.BOOL, True)],
             automatically_declare_parameters_from_overrides=True)
         self.live = live
+        self.proposal_pipe = None
+        self.isolated = isolated
         self.odom = None
         self.joint = None
         self.odom_received = 0.0
@@ -68,15 +71,16 @@ class GazeboWorld(Node):
         self.guard_states = []
         self.attack_world_received = 0
         self.world_count = 0
-        self.world_pub = self.create_publisher(String, "/haetae_gate/world", 1)
-        self.vla_pub = self.create_publisher(TwistStamped, "/vla/cmd_vel", 1)
-        self.arm_pub = self.create_publisher(JointTrajectory, "/vla/arm", 1)
+        self.world_pub = self.create_publisher(String,
+            "/haetae_input/world" if isolated else "/haetae_gate/world", 1)
+        self.vla_pub = None if isolated else self.create_publisher(TwistStamped, "/vla/cmd_vel", 1)
+        self.arm_pub = None if isolated else self.create_publisher(JointTrajectory, "/vla/arm", 1)
         self.create_subscription(Odometry, "/diff_drive_base_controller/odom", self._odom, 10)
         self.create_subscription(JointState, "/joint_states", self._joint, 10)
         self.create_subscription(TwistStamped, BASE_CONTROLLER_TOPIC, self._command, 10)
         self.create_subscription(String, "/haetae_gate/state", self._state, 10)
         self.create_subscription(String, "/haetae_gate/outcome", self._outcome, 10)
-        self.create_subscription(String, "/haetae_gate/world", self._observe_world_attack, 10)
+        self.create_subscription(String, "/haetae_input/world" if isolated else "/haetae_gate/world", self._observe_world_attack, 10)
         self.create_subscription(String, "/joint_trajectory_controller/guard_state",
                                  lambda msg: self.guard_states.append((time.monotonic(), json.loads(msg.data))), 10)
         self.create_timer(0.05, self._publish_world)
@@ -219,6 +223,10 @@ class GazeboWorld(Node):
                    human_motion=human_motion, model=MODEL_NAME)
 
     def propose_base(self, linear):
+        if self.isolated:
+            self.proposal_pipe.write(json.dumps({"base": linear}).encode() + b"\n")
+            self.proposal_pipe.flush()
+            return
         msg = TwistStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.twist.linear.x = linear
@@ -227,6 +235,11 @@ class GazeboWorld(Node):
     def propose_arm(self, target):
         start = self.arm_positions()
         end = [target, *start[1:]]
+        if self.isolated:
+            self.proposal_pipe.write(json.dumps({"joints": list(ARM_JOINTS),
+                "points": [(0, start), (800, end), (1000, end)]}).encode() + b"\n")
+            self.proposal_pipe.flush()
+            return
         msg = JointTrajectory()
         msg.joint_names = list(ARM_JOINTS)
         for millis, value in ((0, start), (800, end), (1000, end)):
@@ -263,10 +276,12 @@ def command(argv, root, timeout=35, env=None):
     return result.stdout
 
 
-def start(argv, root, name, processes, env=None):
+def start(argv, root, name, processes, env=None, user=None, input_pipe=False):
     log = (root / (name + ".log")).open("wb")
+    options = {"user": user, "group": user, "extra_groups": []} if user is not None else {}
     process = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
-                               env=env, start_new_session=True)
+                               stdin=subprocess.PIPE if input_pipe else subprocess.DEVNULL,
+                               env=env, start_new_session=True, **options)
     processes[name] = process
     return process, log
 
@@ -387,6 +402,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     world = None
     executor = None
     thread = None
+    roles = None
+    gate_directory = root
     if secure_graph:
         keystore = prepare_gazebo_security(root / "gazebo-security")
         os.environ.update({"ROS_SECURITY_ENABLE": "true",
@@ -394,11 +411,17 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                            "ROS_SECURITY_KEYSTORE": str(keystore),
                            "ROS_SECURITY_ENCLAVE_OVERRIDE": "/haetae/world",
                            "FASTDDS_BUILTIN_TRANSPORTS": "UDPv4"})
+        roles = Roles(root, keystore, binary, ARM_JOINTS)
+        gate_directory = roles.directories["gate"] / root.name
+        params_path = gate_directory / "params.yaml"
+        (root / "principal-isolation.json").write_text(json.dumps(roles.probe_read_boundaries(), indent=2))
 
     def role_env(role):
         env = os.environ.copy()
         if secure_graph:
             env["ROS_SECURITY_ENCLAVE_OVERRIDE"] = "/haetae/" + role
+            if roles and role in UIDS:
+                return roles.environment(role, env)
         return env
 
     def presentation_wait(seconds):
@@ -454,7 +477,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                         "--ros-args", "--params-file", str(description_params)],
                        root, "robot_state_publisher", processes, gazebo_env)
         logs.append(log)
-        world = GazeboWorld(live)
+        world = GazeboWorld(live, isolated=secure_graph)
         executor = MultiThreadedExecutor(num_threads=3)
         executor.add_node(world)
         thread = threading.Thread(target=executor.spin, daemon=True)
@@ -475,18 +498,57 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                     root, env=gazebo_env)
         wait_for(lambda: world.world_count >= 3, 20, processes, "odom and four-joint feedback")
 
+        if roles:
+            for role in ("world", "vla"):
+                _, log = start([sys.executable, str(REPO / "ros/haetae_gate/source_node.py"),
+                                "--ros-args", "--params-file", str(roles.source_params(role))],
+                               root, "source_" + role, processes, role_env(role), UIDS[role])
+                logs.append(log)
+            driver, log = start([sys.executable, str(HERE / "scenario_source.py")],
+                                root, "scenario_vla", processes, role_env("proposal"),
+                                UIDS["proposal"], input_pipe=True)
+            world.proposal_pipe = driver.stdin
+            logs.append(log)
+
         _, log = start([sys.executable, str(REPO / "ros/haetae_gate/node.py"),
                         "--ros-args", "--params-file", str(params_path),
                         "-r", "/cmd_vel:=" + BASE_CONTROLLER_TOPIC],
-                       root, "gate", processes, role_env("gate"))
+                       root, "gate", processes, role_env("gate"), UIDS["gate"] if roles else None)
         logs.append(log)
-        wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal",
+        wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
+                 and world.states[-1][1].get("arm_controller_ready"),
                  10, processes, "Haetae normal state")
-        world.propose_base(0.0)
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
-                 5, processes, "base rearm", action=lambda: world.propose_base(0.0))
+        if roles:
+            graph_boundaries = roles.probe_graph_boundaries(os.environ.copy())
+            (root / "role-permissions.json").write_text(json.dumps(graph_boundaries, indent=2))
+            wait_for(lambda: (roles.directories["vla"] / "counters.json").exists(),
+                     5, processes, "VLA source counter reservation",
+                     action=lambda: world.propose_base(0.0))
+            before = json.loads((roles.directories["vla"] / "counters.json").read_text())["counters"]["vla"]
+            stop(processes.pop("source_vla"))
+            _, log = start([sys.executable, str(REPO / "ros/haetae_gate/source_node.py"),
+                            "--ros-args", "--params-file", str(roles.source_params("vla"))],
+                           root, "source_vla", processes, role_env("vla"), UIDS["vla"])
+            logs.append(log)
+            wait_for(lambda: json.loads((roles.directories["vla"] / "counters.json").read_text())["counters"]["vla"] > before,
+                     8, processes, "restarted signer advances reserved counter",
+                     action=lambda: world.propose_base(0.0))
+            (root / "source-restart.json").write_text(json.dumps({"role": "vla",
+                "before": before, "after": json.loads((roles.directories["vla"] / "counters.json").read_text())["counters"]["vla"],
+                "continued_counter": True}, indent=2))
+        # Counter reservation happens before DDS delivery. After a signer
+        # restart an old armed-state sample cannot confirm a new rearm.
+        world.states.clear()
+        world.outcomes.clear()
+        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"]
+                 and sum(1 for _, row in world.outcomes
+                         if row.get("decision", {}).get("verdict") == "yun"
+                         and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
+                 8, processes, "fresh accepted base rearm", action=lambda: world.propose_base(0.0))
         if arm_fault:
             result = exercise_arm_fault(world, processes, arm_fault)
+            if roles and (gate_directory / "sillok.jsonl").exists():
+                shutil.copy2(gate_directory / "sillok.jsonl", root / "sillok.jsonl")
             (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result))
             return
@@ -509,7 +571,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                  action=lambda: world.propose_base(0.12 if live else 0.2))
         moving_x = world.pose()[0]
         entry_at = time.monotonic()
-        entry_sim_ms = world.get_clock().now().nanoseconds // 1_000_000
+        entry_sim_ms = world.joint.header.stamp.sec * 1000 + world.joint.header.stamp.nanosec // 1_000_000
         if live:
             world.begin_person_walk(person_entry(*world.pose(), world.heading()),
                                     nearby_person(*world.pose(), world.heading()))
@@ -519,7 +581,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             # A world update can revoke active motion without a Decision
             # outcome. Require the causal engine record and observed zero.
             wait_for(lambda: any(t >= entry_at for t, _ in list(world.zero_commands)) and
-                               person_stop_observed(root / "sillok.jsonl", world.person_reports,
+                               person_stop_observed(gate_directory / "sillok.jsonl", world.person_reports,
                                                     world.zero_commands, entry_sim_ms),
                                20, processes, "walking person triggers base stop",
                                action=lambda: world.propose_base(0.12))
@@ -529,9 +591,9 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             world.marker("사람 등장")
             wait_for(lambda: any(t >= entry_at and value == 0 for t, value in world.commands),
                                3, processes, "world-triggered zero base command")
-        wait_for(lambda: person_stop_report(root / "sillok.jsonl", world.person_reports, entry_sim_ms),
+        wait_for(lambda: person_stop_report(gate_directory / "sillok.jsonl", world.person_reports, entry_sim_ms),
                  3, processes, "recorded world sample causing person denial")
-        trigger = person_stop_report(root / "sillok.jsonl", world.person_reports, entry_sim_ms)
+        trigger = person_stop_report(gate_directory / "sillok.jsonl", world.person_reports, entry_sim_ms)
         revoked_at, revoked_sim_ms = trigger["wall"], trigger["stamp_ms"]
         moving_x = trigger["robot"][0]
         zero_at, zero_sim_ms = next((t, stamp) for t, stamp in world.zero_commands if t >= revoked_at)
@@ -595,10 +657,10 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         clear_person()
 
         snapshot = root / "sealed-snapshot.jsonl"
-        wait_for(lambda: sealed_incident_snapshot(root / "sillok.jsonl", snapshot),
+        wait_for(lambda: sealed_incident_snapshot(gate_directory / "sillok.jsonl", snapshot),
                  3, processes, "sealed arm incident")
         report = subprocess.run([binary, "sillok", "verify", "--log", str(snapshot),
-                                 "--pubkey", public(9)], capture_output=True, text=True)
+                                 "--pubkey", roles.log_public if roles else public(9)], capture_output=True, text=True)
         if report.returncode or not json.loads(report.stdout)["fully_sealed"]:
             raise AssertionError("incident log is not fully sealed")
 
@@ -613,7 +675,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             attack_at = time.monotonic()
             world_count_before = world.attack_world_received
             try:
-                probe = probe_gazebo_permissions(role_env("vla"))
+                probe = probe_gazebo_permissions(role_env("proposal"))
                 wait_for(lambda: any(t >= attack_at and value.get("decision")
                                      for t, value in world.outcomes),
                          2, processes, "authorized VLA proposal from attacker enclave")
@@ -673,17 +735,26 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             fault_params["haetae_gate"]["ros__parameters"].update({
                 "use_sim_time": True, "heartbeat_topic": "/haetae_gate/heartbeat"})
             (fault_root / "params.yaml").write_text(json.dumps(fault_params))
+            if roles:
+                fault_gate = roles.configure_gate(fault_root)
+                fault_params_path = fault_gate / "params.yaml"
+            else:
+                fault_gate = fault_root
+                fault_params_path = fault_root / "params.yaml"
             world.states.clear()
             _, log = start([sys.executable, str(REPO / "ros/haetae_gate/node.py"),
-                            "--ros-args", "--params-file", str(fault_root / "params.yaml"),
+                            "--ros-args", "--params-file", str(fault_params_path),
                             "-r", "/cmd_vel:=" + BASE_CONTROLLER_TOPIC],
-                           fault_root, "gate", processes, role_env("gate"))
+                           fault_root, "gate", processes, role_env("gate"), UIDS["gate"] if roles else None)
             logs.append(log)
-            wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal",
+            wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
+                 and world.states[-1][1].get("arm_controller_ready"),
                      10, processes, "new isolated arm fault fixture")
             wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                      5, processes, "fault fixture rearm", action=lambda: world.propose_base(0.0))
             arm_fault_results[case] = exercise_arm_fault(world, processes, case)
+            if roles and (fault_gate / "sillok.jsonl").exists():
+                shutil.copy2(fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl")
             (fault_root / "result.json").write_text(json.dumps(arm_fault_results[case], indent=2) + "\n")
             world._emit("arm_fault_result", **arm_fault_results[case])
             presentation_wait(2)
@@ -744,6 +815,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                   "gate_kill_to_base_stop_sim_ms": stopped_sim_ms - killed_sim_ms,
                   "sillok_incident_snapshot_fully_sealed": True,
                   "attack_probes": attacks}
+        if roles and (gate_directory / "sillok.jsonl").exists():
+            shutil.copy2(gate_directory / "sillok.jsonl", root / "sillok.jsonl")
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         if live:
             live.publish({"kind": "result", "sim_ms": stopped_sim_ms, "result": result})
@@ -751,6 +824,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                 time.sleep(live_hold_seconds)
         print(json.dumps(result))
     finally:
+        if roles and (gate_directory / "sillok.jsonl").exists():
+            shutil.copy2(gate_directory / "sillok.jsonl", root / "sillok.jsonl")
         for process in list(processes.values())[::-1]:
             stop(process)
         if executor is not None:
@@ -841,7 +916,7 @@ def main():
                             for artifact in ("result.json", "gate.log", "sillok.jsonl"):
                                 if (src / artifact).exists():
                                     shutil.copy2(src / artifact, dst / artifact)
-                    for name in ("result.json", "error.json", "attack-result.json", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
+                    for name in ("result.json", "error.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
                                  "clock_bridge.log", "robot_state_publisher.log",
                                  "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
                         source = Path(directory) / name

@@ -1,8 +1,8 @@
 """Role-bound Ed25519 input envelopes for the Haetae subprocess.
 
-The Python process is part of the trusted gateway. Deploy it under a separate
-OS user and an SROS2 enclave so an untrusted ROS publisher cannot read keys or
-publish world/fault messages. Requires ``cryptography``.
+The legacy transport signs in the gateway. The isolated Gazebo transport uses
+separate role signers under distinct OS users and SROS2 enclaves. Its gateway
+has no input signing keys. Requires ``cryptography``.
 """
 
 import json
@@ -37,8 +37,9 @@ class Signer:
             if role not in ROLE_TAG:
                 raise ValueError("unknown signing role: " + role)
             seed_path = Path(path)
-            if os.name == "posix" and seed_path.stat().st_mode & 0o077:
-                raise ValueError("signing seed must be owner-only: " + role)
+            if os.name == "posix" and (seed_path.stat().st_mode & 0o077 or
+                                       seed_path.stat().st_uid != os.geteuid()):
+                raise ValueError("signing seed must be owned by this user and owner-only: " + role)
             seed = bytes.fromhex(seed_path.read_text().strip())
             if len(seed) != 32:
                 raise ValueError("signing seed must be 32 bytes")
