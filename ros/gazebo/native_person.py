@@ -54,6 +54,12 @@ def add_native_scene(world):
                 )
                 for tag in ("ambient", "diffuse"):
                     E.SubElement(material, tag).text = color
+    E.SubElement(
+        world,
+        "plugin",
+        filename="libhaetae_native_person.so",
+        name="haetae::NativePerson",
+    )
     # Known target proves the renderer and scan coverage are alive even when
     # the controlled bay is empty. Losing it invalidates the entire sample.
     marker = E.SubElement(world, "model", name="lidar_calibration")
@@ -179,9 +185,8 @@ def geometry_poses(position, motion):
     return result
 
 
-def _set_poses(node, poses):
+def _pose_message(poses):
     from gz.msgs10.pose_v_pb2 import Pose_V
-    from gz.msgs10.boolean_pb2 import Boolean
 
     request = Pose_V()
     for name, (position, orientation) in poses.items():
@@ -189,22 +194,26 @@ def _set_poses(node, poses):
         p.name = name
         p.position.x, p.position.y, p.position.z = position
         p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = orientation
+    return request
+
+
+def _set_poses(node, poses):
+    from gz.msgs10.pose_v_pb2 import Pose_V
+    from gz.msgs10.boolean_pb2 import Boolean
+
     ok, response = node.request(
-        "/world/empty/set_pose_vector", request, Pose_V, Boolean, 100
+        "/world/empty/set_pose_vector", _pose_message(poses), Pose_V, Boolean, 100
     )
     return ok and response.data
 
 
 def _drive_native(target, calibration_ack, status, stop):
-    """Keep blocking native transport calls outside the ROS/sensor process.
-
-    A Python thread is insufficient: the transport binding can retain the GIL
-    while waiting for a service response. Shared memory holds only the latest
-    desired geometry, so a slow response cannot build a stale command queue.
-    """
+    """Publish latest geometry; keep blocking calibration calls out of ROS."""
     from gz.transport13 import Node
+    from gz.msgs10.pose_v_pb2 import Pose_V
 
     node = Node()
+    publisher = node.advertise("/haetae/native/person_pose", Pose_V)
     previous = None
     while not stop.is_set():
         with target.get_lock():
@@ -216,15 +225,15 @@ def _drive_native(target, calibration_ack, status, stop):
                 }
                 if _set_poses(node, poses):
                     calibration_ack.value = int(generation)
-            position = (x, y) if present else None
             poses = {
                 "person_" + name: value
                 for name, value in geometry_poses(
-                    position, {"heading": heading, "distance_m": distance}
+                    (x, y) if present else None,
+                    {"heading": heading, "distance_m": distance},
                 ).items()
             }
             if poses != previous:
-                if _set_poses(node, poses):
+                if publisher.publish(_pose_message(poses)):
                     previous = poses
                     status.value = 1
                 else:

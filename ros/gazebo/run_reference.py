@@ -296,14 +296,14 @@ def wait_for(predicate, timeout, processes, description, action=None):
 def check_person_sensor(world, label, processes):
     def detected():
         frame = world.perception.frame
-        pose = world.native.observed
+        pose, _ = world.native.observed_sample()
         desired = world.human
         return (frame and frame.healthy and len(frame.points) >= 3 and pose and desired
-                and math.dist(pose[:2], desired) < 0.025
+                and math.dist(pose[:2], desired) < 0.000001
                 and min(math.dist(point, pose[:2]) for point in frame.points) < 0.25)
     wait_for(detected, 3, processes, "native person and lidar agreement")
     frame = world.perception.frame
-    pose = world.native.observed
+    pose, _ = world.native.observed_sample()
     return {"case": label, "input": "gazebo_gpu_lidar", "sensor_stamp_ms": frame.stamp_ms,
             "native_torso": list(pose), "test_path": list(world.human),
             "surface_to_torso_m": round(min(math.dist(point, pose[:2]) for point in frame.points), 4),
@@ -580,7 +580,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         os.environ["LP_NUM_THREADS"] = "2"
         gazebo_env = role_env("sim")
         gazebo_env["GZ_SIM_SYSTEM_PLUGIN_PATH"] = os.pathsep.join(filter(None, [
-            "/opt/ros/jazzy/lib", gazebo_env.get("GZ_SIM_SYSTEM_PLUGIN_PATH", "")]))
+            "/opt/haetae/lib", "/opt/ros/jazzy/lib", gazebo_env.get("GZ_SIM_SYSTEM_PLUGIN_PATH", "")]))
         _, log = start(["gz", "sim", "-s", "-r", "-v", "2", str(studio_path)],
                        root, "gazebo", processes, gazebo_env)
         logs.append(log)

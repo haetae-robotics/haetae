@@ -265,9 +265,10 @@ jobs:
             ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
-          colcon --log-base /tmp/guard-log build --base-paths ros/haetae_arm_guard \
+          colcon --log-base /tmp/guard-log build --base-paths ros/haetae_arm_guard ros/haetae_scene \
             --merge-install --build-base /tmp/guard-build --install-base /opt/haetae
           ctest --test-dir /tmp/guard-build/haetae_arm_guard --output-on-failure
+          ctest --test-dir /tmp/guard-build/haetae_scene --output-on-failure
           source /opt/haetae/setup.bash
           python3 -m unittest discover -s ros/gazebo -p 'test_*.py' -v
           python3 ros/gazebo/check_live_stream.py --port 8765 \

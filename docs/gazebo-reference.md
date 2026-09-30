@@ -44,7 +44,7 @@ sudo apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp xvfb lib
   ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
   ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
 source /opt/ros/jazzy/setup.bash
-colcon --log-base /tmp/guard-log build --base-paths ros/haetae_arm_guard \
+colcon --log-base /tmp/guard-log build --base-paths ros/haetae_arm_guard ros/haetae_scene \
   --merge-install --build-base /tmp/guard-build --install-base /tmp/haetae-guard
 source /tmp/haetae-guard/setup.bash
 cargo build --release --locked -p haetae
@@ -130,7 +130,7 @@ Haetae receives independent lidar surface measurements, not that path. The base 
 movement proposals while the person is far away, then the existing swept-path
 proximity rule stops it (0.65 m plus the 0.25 m base footprint). The person
 pauses beside the robot as soon as the zero command is observed and stays
-there until **다음 단계**. After that click, the person walks away at 0.35 m/s;
+there until **다음 단계**. After that click, the person walks away at 0.24 m/s;
 the native person is parked off-scene only at the far endpoint. The headless
 reference places the native person near the robot, then waits for actual lidar
 detection for CI speed.
@@ -306,7 +306,13 @@ Software rendering uses two Mesa worker threads per process to avoid
 oversubscribing container CPU quotas. Sensor freshness and stop budgets remain
 unchanged; rendering overload still fails closed rather than extending them.
 
-Native person pose services run in a spawned process. Blocking Gazebo Transport
+Native person targets and calibration services run in a spawned process. Blocking Gazebo Transport
 requests cannot hold the ROS world publisher or lidar callback's Python GIL.
 Only the latest desired geometry is shared; measured lidar input and its original
 200 ms freshness budget remain independent of the pose driver.
+
+Native person geometry follows the latest target in a Gazebo system plugin.
+The plugin interpolates all body parts on each physics step and caps root motion
+at 0.24 m/s, so delayed transport targets cannot create catch-up jumps. It only
+controls the twelve named person parts; robot control remains independent. Live
+continuity checks pair measured native poses with their own source timestamps.
