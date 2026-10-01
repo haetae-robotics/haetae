@@ -274,9 +274,11 @@ jobs:
           source /opt/haetae/setup.bash
           python3 -m unittest discover -s ros/gazebo -p 'test_*.py' -v
           python3 ros/gazebo/check_live_stream.py --port 8765 \
-            --out artifacts/gazebo-reference/live-stream.jsonl &
+            --out artifacts/gazebo-reference/live-stream.jsonl --timeout-seconds 300 &
           live_checker=$!
-          export HAETAE_REVISION="$(git rev-parse HEAD)"
+          # Container checkout ownership can differ from the step user.
+          # GITHUB_SHA is the same event commit checked out by both evidence and package jobs.
+          export HAETAE_REVISION="${GITHUB_SHA:?missing event commit}"
           python3 ros/gazebo/run_reference.py bin/haetae \
             --out artifacts/gazebo-reference --live-port 8765 --wait-for-viewer \
             --secure-graph --attack-probes --compound-repeat 6 \

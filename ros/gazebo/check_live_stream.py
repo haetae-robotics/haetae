@@ -10,9 +10,9 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 
-def run(port, output):
+def run(port, output, timeout_seconds=180):
     address = f"http://127.0.0.1:{port}/events"
-    deadline = time.monotonic() + 180
+    deadline = time.monotonic() + timeout_seconds
     while True:
         try:
             response = urlopen(address, timeout=10)
@@ -23,18 +23,20 @@ def run(port, output):
             time.sleep(0.1)
 
     received = []
-    with response:
-        for line in response:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("live stream did not finish")
-            if not line.startswith(b"data: "):
-                continue
-            row = json.loads(line[6:])
-            received.append(row)
-            if row["kind"] in ("result", "error"):
-                break
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("".join(json.dumps(row) + "\n" for row in received))
+    try:
+        with response:
+            for line in response:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("live stream did not finish")
+                if not line.startswith(b"data: "):
+                    continue
+                row = json.loads(line[6:])
+                received.append(row)
+                if row["kind"] in ("result", "error"):
+                    break
+    finally:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("".join(json.dumps(row) + "\n" for row in received))
     if received and received[-1]["kind"] == "error":
         raise RuntimeError("live runner failed: " + received[-1].get("detail", "unknown error"))
 
@@ -85,5 +87,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--timeout-seconds", type=float, default=180,
+                        help="total setup/scenario wall timeout; does not alter actuation budgets")
     args = parser.parse_args()
-    run(args.port, args.out)
+    if not math.isfinite(args.timeout_seconds) or not 0 < args.timeout_seconds <= 900:
+        parser.error("--timeout-seconds must be finite and in (0, 900]")
+    run(args.port, args.out, args.timeout_seconds)
