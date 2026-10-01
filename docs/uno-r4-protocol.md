@@ -17,8 +17,10 @@ HELLO uses sequence/challenge zero and a new random host session, removes
 output and offers challenge 1. ARM consumes it once, enabling a 200ms lease
 with output OFF. RUN turns ON and renews it. Subsequent commands require exactly
 the next sequence and preceding response's challenge; accepted commands rotate
-the challenge. ARM/RUN/STATUS require challenge age **<100ms**. STOP can remove
-output with an older challenge; any syntax/counter error also removes output.
+the challenge. ARM/RUN require challenge age **<100ms**. STOP and STATUS accept
+an older challenge while still enforcing session/sequence/token. STATUS only
+observes state and rotates the challenge; it never arms or renews output.
+Any syntax/counter error also removes output.
 Counter exhaustion rejects rather than wrapping.
 
 Lease expires at **>=200ms**, including before processing a queued RUN.
@@ -34,6 +36,11 @@ gate-to-ACK budget**. The host rechecks proposal expiry and 200ms world freshnes
 before RUN and after ACK. Error/denial sends best-effort STOP and exits.
 A late ACK is not success; RUN may already have reached the device, so the
 independent lease remains essential.
+
+Before each positive cycle the host polls STATUS to acquire a fresh challenge
+and refuses a LOCKED response. Inter-cycle scheduling can age the previous
+challenge without making the new gate decision stale. Polling never extends
+the existing lease: a resumed host still encounters LOCKED after expiry.
 
 Sketch deadlines use the board clock. It reads at most 32 bytes per loop,
 applies LED state before replying and removes output if TX space is insufficient.

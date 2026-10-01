@@ -37,6 +37,14 @@ int main() {
          std::to_string(i + 2), i * 50);
   }
   assert(!status.on() && !status.armed()); // STATUS never extends lease.
+  BenchGuard polling;
+  start(polling, 0);
+  send(polling, "H1 STATUS 0123456789abcdef 3 3", 150);
+  assert(polling.on()); // Non-actuating poll can acquire a fresh challenge.
+  send(polling, "H1 RUN 0123456789abcdef 4 4", 151);
+  assert(polling.on());
+  send(polling, "H1 RUN 0123456789abcdef 5 5", 251);
+  assert(!polling.on() && !strcmp(polling.reason(), "stale"));
 
   BenchGuard wrap;
   start(wrap, UINT32_MAX - 99);

@@ -74,7 +74,7 @@ def protocol_case(name, attack, reason):
         events = device.events()
         assert not any(e["on"] for e in events[events.index(stopped) + 1:])
         return {"case": name, "passed": True, "positive_control": True, "stop_reason": stopped["reason"],
-                "last_run_to_off_ms": stopped["device_ms"] - device.on()["device_ms"]}
+                "last_run_to_off_ms": stopped["device_ms"] - device.on()["renewed_ms"]}
     finally:
         if link:
             link.close()
@@ -115,15 +115,19 @@ def host_case(name, scenario="allow", interrupt=None):
             if interrupt == "pause":
                 os.kill(host.pid, signal.SIGCONT)
             code = host.wait(timeout=3)
-            if interrupt in (None, "pause"):
-                assert code == 0, "host scenario failed; see " + str(log.name)
+            if interrupt is None:
+                if scenario != "allow":
+                    assert json.loads(ready.read_text())["fault"] == scenario, "stopped before injecting intended fault"
+                expected_expiry = (scenario == "world-loss" and code == 1 and
+                                   "stale actuation response: world expired" in Path(log.name).read_text())
+                assert code == 0 or expected_expiry, "host scenario failed; see " + str(log.name)
             else:
                 assert code != 0, "interrupted host unexpectedly reported success"
             time.sleep(.05)
             events = device.events()
             assert not any(e["on"] for e in events[events.index(stopped) + 1:])
             last_on = next(e for e in reversed(events) if e["on"])
-            delay = stopped["device_ms"] - last_on["device_ms"]
+            delay = stopped["device_ms"] - last_on["renewed_ms"]
             # Core deadline is exactly 200ms; this process observation allows 100ms
             # scheduling/PTY overhead. It is not a physical timing acceptance gate.
             assert 0 <= delay <= 300, f"native process stop too late: {delay}ms"
@@ -183,6 +187,10 @@ def main():
             cases.append((scenario, lambda s=scenario: host_case(s, s)))
         def raw(link, content):
             os.write(link.fd, content)
+        def poll_without_run(link):
+            for _ in range(4):
+                time.sleep(.060)
+                link.exchange("STATUS")
         cases.extend([
             ("usb-replay", lambda: protocol_case("usb-replay", lambda l: raw(l,
                 f"H1 RUN {l.session} {l.seq} {l.challenge - 1}\n".encode()), "replay")),
@@ -190,6 +198,7 @@ def main():
                 time.sleep(.11), raw(l, f"H1 RUN {l.session} {l.seq + 1} {l.challenge}\n".encode())), "stale")),
             ("oversized-frame", lambda: protocol_case("oversized-frame", lambda l: raw(l, b"x" * 1000 + b"\n"), "protocol")),
             ("partial-frame", lambda: protocol_case("partial-frame", lambda l: raw(l, b"H1 RUN "), "partial")),
+            ("status-does-not-renew", lambda: protocol_case("status-does-not-renew", poll_without_run, "lease")),
         ])
         for name, test in cases:
             result = test()

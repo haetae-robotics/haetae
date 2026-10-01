@@ -18,6 +18,7 @@ class BenchGuard {
   const char* session() const { return session_; }
   uint32_t sequence() const { return sequence_; }
   uint32_t challenge() const { return challenge_; }
+  uint32_t renewed_at() const { return renewed_; }
 
   void fail(const char* reason) {
     on_ = armed_ = can_arm_ = false;
@@ -133,7 +134,7 @@ class BenchGuard {
       fail("replay"); return;
     }
     // STOP may always remove output even with an old challenge.
-    if (strcmp(op, "STOP") && uint32_t(now - issued_) >= challenge_ms) {
+    if (strcmp(op, "STOP") && strcmp(op, "STATUS") && uint32_t(now - issued_) >= challenge_ms) {
       fail("stale"); return;
     }
     if (challenge_ == UINT32_MAX) { fail("replay"); return; }

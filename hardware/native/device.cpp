@@ -24,9 +24,9 @@ int main(int argc, char** argv) {
     uint32_t now = uint32_t(now64);
     guard.tick(now);
     if (previous != guard.on() || strcmp(previous_reason, guard.reason()) || previous_seq != guard.sequence()) {
-      fprintf(audit, "{\"device_ms\":%lld,\"on\":%s,\"reason\":\"%s\",\"sequence\":%lu}\n",
+      fprintf(audit, "{\"device_ms\":%lld,\"on\":%s,\"reason\":\"%s\",\"sequence\":%lu,\"renewed_ms\":%lu}\n",
               static_cast<long long>(now64), guard.on() ? "true" : "false", guard.reason(),
-              static_cast<unsigned long>(guard.sequence()));
+              static_cast<unsigned long>(guard.sequence()), static_cast<unsigned long>(guard.renewed_at()));
       previous = guard.on();
       previous_seq = guard.sequence();
       previous_reason = guard.reason();

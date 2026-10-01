@@ -18,7 +18,8 @@ python3 -m pip install cryptography
 `verify`는 실제 서명 검증 Rust 엔진과 펌웨어와 동일한 C++ guard를 별도
 프로세스로 실행해 가상 직렬 포트(PTY)로 연결한다. 먼저 ON을 관측한 뒤,
 사람 접근·세계 입력 단절·서명 위조·재전송·Rust 종료·호스트 강제 종료와
-일시 정지·오래된 USB 명령·과대/미완성 프레임을 시험한다. 장애 후 자동 ON도 금지한다.
+일시 정지·오래된 USB 명령·과대/미완성 프레임·상태 조회만 지속하는 상황을 시험한다.
+상태 조회는 출력 임대를 갱신하지 않으며 장애 후 자동 ON도 금지한다.
 
 `artifacts/bench/report.json`의 `physical_hardware_tested`,
 `electrical_output_measured`, `usb_and_watchdog_tested`는 **false**다.
