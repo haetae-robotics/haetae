@@ -61,12 +61,12 @@ With Docker Desktop running on macOS, or Docker Engine running on Linux, run
 from the repository root:
 
 ```bash
-ros/gazebo/run_docker.sh
+./haetae-demo start
 ```
 
 The first run builds a ROS 2 Jazzy and Gazebo Harmonic image and a Linux
 Haetae binary for the host's CPU architecture. Open
-`http://127.0.0.1:8765/` after the terminal prints `Live view:`. Wait until
+`http://127.0.0.1:8765/` after the terminal prints the readiness message. Wait until
 the robot appears, then press **시뮬레이션 시작** in the bottom transport. The
 runner sends its first movement command only after that click. The large scene
 shows the robot; the panel next to it explains each step in plain language.
@@ -78,7 +78,7 @@ appearance fades in the reconstruction, but safety inputs and stop commands
 are never delayed. Normal base movement lasts at least three seconds in the
 live view; headless checks keep their original timing. Physics and monitoring
 continue between scenes. Each wait, and the final result view, lasts up to one
-hour. `--step-through` enables this behavior when launching the runner directly.
+hour. Use `./haetae-demo restart` after a session expires. `--step-through` enables this behavior when launching the runner directly.
 The default **라이브 3D** tab rebuilds the robot from Gazebo odometry and
 joint telemetry and the observed native person torso pose. Teal points show
 actual lidar obstacle surface measurements. It is explicitly labeled
@@ -150,8 +150,7 @@ Use the tabs to compare robot motion with Haetae's decisions.
 The original GUI may render slowly with software OpenGL, especially in Docker
 Desktop. The browser reconstruction remains available in the same session.
 The script writes `result.json` and diagnostic logs to
-`artifacts/gazebo-local/`; pass another output directory as its first
-argument if needed. Run the script again to repeat the scenario.
+`artifacts/simulator-alpha/<run>/`; set `HAETAE_DEMO_OUT` to change the output base directory. Each run uses a fresh subfolder. Use `./haetae-demo restart` to repeat the scenario.
 If the runner fails, the live page shows **시뮬레이션 중단**, disables progress
 controls and retains that error after a refresh for the configured live hold
 period. Diagnostics include `error.json`. A disconnected stream is labelled
@@ -356,3 +355,5 @@ latencies. Requested rates are bounded test loads, not guaranteed delivered
 rates or a general denial-of-service defense. Run counts support repeatability;
 they are not statistical worst-case or hardware evidence. Runtime failure
 invalidates the whole run; no successful summary is produced.
+
+The [simulator alpha guide](simulator-alpha.md) covers operator commands, report downloads, source/evidence packaging and supported scope.

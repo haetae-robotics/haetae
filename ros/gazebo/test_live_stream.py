@@ -41,7 +41,7 @@ class LiveStreamTest(unittest.TestCase):
         with urlopen(self.base + "/vendor/three/OrbitControls.js", timeout=3) as response:
             self.assertIn("OrbitControls", response.read().decode())
         with urlopen(self.base + "/viewer-config", timeout=3) as response:
-            self.assertEqual(json.load(response), {"gazebo_gui": False,
+            self.assertEqual(json.load(response), {"gazebo_gui": False, "gazebo_gui_port": 6080,
                                                   "manual_start": False,
                                                   "attack_probes": False,
                                                   "secured_gazebo": False,
@@ -80,7 +80,7 @@ class LiveStreamTest(unittest.TestCase):
         try:
             base = f"http://127.0.0.1:{server.server_address[1]}"
             with urlopen(base + "/viewer-config", timeout=3) as response:
-                self.assertEqual(json.load(response), {"gazebo_gui": True,
+                self.assertEqual(json.load(response), {"gazebo_gui": True, "gazebo_gui_port": 6080,
                                                       "manual_start": True,
                                                       "attack_probes": True,
                                                       "secured_gazebo": True,

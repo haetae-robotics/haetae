@@ -7,10 +7,12 @@ keys, raw world messages, and private fixture files never enter this server.
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import threading
 from urllib.parse import urlsplit
 from uuid import uuid4
+from public_report import report, render_report
 
 
 STATIC = Path(__file__).resolve().parents[2] / "sim"
@@ -29,6 +31,8 @@ class LiveHub:
         self._checkpoint = None
         self._checkpoint_state = None
         self._failure = None
+        self._ready = False
+        self._report = None
 
     def fail(self, message):
         with self._condition:
@@ -36,12 +40,20 @@ class LiveHub:
             self._checkpoint_state = None
             self.publish(message)
             self._failure = self._messages[-1]
+            self._ready = False
+            self._report = report(revision=os.environ.get("HAETAE_REVISION", "unknown"),
+                                  run_id=self.session_id, failed=True)
 
     def publish(self, message):
         with self._condition:
             self._sequence += 1
             row = {"id": self._sequence, **message}
             self._messages.append(row)
+            if message.get("kind") == "phase" and message.get("label") == "실험 준비 완료":
+                self._ready = True
+            if message.get("kind") == "result":
+                self._report = report(message.get("result"), os.environ.get("HAETAE_REVISION", "unknown"), self.session_id)
+                row["report_status"] = self._report["status"]
             if message.get("kind") in ("phase", "decision", "attack_result", "result"):
                 self._milestones.append(row)
             if message.get("kind") == "checkpoint":
@@ -95,12 +107,21 @@ class LiveHub:
     def status(self):
         with self._condition:
             return {"viewers": self._viewers, "last_id": self._sequence,
-                    "failed": self._failure is not None}
+                    "failed": self._failure is not None, "ready": self._ready,
+                    "started": self.start_requested.is_set(),
+                    "report_status": self._report["status"] if self._report else "pending"}
+
+    def public_report(self):
+        with self._condition:
+            return self._report
 
 
 def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
                  manual_start=False, attack_probes=False, secured_gazebo=False,
                  step_through=False):
+    gui_port = int(os.environ.get("HAETAE_GUI_PORT", "6080"))
+    if not 1 <= gui_port <= 65535:
+        raise ValueError("HAETAE_GUI_PORT must be 1..65535")
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, _format, *_args):
             pass
@@ -143,8 +164,18 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
             elif path == "/health":
                 status = hub.status()
                 self._send(json.dumps({"ok": not status["failed"], **status}).encode(), "application/json")
+            elif path in ("/report.json", "/report"):
+                value = hub.public_report()
+                if value is None:
+                    self.send_error(409, "Report is available after completion or failure")
+                elif path == "/report":
+                    self._send(render_report(value), "text/html; charset=utf-8")
+                else:
+                    self._send(json.dumps(value, ensure_ascii=False, indent=2).encode(),
+                               "application/json; charset=utf-8",
+                               filename="haetae-simulator-report-" + hub.session_id + ".json")
             elif path == "/viewer-config":
-                self._send(json.dumps({"gazebo_gui": gazebo_gui,
+                self._send(json.dumps({"gazebo_gui": gazebo_gui, "gazebo_gui_port": gui_port,
                                        "manual_start": manual_start,
                                        "attack_probes": attack_probes,
                                        "secured_gazebo": secured_gazebo,
@@ -169,11 +200,13 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
             else:
                 self.send_error(404)
 
-        def _send(self, content, mime, encoding=None):
+        def _send(self, content, mime, encoding=None, filename=None):
             self.send_response(200)
             self.send_header("Content-Type", mime)
             if encoding:
                 self.send_header("Content-Encoding", encoding)
+            if filename:
+                self.send_header("Content-Disposition", 'attachment; filename="' + filename + '"')
             self.send_header("Content-Length", str(len(content)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")

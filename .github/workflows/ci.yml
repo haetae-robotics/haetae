@@ -274,8 +274,11 @@ jobs:
           source /opt/haetae/setup.bash
           python3 -m unittest discover -s ros/gazebo -p 'test_*.py' -v
           python3 ros/gazebo/check_live_stream.py --port 8765 \
-            --out artifacts/gazebo-reference/live-stream.jsonl &
+            --out artifacts/gazebo-reference/live-stream.jsonl --timeout-seconds 300 &
           live_checker=$!
+          # Container checkout ownership can differ from the step user.
+          # GITHUB_SHA is the same event commit checked out by both evidence and package jobs.
+          export HAETAE_REVISION="${GITHUB_SHA:?missing event commit}"
           python3 ros/gazebo/run_reference.py bin/haetae \
             --out artifacts/gazebo-reference --live-port 8765 --wait-for-viewer \
             --secure-graph --attack-probes --compound-repeat 6 \
@@ -287,3 +290,20 @@ jobs:
           name: gazebo-reference-evidence
           path: artifacts/gazebo-reference
           if-no-files-found: warn
+
+  simulator-alpha-package:
+    name: Simulator alpha source and verification report
+    needs: gazebo-reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: gazebo-reference-evidence
+          path: artifacts/alpha-evidence
+      - name: Package passing evidence and committed source
+        run: python3 tools/package_simulator_alpha.py --result artifacts/alpha-evidence/result.json --out artifacts/simulator-alpha
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simulator-alpha-candidate
+          path: artifacts/simulator-alpha

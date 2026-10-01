@@ -107,7 +107,7 @@ Gazebo Harmonic **Husarion ROSbot XL + ROBOTIS OpenMANIPULATOR-X** through real
 The manufacturer URDF and meshes are pinned locally with their licenses. Its [live browser view](sim/gazebo-live.html) shows the Gazebo 3D
 window beside streamed measurements and decisions while the reference runs.
 On macOS or Linux with Docker, run
-`ros/gazebo/run_docker.sh`, wait for `Live view:` in the terminal, then open
+`./haetae-demo start`, wait for the readiness message, then open
 `http://127.0.0.1:8765/` and press **시뮬레이션 시작** when the robot appears. The
 page also shows direct-command and forged-world attacks from a restricted
 ROS node on the same Gazebo graph. The replay check uses a fresh production
@@ -119,4 +119,6 @@ The [Gazebo runbook](docs/gazebo-reference.md) has the native Ubuntu command. Th
 references still cannot establish a real robot's stop behavior or arm
 collision safety.
 
-> Status: **pre-alpha (0.0.x)**. Not a certified safety device.
+> Status: **simulator evaluation alpha; core 0.0.x**. Not a certified safety device or a protective physical-robot deployment.
+
+[Simple launch, verification and report guide](docs/simulator-alpha.md): `./haetae-demo doctor`, `start`, `status`, `stop`, `restart`, `verify`, `report`. Successful CI runs provide an unsigned source/evidence candidate with SHA256 checksums.

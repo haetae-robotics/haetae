@@ -1,6 +1,17 @@
 import { createGazeboScene } from './gazebo-scene.js';
 
 const $ = (id) => document.getElementById(id);
+async function showReport() {
+  try {
+    const response = await fetch('/report.json');
+    if (!response.ok) return;
+    const report = await response.json();
+    $('report-status').textContent = report.status === 'passed' ? '모든 시뮬레이터 시험 통과 · 실물 로봇 보호 성능은 별도 검증이 필요합니다.' :
+      report.status === 'failed' ? '시험 실패 · 리포트에서 미완료 항목을 확인하세요.' : '일부 시험 미실행 · 리포트에서 검증 범위를 확인하세요.';
+    $('report-view').hidden = false;
+    $('report-download').hidden = false;
+  } catch { $('report-status').textContent = '리포트를 불러오지 못했습니다. 페이지를 새로고침해 주세요.'; }
+}
 const canvas = $('visual');
 let sceneView = null;
 let renderError = '';
@@ -168,7 +179,7 @@ fetch('/viewer-config', { cache: 'no-store' })
     showStage(stage);
     $('attack-lab').hidden = !config.attack_probes;
     $('attack-scope').textContent = config.secured_gazebo ?
-      '①·②는 화면 속 Gazebo ROS 그래프에서 제한된 공격자 권한으로 시험합니다. Gazebo 내부 통신과 호스트 계정은 신뢰합니다. ③과 서명 변조 시험은 별도 해태 엔진에서 실행합니다.' :
+      '①·②는 화면 속 Gazebo ROS 그래프에서 제한된 공격자 권한으로 시험합니다. Gazebo 직접 통신은 제한된 컨테이너 계정에서 별도 차단 시험을 합니다. 관리자·호스트는 신뢰합니다. ③과 서명 변조 시험은 별도 해태 엔진에서 실행합니다.' :
       '①·②는 별도 보안 ROS 그래프의 테스트 제어기로 시험합니다. ③은 별도 해태 엔진에서 실행합니다. 화면 속 Gazebo 그래프 전체의 권한 검증은 아닙니다.';
     renderRunControl();
     if (stepThrough && !failed) {
@@ -185,7 +196,7 @@ fetch('/viewer-config', { cache: 'no-store' })
     if (!config.gazebo_gui) return;
     $('viewer-tabs').hidden = false;
     $('gazebo-gui').src = 'http://' + window.location.hostname +
-      ':6080/vnc.html?autoconnect=true&resize=scale&view_only=true';
+      ':' + (config.gazebo_gui_port || 6080) + '/vnc.html?autoconnect=true&resize=scale&view_only=true';
     chooseViewer(renderError ? 'gazebo' : 'reconstruction');
   })
   .catch(() => {});
@@ -332,7 +343,10 @@ stream.onmessage = (event) => {
       sceneView?.setBlocked(true);
     }
     armCancelling = Boolean(row.arm_cancelling);
+  } else if (row.kind === 'compound_result') {
+    addEvent(`복합 장애 ${row.iteration}회 · ${row.fault_to_zero_wall_ms}ms 뒤 정지 명령`, row.sim_ms);
   } else if (row.kind === 'error') {
+    showReport();
     failed = true;
     currentCheckpoint = null;
     badge('offline', '시뮬레이션 중단');
@@ -346,12 +360,12 @@ stream.onmessage = (event) => {
     renderRunControl();
     stream.close();
   } else if (row.kind === 'result') {
+    showReport();
     complete = true;
     currentCheckpoint = null;
     renderRunControl();
     showStage(stage);
-    const passed = row.result?.ok && row.result?.arm_out_of_bounds_denied &&
-      row.result?.sillok_incident_snapshot_fully_sealed;
+    const passed = row.report_status === 'passed';
     badge(passed ? 'complete' : 'offline', passed ? '실험 완료' : '실험 결과 확인');
     $('phase').textContent = passed ? '실시간 실험 완료' : '실험이 끝났습니다';
     $('detail').textContent = passed ?
@@ -361,7 +375,7 @@ stream.onmessage = (event) => {
       '결과 파일에서 세부 검증 상태를 확인해 주세요.';
     addEvent(passed ? '검증 결과 통과' : '검증 결과 확인 필요', row.sim_ms);
     verdict(passed ? 'done' : 'waiting', passed ? '검증 통과' : '결과 확인 필요');
-    $('next-step').textContent = '다시 보려면 터미널에서 실행 명령을 다시 시작하세요.';
+    $('next-step').textContent = '다시 보려면 터미널에서 ./haetae-demo restart 를 실행하세요.';
     stream.close();
   }
 };
