@@ -1,6 +1,6 @@
 # HANDOFF — haetae
 
-갱신: 2026-10-01. 현재 기준은 `main`과 PR의 정확한 커밋별 CI/리뷰 증거다. 실행 설명은 [simulator alpha guide](docs/simulator-alpha.md), 보호용 배포 조건은 [security release gate](docs/security-release.md)를 따른다.
+갱신: 2026-10-02. 현재 기준은 `main`과 PR의 정확한 커밋별 CI/리뷰 증거다. 실행 설명은 [simulator alpha guide](docs/simulator-alpha.md), 보호용 배포 조건은 [security release gate](docs/security-release.md)를 따른다.
 
 ## 현재 구현
 
@@ -11,6 +11,7 @@
 - root 소유 컨테이너 방화벽과 상속되는 seccomp/NNP 필터가 비-root 역할의 통신을 로컬 DDS UDP로 제한한다. 실제 Gazebo pose 서비스 및 UDP 수신기 시험은 root 정상 대조군과 함께 확인한다. NET_ADMIN/필터 지원이 없으면 실행을 거부한다.
 - 40/80/100Hz 제안 압력과 센서 끊김·인지 서명 지연을 겹치는 복합 시험을 반복한다. 엔진의 실제 승인/거부, 400ms 이내 0출력, 실제 정지, 회복 뒤 자동 재가동 없음이 필수다. 서명 카운터만으로 수신 성공을 판단하지 않는다.
 - 시뮬레이터 평가용 알파 운영 명령, 공유용 허용 필드 리포트, CI 소스/검증 후보 패키지를 제공한다. 실물 보호나 인증 버전이 아니다.
+- 사용자가 UNO R4 Minima를 주문했다. [LED bench](docs/uno-r4-bench.md)의 서명된 실제 Rust 엔진→직렬 adapter→독립 200ms guard를 준비했다. `./haetae-bench verify`는 같은 guard의 native 프로세스 시험, `compile`은 Arduino용 빌드다. 실물 USB/GPIO/WDT/reset 및 모터 정지는 미검증이다. Apple Silicon의 Intel Arduino 도구는 compile만 Docker로 우회하며 실제 upload는 Rosetta가 필요하다.
 
 ## 실행
 

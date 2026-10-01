@@ -17,6 +17,42 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  uno-bench:
+    name: UNO LED software bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: python -m pip install cryptography
+      - run: ./haetae-bench verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uno-bench-${{ matrix.os }}
+          path: artifacts/bench
+
+  uno-firmware:
+    name: UNO R4 Minima firmware compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: ./haetae-bench compile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uno-r4-led-firmware
+          path: artifacts/uno-r4-build/uno_r4_bench.ino.bin
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
