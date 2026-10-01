@@ -8,6 +8,11 @@ reports for the current `main` branch and the latest published package. The simu
 [the security release gate](docs/security-release.md) for the tested and open
 attack paths.
 
+The experimental UNO R4 Minima LED bench trusts the host and direct USB writer.
+Session/challenge tokens are not authentication. Native tests and compilation
+are software evidence only; GPIO, USB, watchdog/reset, motor-disable and physical
+stopping remain unverified. See [the bench scope](docs/uno-r4-bench.md).
+
 ## Report a vulnerability privately
 
 Use [GitHub private vulnerability reporting](https://github.com/haetae-robotics/haetae/security/advisories/new)

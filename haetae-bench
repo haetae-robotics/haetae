@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Preparation and built-in LED tests for the official UNO R4 Minima."""
+import argparse
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "tools"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Haetae UNO R4 LED bench (not robot protection)")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("verify", help="board-free real Rust + native guard fault tests")
+    commands.add_parser("compile", help="install pinned local toolchain and compile the sketch")
+    commands.add_parser("ports", help="detect connected Arduino boards")
+    flash = commands.add_parser("flash", help="compile and upload to a detected UNO R4 Minima")
+    flash.add_argument("--port", required=True)
+    run = commands.add_parser("run", help="explicitly start one LED-only USB session")
+    run.add_argument("--port", required=True)
+    run.add_argument("--scenario", choices=["allow", "person", "world-loss", "replay", "invalid-signature"], default="person")
+    run.add_argument("--seconds", type=float, default=3)
+    run.add_argument("--binary", type=Path, default=ROOT / "target" / "release" / "haetae")
+    run.add_argument("--ready-file", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.command == "verify":
+        subprocess.run([sys.executable, str(ROOT / "tools" / "bench_verify.py")], check=True)
+    elif args.command == "run":
+        from bench_host import run
+        if not args.binary.is_file():
+            raise RuntimeError("first run cargo build --release --locked -p haetae")
+        run(args.binary.resolve(), args.port, args.scenario, args.seconds, args.ready_file)
+    else:
+        import arduino_toolchain as arduino
+        argv = arduino.setup()
+        if args.command == "compile":
+            arduino.compile_sketch(argv)
+        elif args.command == "ports":
+            subprocess.run(argv + ["board", "list"], check=True)
+        else:
+            arduino.flash(argv, args.port)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("중단: LED OFF 명령을 보냈습니다. 통신 실패 시 보드의 200 ms lease에 의존합니다.", file=sys.stderr)
+        sys.exit(130)
+    except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print("bench 오류: " + str(exc), file=sys.stderr)
+        sys.exit(1)

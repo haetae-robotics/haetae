@@ -122,3 +122,12 @@ collision safety.
 > Status: **simulator evaluation alpha; core 0.0.x**. Not a certified safety device or a protective physical-robot deployment.
 
 [Simple launch, verification and report guide](docs/simulator-alpha.md): `./haetae-demo doctor`, `start`, `status`, `stop`, `restart`, `verify`, `report`. Successful CI runs provide an unsigned source/evidence candidate with SHA256 checksums.
+
+## UNO R4 LED bench preparation
+
+`./haetae-bench verify` connects the actual signed Rust gate and the firmware
+guard through virtual serial ports without a board. `./haetae-bench compile`
+builds the UNO R4 Minima LED-only sketch using pinned Arduino tools.
+[First board setup and fault tests](docs/uno-r4-bench.md) cover explicit USB
+upload and LED sessions. Software results do not establish physical USB/watchdog
+timing, motor stopping or protection of a real robot.
