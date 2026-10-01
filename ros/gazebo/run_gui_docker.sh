@@ -37,5 +37,5 @@ done
 
 exec python3 ros/gazebo/run_reference.py bin/haetae \
   --live-port 8765 --live-bind 0.0.0.0 --gazebo-gui \
-  --wait-for-viewer --manual-start --step-through --attack-probes --secure-graph \
+  --wait-for-viewer --manual-start --step-through --attack-probes --secure-graph --compound-repeat 3 \
   --live-hold-seconds 3600 --out /out

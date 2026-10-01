@@ -336,3 +336,22 @@ restored before any movement starts. This is a boundary for the sandboxed
 container roles. Root/host/simulator compromise, process resource exhaustion,
 remote Gazebo services and malicious use of a gateway's legitimate controller
 permission remain outside it. See [security scope](security-release.md).
+
+## Repeated compound faults
+
+Add `--compound-repeat 6` to a secured headless run. The viewer runs three
+iterations; CI runs six (two cycles). Each cycle requests 40, 80 and 100
+positive velocity proposals per second while dropping actual lidar delivery
+and SIGSTOP-delaying the world signer for 60, 140 and 220 ms respectively.
+Every iteration requires approved measured motion and delivered signed
+proposals before injection, observes that the signer really stopped, keeps
+proposals running after the fault, requires stale-world zero within 400 ms,
+and measures actual base stop. Fresh sensor recovery and another delivered
+positive proposal must not rearm the source. The next iteration uses an
+explicit fresh stop/rearm. Original world age remains 200 ms.
+
+`compound-faults.json` records every iteration, observed proposal count and
+latencies. Requested rates are bounded test loads, not guaranteed delivered
+rates or a general denial-of-service defense. Run counts support repeatability;
+they are not statistical worst-case or hardware evidence. Runtime failure
+invalidates the whole run; no successful summary is produced.

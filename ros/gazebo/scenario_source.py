@@ -3,6 +3,7 @@
 import json
 import sys
 import threading
+import time
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import TwistStamped
@@ -23,7 +24,19 @@ def main():
         try:
             for line in sys.stdin:
                 request = json.loads(line)
-                if "base" in request:
+                if "burst" in request:
+                    burst = request["burst"]
+                    hz, seconds = burst["hz"], burst["seconds"]
+                    if not 1 <= hz <= 100 or not 0 < seconds <= 2:
+                        raise ValueError("test burst exceeds its bounded range")
+                    deadline = time.monotonic() + seconds
+                    while time.monotonic() < deadline:
+                        msg = TwistStamped()
+                        msg.header.stamp = node.get_clock().now().to_msg()
+                        msg.twist.linear.x = 0.12
+                        base.publish(msg)
+                        time.sleep(1 / hz)
+                elif "base" in request:
                     msg = TwistStamped()
                     msg.header.stamp = node.get_clock().now().to_msg()
                     msg.twist.linear.x = request["base"]

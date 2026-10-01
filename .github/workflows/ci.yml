@@ -278,7 +278,7 @@ jobs:
           live_checker=$!
           python3 ros/gazebo/run_reference.py bin/haetae \
             --out artifacts/gazebo-reference --live-port 8765 --wait-for-viewer \
-            --secure-graph --attack-probes \
+            --secure-graph --attack-probes --compound-repeat 6 \
             --live-hold-seconds 0
           wait "$live_checker"
       - uses: actions/upload-artifact@v4

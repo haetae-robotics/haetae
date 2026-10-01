@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
 from run_scenario import fixture, public  # noqa: E402
 from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
+from compound_fault import exercise_compound
 from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
 from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy, resolve_meshes  # noqa: E402
@@ -479,7 +480,7 @@ def exercise_arm_fault(world, processes, case):
 
 def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         gazebo_gui=False, manual_start=False, attack_probes=False,
-        secure_graph=False, step_through=False, arm_fault=None):
+        secure_graph=False, step_through=False, arm_fault=None, compound_repeat=0):
     root.mkdir(parents=True, exist_ok=True)
     fixture(root, binary, arm=True, arm_policy=arm_policy(), person_distance=PERSON_DISTANCE_M)
     params_path = root / "params.yaml"
@@ -808,6 +809,11 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         (root / "sensor-faults.json").write_text(json.dumps(sensor_faults, indent=2))
         (root / "sensor-person.json").write_text(json.dumps(sensor_person_evidence, indent=2))
 
+        compound = exercise_compound(world, roles, processes, wait_for, compound_repeat, root / "compound-faults.json") if compound_repeat else None
+        if compound:
+            (root / "compound-faults.json").write_text(json.dumps(compound, indent=2))
+            presentation_wait(3)
+
         snapshot = root / "sealed-snapshot.jsonl"
         wait_for(lambda: sealed_incident_snapshot(gate_directory / "sillok.jsonl", snapshot),
                  3, processes, "sealed arm incident")
@@ -954,6 +960,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                   "arm_joints": list(ARM_JOINTS),
                   "arm_faults": arm_fault_results,
                   "sensor_faults": sensor_faults,
+                  "compound_faults": compound,
                   "native_person_measurements": sensor_person_evidence,
                   "arm_cancelled_positions_rad": arm_cancel_positions,
                   "controller": "Gazebo Harmonic gz_ros2_control",
@@ -1022,7 +1029,11 @@ def main():
                         help="run Gazebo and attacker with separate SROS2 enclaves")
     parser.add_argument("--arm-fault", choices=("kill", "stall", "delay"),
                         help="isolated moving-arm controller failure test")
+    parser.add_argument("--compound-repeat", type=int, default=0,
+                        help="repeat bounded compound sensor/delay/proposal-burst faults (1..30, secured graph)")
     args = parser.parse_args()
+    if not 0 <= args.compound_repeat <= 30 or (args.compound_repeat and not args.secure_graph):
+        parser.error("--compound-repeat requires --secure-graph and a value in 0..30")
     if args.wait_for_viewer and args.live_port is None:
         parser.error("--wait-for-viewer requires --live-port")
     if args.live_port is not None and not 1 <= args.live_port <= 65535:
@@ -1053,7 +1064,7 @@ def main():
                 run(Path(directory), binary, live, args.wait_for_viewer,
                     args.live_hold_seconds if live else 0, args.gazebo_gui,
                     args.manual_start, args.attack_probes, args.secure_graph,
-                    args.step_through, args.arm_fault)
+                    args.step_through, args.arm_fault, args.compound_repeat)
             except Exception as exc:
                 (Path(directory) / "error.json").write_text(json.dumps({
                     "error_type": type(exc).__name__, "error": str(exc),
@@ -1076,7 +1087,7 @@ def main():
                             for artifact in ("result.json", "gate.log", "sillok.jsonl"):
                                 if (src / artifact).exists():
                                     shutil.copy2(src / artifact, dst / artifact)
-                    for name in ("result.json", "error.json", "transport-isolation.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "sensor-faults.json", "sensor-person.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
+                    for name in ("result.json", "error.json", "transport-isolation.json", "compound-faults.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "sensor-faults.json", "sensor-person.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
                                  "clock_bridge.log", "robot_state_publisher.log",
                                  "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
                         source = Path(directory) / name
