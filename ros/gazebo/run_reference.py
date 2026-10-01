@@ -28,6 +28,7 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -599,7 +600,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             world.marker("사람 보고 해제", detail="방금 장면의 사람 근접 보고를 해제했습니다. 다음 시험을 준비합니다.")
             presentation_wait(2)
 
-    rclpy.init()
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     try:
         if roles:
             network_guard = NetworkGuard(os.environ.get("ROS_DOMAIN_ID", "0"))
@@ -1014,7 +1015,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             if world.native:
                 world.native.close()
             world.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
         if thread is not None:
             thread.join(timeout=2)
         for log in logs:

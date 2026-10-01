@@ -39,6 +39,8 @@ class PublicReportTest(unittest.TestCase):
         hub.publish({"kind": "phase", "label": "실험 준비 완료"})
         self.assertTrue(hub.status()["ready"])
         hub.publish({"kind": "result", "result": {"ok": False, "key": "SECRET"}})
+        result_event = next(row for row in hub.after(0, timeout=0) if row["kind"] == "result")
+        self.assertEqual(result_event["report_status"], "failed")
         with urlopen(base + "/report.json?file=world.key", timeout=3) as response:
             self.assertIn("attachment", response.headers["Content-Disposition"])
             payload = response.read()

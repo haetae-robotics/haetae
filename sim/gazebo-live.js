@@ -365,8 +365,7 @@ stream.onmessage = (event) => {
     currentCheckpoint = null;
     renderRunControl();
     showStage(stage);
-    const passed = row.result?.ok && row.result?.arm_out_of_bounds_denied &&
-      row.result?.sillok_incident_snapshot_fully_sealed;
+    const passed = row.report_status === 'passed';
     badge(passed ? 'complete' : 'offline', passed ? '실험 완료' : '실험 결과 확인');
     $('phase').textContent = passed ? '실시간 실험 완료' : '실험이 끝났습니다';
     $('detail').textContent = passed ?

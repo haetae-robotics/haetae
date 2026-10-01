@@ -53,6 +53,7 @@ class LiveHub:
                 self._ready = True
             if message.get("kind") == "result":
                 self._report = report(message.get("result"), os.environ.get("HAETAE_REVISION", "unknown"), self.session_id)
+                row["report_status"] = self._report["status"]
             if message.get("kind") in ("phase", "decision", "attack_result", "result"):
                 self._milestones.append(row)
             if message.get("kind") == "checkpoint":

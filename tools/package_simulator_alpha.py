@@ -5,6 +5,7 @@ Byte reproducibility covers this archive for identical source/evidence inputs,
 not the Docker image or floating Ubuntu/ROS packages. No signing claim.
 """
 import argparse
+from collections import Counter
 import gzip
 import hashlib
 import io
@@ -29,6 +30,10 @@ def package(result_path, out):
     public = report(raw, revision, "ci")
     if public["status"] != "passed":
         raise ValueError("alpha packaging requires every simulator check, including compound faults, to pass")
+    rows = raw["compound_faults"]["iterations"]
+    rates = Counter(row.get("proposal_hz_requested") for row in rows)
+    if len(rows) < 6 or any(rates[rate] < 2 for rate in (40, 80, 100)):
+        raise ValueError("alpha candidate requires six compound iterations, twice at each 40/80/100 Hz rate")
     public_bytes = (json.dumps(public, ensure_ascii=False, indent=2) + "\n").encode()
     prefix = "haetae-simulator-alpha/"
     source = subprocess.check_output(["git", "archive", "--format=tar", "--prefix=" + prefix, revision], cwd=REPO)

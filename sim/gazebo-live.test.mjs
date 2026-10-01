@@ -136,3 +136,11 @@ test('progress follows secure, isolated and baseline runner sequences', async ()
     for (const stage of sequence) assert.equal(page.get('stage-' + stage).dataset.state, 'visited');
   }
 });
+
+
+test('terminal badge follows the report even when raw summary flags claim success', async () => {
+  const page = viewer(); await page.config();
+  page.emit({ kind: 'result', report_status: 'incomplete', result: {
+    ok: true, arm_out_of_bounds_denied: true, sillok_incident_snapshot_fully_sealed: true } });
+  assert.equal(page.get('connection').textContent, '실험 결과 확인');
+});
