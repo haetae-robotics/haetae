@@ -22,6 +22,9 @@ RUN . /opt/ros/jazzy/setup.sh && colcon --log-base /tmp/guard-log build \
     && ctest --test-dir /tmp/guard-build/haetae_scene --output-on-failure
 RUN . /opt/ros/jazzy/setup.sh && python3 tools/build_product_visuals.py
 COPY --from=builder /src/target/release/haetae ./bin/haetae
+ARG HAETAE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$HAETAE_REVISION
+ENV HAETAE_REVISION=$HAETAE_REVISION
 ENV ROS_DOMAIN_ID=81 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 EXPOSE 8765 6080
 CMD ["/bin/bash", "ros/gazebo/run_gui_docker.sh"]

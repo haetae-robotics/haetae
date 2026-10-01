@@ -2,9 +2,9 @@
 
 ## Supported scope
 
-Haetae is pre-alpha. No version is supported as a certified safety function or
+Haetae provides a simulator evaluation alpha; the core remains 0.0.x. No version is supported as a certified safety function or
 as a protective deployment for a physical robot. We review vulnerability
-reports for the current `main` branch and the latest published package. See
+reports for the current `main` branch and the latest published package. The simulator alpha supports macOS/Linux hosts running the Linux Docker reference. Its unsigned source/evidence candidate and local summary are not attestations or hardware safety evidence. See
 [the security release gate](docs/security-release.md) for the tested and open
 attack paths.
 

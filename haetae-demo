@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Simulator evaluation only. Docker owns all ROS/Gazebo dependencies.
+set -euo pipefail
+repo=$(cd "$(dirname "$0")" && pwd -P)
+name=haetae-demo
+image=haetae-simulator-alpha
+port=${HAETAE_DEMO_PORT:-8765}
+gui_port=${HAETAE_GUI_PORT:-6080}
+for candidate in "$port" "$gui_port"; do
+  case "$candidate" in ''|*[!0-9]*) echo '포트는 1..65535 정수여야 합니다.' >&2; exit 2;; esac
+  if [[ ${#candidate} -gt 5 ]] || ((10#$candidate < 1 || 10#$candidate > 65535)); then
+    echo '포트는 1..65535 정수여야 합니다.' >&2; exit 2
+  fi
+done
+port=$((10#$port)); gui_port=$((10#$gui_port))
+url="http://127.0.0.1:$port"
+project="$repo"
+git_repo=false
+if command -v git >/dev/null 2>&1 && [[ $(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true) = "$repo" ]]; then
+  git_repo=true
+  common=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null || true)
+  if [[ "$common" = /* && -d "$common" ]]; then project="$common";
+  elif [[ -n "$common" && -d "$repo/$common" ]]; then project=$(cd "$repo/$common" && pwd); fi
+fi
+
+usage() {
+  printf '사용법: ./haetae-demo {doctor|start|status|stop|restart|verify|report [파일]|logs}\n'
+  printf 'start: 화면 준비 후 시작 버튼 · verify: 화면 없이 6회 복합 시험 · report: 완료 결과 저장\n'
+}
+daemon() {
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    echo 'Docker Desktop 또는 Docker Engine을 설치하고 실행해 주세요.' >&2; exit 1
+  fi
+}
+exists() { docker container inspect "$1" >/dev/null 2>&1; }
+owned() {
+  [[ $(docker inspect --format '{{index .Config.Labels "io.haetae.managed"}}' "$1") = simulator-alpha ]] &&
+  [[ $(docker inspect --format '{{index .Config.Labels "io.haetae.project"}}' "$1") = "$project" ]]
+}
+require_owner() {
+  if ! owned "$1"; then echo "동명 컨테이너 $1 은 이 프로젝트의 실행이 아닙니다. 이름 충돌을 먼저 해결해 주세요." >&2; exit 1; fi
+}
+demo_address() {
+  binding=$(docker port "$name" 8765/tcp)
+  if [[ "$binding" != 127.0.0.1:* ]]; then echo "로컬 웹 포트 매핑을 확인할 수 없습니다." >&2; exit 1; fi
+  url="http://$binding"
+}
+new_output() {
+  base_out=${HAETAE_DEMO_OUT:-"$repo/artifacts/simulator-alpha"}
+  mkdir -p "$base_out"
+  out="$base_out/$(date -u +%Y%m%dT%H%M%SZ)-$$-$1"
+  mkdir "$out"
+  out=$(cd "$out" && pwd)
+}
+build() {
+  revision=unknown
+  if [[ "$git_repo" = true ]]; then
+    revision=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)
+    if [[ -n $(git -C "$repo" status --porcelain 2>/dev/null || true) ]]; then revision=unknown; fi
+  elif [[ -f "$repo/REVISION" ]]; then revision=$(cat "$repo/REVISION"); fi
+  printf '실행 이미지를 준비합니다. 첫 빌드는 몇 분 걸릴 수 있습니다. 로그: %s/build.log\n' "$out"
+  if ! docker build --build-arg "HAETAE_REVISION=$revision" -f "$repo/ros/gazebo/Dockerfile" -t "$image" "$repo" >"$out/build.log" 2>&1; then
+    tail -40 "$out/build.log" >&2; exit 1
+  fi
+}
+doctor() {
+  daemon
+  command -v curl >/dev/null 2>&1 || { echo 'curl이 필요합니다.' >&2; exit 1; }
+  case $(uname -s) in Darwin|Linux) ;; *) echo 'macOS 또는 Linux에서 실행해 주세요.' >&2; exit 1;; esac
+  if [[ "$port" = "$gui_port" ]]; then echo '웹과 Gazebo 원본 포트는 달라야 합니다.' >&2; exit 1; fi
+  for candidate in "$port" "$gui_port"; do
+    if docker ps --format '{{.Ports}}' | grep -Eq "(127\.0\.0\.1|0\.0\.0\.0|\[::\]):$candidate->"; then
+      if ! exists "$name" || ! owned "$name" || ! docker port "$name" | grep -Eq ":$candidate$"; then
+        echo "포트 $candidate 가 다른 Docker 실행에 사용 중입니다. 해당 실행을 종료하거나 HAETAE_DEMO_PORT / HAETAE_GUI_PORT를 바꾸세요." >&2; exit 1
+      fi
+    elif command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$candidate" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "포트 $candidate 가 사용 중입니다. 포트를 바꾸거나 기존 실행을 종료해 주세요." >&2; exit 1
+    fi
+  done
+  echo 'Docker와 로컬 포트 사전 점검을 통과했습니다. 실제 차단 시험은 실행 안에서 진행합니다.'
+}
+stop_demo() {
+  daemon
+  if exists "$name"; then
+    require_owner "$name"
+    docker stop --time 5 "$name" >/dev/null
+    docker rm "$name" >/dev/null
+    echo '시뮬레이터를 종료했습니다. 결과 폴더는 보존했습니다.'
+  else echo '이 프로젝트의 시뮬레이터가 실행 중이지 않습니다.'; fi
+}
+start_demo() {
+  doctor
+  if exists "$name"; then
+    require_owner "$name"
+    if [[ $(docker inspect --format '{{.State.Running}}' "$name") = true ]]; then
+      demo_address
+      printf '이미 실행 중입니다: %s/ · 새 코드로 다시 실행: ./haetae-demo restart\n' "$url"; return
+    fi
+    docker rm "$name" >/dev/null
+  fi
+  new_output live
+  build
+  docker run -d --name "$name" --init --cap-add=NET_ADMIN --shm-size=256m \
+    --label io.haetae.managed=simulator-alpha --label "io.haetae.project=$project" \
+    -e "GZ_PARTITION=haetae_demo_$port" -e "HAETAE_GUI_PORT=$gui_port" -p "127.0.0.1:$port:8765" -p "127.0.0.1:$gui_port:6080" \
+    -v "$out:/out" "$image" >/dev/null
+  printf 'Gazebo와 권한 검증을 준비합니다. 결과 폴더: %s\n' "$out"
+  for attempt in {1..240}; do
+    health=$(curl -fsS --max-time 2 "$url/health" 2>/dev/null || true)
+    if [[ "$health" = *'"failed": true'* ]] || [[ $(docker inspect --format '{{.State.Running}}' "$name") != true ]]; then
+      docker logs --tail 30 "$name" >&2; echo './haetae-demo logs 로 원인을 확인해 주세요.' >&2; exit 1
+    fi
+    if [[ "$health" = *'"ready": true'* ]]; then
+      printf '준비 완료: %s/\n브라우저에서 시뮬레이션 시작 → 정지 장면 확인 → 다음 단계를 누르세요.\n' "$url"; return
+    fi
+    sleep 1
+  done
+  echo '준비 시간을 초과했습니다. ./haetae-demo logs 를 확인해 주세요.' >&2; exit 1
+}
+
+case ${1:-help} in
+  doctor) doctor;;
+  start) start_demo;;
+  restart) stop_demo; start_demo;;
+  stop) stop_demo;;
+  status) daemon; if exists "$name"; then require_owner "$name"; docker inspect --format '실행 중: {{.State.Running}} · 시작: {{.State.StartedAt}}' "$name"; if [[ $(docker inspect --format '{{.State.Running}}' "$name") = true ]]; then demo_address; curl -fsS --max-time 2 "$url/health" || true; fi; printf '\n화면: %s/\n' "$url"; else echo '실행 중이지 않습니다. ./haetae-demo start 를 실행하세요.'; fi;;
+  logs) daemon; exists "$name" && require_owner "$name"; docker logs --tail 80 "$name";;
+  report) daemon; exists "$name" || { echo '시뮬레이터를 먼저 실행해 주세요.' >&2; exit 1; }; require_owner "$name";
+    destination=${2:-"$repo/artifacts/simulator-alpha/report.json"}; mkdir -p "$(dirname "$destination")";
+    temp=$(mktemp "${destination}.tmp.XXXXXX"); trap 'rm -f "$temp"' EXIT;
+    if [[ $(docker inspect --format '{{.State.Running}}' "$name") = true ]]; then
+      demo_address
+      if ! curl -fsS --max-time 5 "$url/report.json" -o "$temp"; then echo '완료 또는 실패 뒤 리포트를 저장할 수 있습니다.' >&2; exit 1; fi
+    else
+      saved=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/out"}}{{.Source}}{{end}}{{end}}' "$name")
+      [[ -f "$saved/verification-report.json" ]] || { echo '저장된 리포트가 없습니다. logs 를 확인하세요.' >&2; exit 1; }
+      cp "$saved/verification-report.json" "$temp"
+    fi
+    mv "$temp" "$destination"; printf '리포트 저장: %s\n' "$destination";;
+  verify) daemon; new_output verify; build;
+    docker run --rm --init --cap-add=NET_ADMIN --shm-size=256m -e ROS_DOMAIN_ID=84 -e "GZ_PARTITION=haetae_verify_$$" \
+      -v "$out:/out" "$image" /bin/bash -c 'source /opt/ros/jazzy/setup.bash; source /opt/haetae/setup.bash; python3 ros/gazebo/run_reference.py bin/haetae --secure-graph --attack-probes --compound-repeat 6 --out /out';
+    printf '검증 완료: %s/verification-report.json\n' "$out";;
+  help|--help|-h) usage;;
+  *) usage >&2; exit 2;;
+esac

@@ -37,6 +37,7 @@ from run_scenario import fixture, public  # noqa: E402
 from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
+from public_report import report as public_report
 from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
 from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy, resolve_meshes  # noqa: E402
@@ -955,6 +956,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                 world._emit("attack_result", attack=name, **attacks[name])
             (root / "attack-result.json").write_text(json.dumps(attacks, indent=2) + "\n")
         result = {"ok": all(row["blocked"] for row in attacks.values()),
+                  "source_revision": os.environ.get("HAETAE_REVISION", "unknown"),
                   "transport_isolation": transport_evidence,
                   "robot_model": MODEL_NAME,
                   "arm_joints": list(ARM_JOINTS),
@@ -981,6 +983,9 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         if roles and (gate_directory / "sillok.jsonl").exists():
             shutil.copy2(gate_directory / "sillok.jsonl", root / "sillok.jsonl")
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+        (root / "verification-report.json").write_text(json.dumps(public_report(result,
+            os.environ.get("HAETAE_REVISION", "unknown"), live.session_id if live else root.name),
+            ensure_ascii=False, indent=2))
         if live:
             live.publish({"kind": "result", "sim_ms": stopped_sim_ms, "result": result})
             if live_hold_seconds:
@@ -1066,6 +1071,9 @@ def main():
                     args.manual_start, args.attack_probes, args.secure_graph,
                     args.step_through, args.arm_fault, args.compound_repeat)
             except Exception as exc:
+                (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(
+                    revision=os.environ.get("HAETAE_REVISION", "unknown"),
+                    run_id=live.session_id if live else Path(directory).name, failed=True), ensure_ascii=False, indent=2))
                 (Path(directory) / "error.json").write_text(json.dumps({
                     "error_type": type(exc).__name__, "error": str(exc),
                     "traceback": traceback.format_exc()}, indent=2) + "\n")
@@ -1087,7 +1095,7 @@ def main():
                             for artifact in ("result.json", "gate.log", "sillok.jsonl"):
                                 if (src / artifact).exists():
                                     shutil.copy2(src / artifact, dst / artifact)
-                    for name in ("result.json", "error.json", "transport-isolation.json", "compound-faults.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "sensor-faults.json", "sensor-person.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
+                    for name in ("result.json", "error.json", "verification-report.json", "transport-isolation.json", "compound-faults.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "sensor-faults.json", "sensor-person.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
                                  "clock_bridge.log", "robot_state_publisher.log",
                                  "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
                         source = Path(directory) / name

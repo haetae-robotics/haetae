@@ -11,3 +11,5 @@
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
 
 .scene-alert[data-kind="measured"]{border-left-color:#96a5af}.scene-alert[data-kind="command"]{border-left-color:var(--cyan)}
+
+.report-panel{border-top:1px solid var(--line);padding:16px 0}.report-panel h3{font-size:12px}.report-panel p{font-size:11px;color:var(--muted);margin:8px 0}.report-panel div{display:flex;gap:16px}.report-panel a{font-size:12px;color:var(--cyan);display:inline-flex;align-items:center;min-height:44px}
