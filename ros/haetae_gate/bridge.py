@@ -17,6 +17,21 @@ class StaleActuation(BridgeFailure):
     pass
 
 
+class ExpiredActuation(StaleActuation):
+    """An otherwise timely response lost its proposal/world validity."""
+
+
+def reject_expired_actuation(bridge, reason, now_ms):
+    """Discard the engine's active goal and armed sources, without forwarding it."""
+    step = bridge.request({"k": "reject", "t": now_ms, "reason": str(reason)})
+    arm = step.get("arm")
+    if (step["cmd"]["linear"] != 0 or step["cmd"]["angular"] != 0 or
+            (arm is not None and arm != "cancel") or
+            step.get("status", {}).get("armed") != []):
+        raise BridgeFailure("expiry rejection did not stop and disarm the engine")
+    return step
+
+
 def lease_renewable(step, elapsed_ms, world_max_age_ms, max_response_ms):
     """A controller lease requires a fresh, healthy enforcement round trip."""
     status = step.get("status") or {}
@@ -42,13 +57,13 @@ def require_fresh_actuation(step, elapsed_ms, now_ms, world_max_age_ms, max_resp
         raise StaleActuation("stale actuation response: missing expiry or world age")
     if elapsed_ms < 0:
         raise StaleActuation("stale actuation response: ROS clock moved backwards")
-    if now_ms >= expires:
-        raise StaleActuation("stale actuation response: proposal expired")
-    if world_age + elapsed_ms >= world_max_age_ms:
-        raise StaleActuation("stale actuation response: world expired")
     if elapsed_ms >= max_response_ms:
         raise StaleActuation(
             f"stale actuation response: elapsed {elapsed_ms:.1f} ms >= {max_response_ms} ms")
+    if now_ms >= expires:
+        raise ExpiredActuation("stale actuation response: proposal expired")
+    if world_age + elapsed_ms >= world_max_age_ms:
+        raise ExpiredActuation("stale actuation response: world expired")
 
 
 class Bridge:

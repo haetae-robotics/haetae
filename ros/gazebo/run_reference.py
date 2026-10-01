@@ -42,7 +42,7 @@ from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy,
 from role_isolation import Roles, UIDS
 from lidar_perception import Perception
 from native_person import NativeScene, add_native_scene
-from stop_evidence import person_stop_report, person_stop_observed  # noqa: E402
+from stop_evidence import person_stop_report, person_stop_observed, world_expiry_stop_observed  # noqa: E402
 from attack_probe import (prepare_gazebo_security, probe_gazebo_permissions,
                           probe_permissions, probe_signed_inputs)  # noqa: E402
 
@@ -337,8 +337,8 @@ def exercise_sensor_fault(world, processes, case):
             world.perception.drop_frames = True
     elif not world.native.calibration_visible(False):
         raise AssertionError("could not remove native calibration target")
-    wait_for(lambda: not world.sensor_info.get("healthy") and any(t >= fault_at and value.get("stop") == "stale_world"
-                        for t, value in world.states) and abs(world.speed()) < 0.03,
+    wait_for(lambda: not world.sensor_info.get("healthy") and world_expiry_stop_observed(
+        world.states, world.outcomes, fault_at) and abs(world.speed()) < 0.03,
              3, processes, "sensor fault causes stale-world stop",
              action=lambda: world.propose_base(0.12))
     zero_at = next(t for t, _ in world.zero_commands if t >= fault_at)
@@ -359,7 +359,8 @@ def exercise_sensor_fault(world, processes, case):
     result = {"ok": True, "case": case, "input": "gazebo_gpu_lidar",
               "last_sensor_ms": last_sensor_ms, "unknown": unknown,
               "fault_to_zero_wall_ms": round((zero_at-fault_at)*1000, 1),
-              "stop_reason": "stale_world", "recovery_did_not_rearm": True}
+              "stop_reason": world_expiry_stop_observed(world.states, world.outcomes, fault_at),
+              "recovery_did_not_rearm": True}
     world._emit("sensor_fault_result", **result)
     world.marker("센서 이상 → 정지")
     return result
@@ -377,7 +378,7 @@ def command(argv, root, timeout=35, env=None):
 def start(argv, root, name, processes, env=None, user=None, input_pipe=False):
     log = (root / (name + ".log")).open("wb")
     options = {"user": user, "group": user, "extra_groups": []} if user is not None else {}
-    process = subprocess.Popen(sandboxed(argv) if user is not None else argv, stdout=log, stderr=subprocess.STDOUT,
+    process = subprocess.Popen(sandboxed(argv) if user is not None else argv, stdout=log, stderr=subprocess.STDOUT, close_fds=True,
                                stdin=subprocess.PIPE if input_pipe else subprocess.DEVNULL,
                                env=env, start_new_session=True, **options)
     processes[name] = process

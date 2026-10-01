@@ -2,7 +2,8 @@ import json
 import sys
 import unittest
 
-from bridge import Bridge, BridgeFailure, require_fresh_actuation, lease_renewable
+from bridge import (Bridge, BridgeFailure, ExpiredActuation, require_fresh_actuation,
+                    lease_renewable, reject_expired_actuation)
 
 
 class BridgeTests(unittest.TestCase):
@@ -13,6 +14,30 @@ class BridgeTests(unittest.TestCase):
                                 ({"mode": "hold"}, 1), ({"recorder_ok": False}, 1),
                                 ({"state_ok": False}, 1), ({"world_age_ms": None}, 1)):
             self.assertFalse(lease_renewable({"status": {**status, **change}}, elapsed, 200, 50))
+
+    def test_expiry_rejects_without_renewing_authority_or_masking_slow_response(self):
+        step = {"cmd": {"linear": 0.5, "angular": 0},
+                "status": {"active_expires_ms": 2000, "world_age_ms": 195}}
+        with self.assertRaises(ExpiredActuation):
+            require_fresh_actuation(step, 6, 1006, 200, 50)
+        with self.assertRaises(BridgeFailure) as failure:
+            require_fresh_actuation(step, 50, 1050, 200, 50)
+        self.assertNotIsInstance(failure.exception, ExpiredActuation)
+        safe = {"cmd": {"linear": 0, "angular": 0}, "arm": "cancel", "status": {"armed": []}}
+        class Reply:
+            def request(inner, request):
+                inner.requested = request
+                return inner.reply
+        bridge = Reply()
+        bridge.reply = safe
+        self.assertEqual(reject_expired_actuation(bridge, "expired", 1006), safe)
+        self.assertEqual(bridge.requested, {"k": "reject", "t": 1006, "reason": "expired"})
+        for unsafe in ({**safe, "cmd": {"linear": .1, "angular": 0}},
+                       {**safe, "arm": {"execute": {}}},
+                       {**safe, "status": {"armed": ["vla"]}}):
+            bridge.reply = unsafe
+            with self.assertRaises(BridgeFailure):
+                reject_expired_actuation(bridge, "expired", 1006)
 
     def fake(self, code, timeout=100):
         bridge = Bridge([sys.executable, "-u", "-c", code], timeout_ms=timeout)

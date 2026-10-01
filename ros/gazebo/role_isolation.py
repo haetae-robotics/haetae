@@ -144,7 +144,7 @@ class Roles:
         for role, uid in UIDS.items():
             probe = subprocess.run(sandboxed([sys.executable, str(Path(__file__).with_name("role_probe.py")), role]),
                 env=self.environment(role, base), user=uid, group=uid, extra_groups=[],
-                capture_output=True, text=True, timeout=15)
+                capture_output=True, text=True, timeout=15, close_fds=True)
             if probe.returncode:
                 raise AssertionError("role DDS boundary failed: " + role + " " + probe.stderr[-1500:])
             result[role] = json.loads(probe.stdout.splitlines()[-1])

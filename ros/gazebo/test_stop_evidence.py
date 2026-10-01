@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from stop_evidence import world_expiry_stop_observed
 
 from stop_evidence import person_stop_observed, person_stop_report
 
@@ -38,3 +39,12 @@ class StopEvidenceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class WorldExpiryTest(unittest.TestCase):
+    def test_expiry_requires_current_disarmed_state_and_specific_world_error(self):
+        outcome = {"rejected": {"error": "stale actuation response: world expired"}}
+        states = [(10, {"stop": "denied", "armed": []})]
+        self.assertEqual(world_expiry_stop_observed(states, [(10, outcome)], 10), "world_expired_at_response")
+        self.assertIsNone(world_expiry_stop_observed(states, [(9, outcome)], 10))
+        self.assertIsNone(world_expiry_stop_observed([(10, {"stop": "denied", "armed": ["vla"]})], [(10, outcome)], 10))
+        self.assertIsNone(world_expiry_stop_observed(states, [(10, {"rejected": {"error": "proposal expired"}})], 10))

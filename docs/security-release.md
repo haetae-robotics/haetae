@@ -180,3 +180,12 @@ root delivery to the forbidden receiver must succeed. Existing DDS matched-write
 and approved robot motion controls must also pass. This covers these container
 principals, not a remote Gazebo deployment, root, host, trusted perception or a
 compromised gateway's legitimate ROS actuation authority.
+
+A timely positive response that crosses the original proposal/world expiry is
+discarded before output. The bridge sends zero and requests arm cancellation
+first, then explicitly rejects the engine's active goal and armed sources. A
+zero, non-executing, disarmed response is mandatory. Sensor recovery alone
+cannot resume motion. The sensor oracle accepts either engine `stale_world` or
+a disarmed rejection with the exact response-boundary world-expiry error.
+Malformed responses, backwards clock, IPC failures and responses taking 50 ms
+or more still trigger the fatal stop path. No freshness budget is increased.

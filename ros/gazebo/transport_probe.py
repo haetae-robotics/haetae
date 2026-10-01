@@ -61,7 +61,7 @@ def _child(mode, args=(), uid=None):
     if uid is not None:
         argv = sandboxed(argv)
         options = {"user": uid, "group": uid, "extra_groups": []}
-    return subprocess.run(argv, capture_output=True, text=True, timeout=8, **options)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=8, close_fds=True, **options)
 
 
 def probe_transport(world, guard, processes, wait_for):
