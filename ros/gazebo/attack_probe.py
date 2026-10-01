@@ -15,6 +15,8 @@ import sys
 import tempfile
 
 
+from network_guard import sandboxed
+
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "ros/haetae_sim"))
 sys.path.insert(0, str(REPO / "ros/haetae_gate"))
@@ -25,7 +27,7 @@ from signing import Signer  # noqa: E402
 
 def _checked(argv, env=None, timeout=35, user=None, group=None):
     options = {"user": user, "group": group, "extra_groups": []} if user is not None else {}
-    result = subprocess.run(argv, env=env, capture_output=True, text=True,
+    result = subprocess.run(sandboxed(argv) if user is not None else argv, env=env, capture_output=True, text=True,
                             timeout=timeout, **options)
     if result.returncode:
         raise RuntimeError(f"{' '.join(argv[:3])} failed: {result.stderr[-1200:]}")

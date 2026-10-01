@@ -79,7 +79,7 @@ base. A compromised bridge or privileged host can still command the robot.
   writers, and VLA/world cannot create controller or heartbeat writers or arm
   clients. Matched authorized publishers and actual accepted motion are required
   positive controls. The root scenario provisioner and simulator remain trusted;
-  Gazebo Transport remains outside this ACL. An exact signed-command replay and a modified signed world report are
+  The ROS ACL alone does not protect Gazebo Transport. The secured container now also restricts non-root egress to local DDS UDP and launches every role with an inherited network syscall filter. An exact signed-command replay and a modified signed world report are
   also rejected by a fresh production enforcer with zero output. This is
   reference evidence, not a robot-specific security boundary.
 - EOF from the bridge now leaves the persistent `running` marker set, so a
@@ -94,7 +94,7 @@ base. A compromised bridge or privileged host can still command the robot.
   compromising it can command the controller directly or misuse its heartbeat.
   This stage prevents perception impersonation by that UID, not arbitrary
   malicious actuator behavior. Root, perception, simulator and controller
-  compromise and native Gazebo Transport injection remain outside the claim.
+  compromise remain outside the claim. Native Gazebo injection is blocked only for the sandboxed non-root reference roles; unrestricted host/root processes remain trusted.
 - A counter checkpoint is fsynced before any nonzero base or arm execute
   output. Zero and arm cancel output go first so a stop does not wait for
   storage. A crash between a stop output and its checkpoint can still lose
@@ -153,7 +153,30 @@ Moving-base tests cover receiver disconnect and removal of the native
 calibration target, with no automatic motion rearm after sensor recovery.
 
 This is conservative obstacle occupancy at one adult torso-height scan plane,
-not a validated human classifier. Root/simulator/Gazebo Transport, calibrated
+not a validated human classifier. Root/simulator, unrestricted host processes, calibrated
 scene assumptions and the trusted perception adapter remain trusted. Physical
 sensor failure rates, child detection, occlusions, content poisoning and real
 robot stopping/certification blockers above are still open.
+
+## Native transport isolation evidence
+
+`--secure-graph` requires Docker `--cap-add=NET_ADMIN`, `iptables`, `iproute2`
+and `python3-seccomp`. Failure to install the IPv4/IPv6 rules or role syscall
+filter aborts the run. Root installs container-local OUTPUT rules before roles
+start. Non-root roles may send IPv4 UDP to loopback, this container's IPv4
+addresses and the DDS discovery group, on this ROS domain's RTPS ports only.
+No general TCP/UNIX/IPv6/packet socket or io_uring network route is available
+to these roles; internal UNIX socketpairs remain available. Dropped capabilities
+and `no_new_privs` prevent a role exec from acquiring root file capabilities.
+This boundary assumes root launches roles without inherited network descriptors.
+It is not a general OS sandbox or a resource exhaustion defense.
+
+`transport-isolation.json` records all four role UIDs and the restricted external
+attacker UID 65534. Each must retain allowed UDP delivery, fail TCP/UNIX/IPv6/packet
+socket creation, retain restrictions after exec, fail delivery to a root UDP
+receiver outside DDS ports, and fail an actual Gazebo pose request. The same
+request by root must alter the real lidar calibration return before restoration;
+root delivery to the forbidden receiver must succeed. Existing DDS matched-writer
+and approved robot motion controls must also pass. This covers these container
+principals, not a remote Gazebo deployment, root, host, trusted perception or a
+compromised gateway's legitimate ROS actuation authority.

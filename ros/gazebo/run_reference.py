@@ -34,6 +34,8 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
 from run_scenario import fixture, public  # noqa: E402
+from network_guard import NetworkGuard, sandboxed
+from transport_probe import probe_transport
 from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
 from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy, resolve_meshes  # noqa: E402
@@ -375,7 +377,7 @@ def command(argv, root, timeout=35, env=None):
 def start(argv, root, name, processes, env=None, user=None, input_pipe=False):
     log = (root / (name + ".log")).open("wb")
     options = {"user": user, "group": user, "extra_groups": []} if user is not None else {}
-    process = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
+    process = subprocess.Popen(sandboxed(argv) if user is not None else argv, stdout=log, stderr=subprocess.STDOUT,
                                stdin=subprocess.PIPE if input_pipe else subprocess.DEVNULL,
                                env=env, start_new_session=True, **options)
     processes[name] = process
@@ -503,6 +505,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     executor = None
     thread = None
     roles = None
+    network_guard = None
+    transport_evidence = None
     gate_directory = root
     if secure_graph:
         keystore = prepare_gazebo_security(root / "gazebo-security")
@@ -583,6 +587,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
 
     rclpy.init()
     try:
+        if roles:
+            network_guard = NetworkGuard(os.environ.get("ROS_DOMAIN_ID", "0"))
         if not os.environ.get("DISPLAY"):
             os.environ["DISPLAY"] = ":99"
             _, log = start(["Xvfb", ":99", "-screen", "0", "1280x720x24", "-nolisten", "tcp"],
@@ -631,6 +637,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                  30, processes, "lidar, odom and four-joint feedback")
 
         if roles:
+            transport_evidence = probe_transport(world, network_guard, processes, wait_for)
+            (root / "transport-isolation.json").write_text(json.dumps(transport_evidence, indent=2))
             for role in ("world", "vla"):
                 _, log = start([sys.executable, str(REPO / "ros/haetae_gate/source_node.py"),
                                 "--ros-args", "--params-file", str(roles.source_params(role))],
@@ -940,6 +948,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                 world._emit("attack_result", attack=name, **attacks[name])
             (root / "attack-result.json").write_text(json.dumps(attacks, indent=2) + "\n")
         result = {"ok": all(row["blocked"] for row in attacks.values()),
+                  "transport_isolation": transport_evidence,
                   "robot_model": MODEL_NAME,
                   "arm_joints": list(ARM_JOINTS),
                   "arm_faults": arm_fault_results,
@@ -985,6 +994,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             thread.join(timeout=2)
         for log in logs:
             log.close()
+        if network_guard:
+            network_guard.close()
 
 
 def main():
@@ -1064,7 +1075,7 @@ def main():
                             for artifact in ("result.json", "gate.log", "sillok.jsonl"):
                                 if (src / artifact).exists():
                                     shutil.copy2(src / artifact, dst / artifact)
-                    for name in ("result.json", "error.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "sensor-faults.json", "sensor-person.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
+                    for name in ("result.json", "error.json", "transport-isolation.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "sensor-faults.json", "sensor-person.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
                                  "clock_bridge.log", "robot_state_publisher.log",
                                  "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
                         source = Path(directory) / name
