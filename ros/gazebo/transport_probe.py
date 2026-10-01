@@ -15,8 +15,12 @@ def native_attempt():
     from native_person import _set_poses
     print(json.dumps({"native_attempt_started": True}), flush=True)
     node = Node()
-    time.sleep(0.5)
-    accepted = _set_poses(node, {"lidar_calibration": ((3, 7, -5), (0, 0, 0, 1))})
+    deadline = time.monotonic() + 3
+    accepted = False
+    while time.monotonic() < deadline and not accepted:
+        accepted = _set_poses(node, {"lidar_calibration": ((3, 7, -5), (0, 0, 0, 1))})
+        if not accepted:
+            time.sleep(0.02)
     print(json.dumps({"accepted": bool(accepted)}), flush=True)
 
 
@@ -65,7 +69,7 @@ def probe_transport(world, guard, processes, wait_for):
     # service, wrong partition or a probe that merely failed to import.
     positive = _child("native")
     if positive.returncode or not json.loads(positive.stdout.splitlines()[-1])["accepted"]:
-        raise AssertionError("root Gazebo pose positive control failed: " + positive.stderr[-500:])
+        raise AssertionError("root Gazebo pose positive control failed: " + (positive.stdout + positive.stderr)[-500:])
     wait_for(lambda: not world.sensor_info.get("healthy"), 3, processes,
              "root native pose request changes lidar coverage")
     if not world.native.calibration_visible(True):
