@@ -344,10 +344,11 @@ iterations; CI runs six (two cycles). Each cycle requests 40, 80 and 100
 positive velocity proposals per second while dropping actual lidar delivery
 and SIGSTOP-delaying the world signer for 60, 140 and 220 ms respectively.
 Every iteration requires approved measured motion and delivered signed
-proposals before injection, observes that the signer really stopped, keeps
-proposals running after the fault, requires stale-world zero within 400 ms,
+proposals and at least three accepted engine velocity decisions before injection, observes that the signer really stopped, keeps
+proposals running after the fault, requires at least ten actual engine rejections
+after zero, requires world-expiry zero within 400 ms,
 and measures actual base stop. Fresh sensor recovery and another delivered
-positive proposal must not rearm the source. The next iteration uses an
+positive proposal must be received and rejected by the engine without rearming the source. The next iteration uses an
 explicit fresh stop/rearm. Original world age remains 200 ms.
 
 `compound-faults.json` records every iteration, observed proposal count and
