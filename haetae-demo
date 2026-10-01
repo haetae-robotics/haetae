@@ -31,6 +31,10 @@ daemon() {
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
     echo 'Docker Desktop 또는 Docker Engine을 설치하고 실행해 주세요.' >&2; exit 1
   fi
+  endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)}
+  if [[ "$endpoint" != unix://* ]] || [[ $(docker info --format '{{.OSType}}') != linux ]]; then
+    echo '로컬 Linux Docker Engine 또는 Docker Desktop 컨텍스트를 선택해 주세요.' >&2; exit 1
+  fi
 }
 exists() { docker container inspect "$1" >/dev/null 2>&1; }
 owned() {
@@ -59,9 +63,10 @@ build() {
     if [[ -n $(git -C "$repo" status --porcelain 2>/dev/null || true) ]]; then revision=unknown; fi
   elif [[ -f "$repo/REVISION" ]]; then revision=$(cat "$repo/REVISION"); fi
   printf '실행 이미지를 준비합니다. 첫 빌드는 몇 분 걸릴 수 있습니다. 로그: %s/build.log\n' "$out"
-  if ! docker build --build-arg "HAETAE_REVISION=$revision" -f "$repo/ros/gazebo/Dockerfile" -t "$image" "$repo" >"$out/build.log" 2>&1; then
+  if ! docker build --iidfile "$out/image.id" --build-arg "HAETAE_REVISION=$revision" -f "$repo/ros/gazebo/Dockerfile" -t "$image" "$repo" >"$out/build.log" 2>&1; then
     tail -40 "$out/build.log" >&2; exit 1
   fi
+  image_id=$(cat "$out/image.id")
 }
 doctor() {
   daemon
@@ -83,7 +88,7 @@ stop_demo() {
   daemon
   if exists "$name"; then
     require_owner "$name"
-    docker stop --time 5 "$name" >/dev/null
+    docker stop --time 30 "$name" >/dev/null
     docker rm "$name" >/dev/null
     echo '시뮬레이터를 종료했습니다. 결과 폴더는 보존했습니다.'
   else echo '이 프로젝트의 시뮬레이터가 실행 중이지 않습니다.'; fi
@@ -103,7 +108,7 @@ start_demo() {
   docker run -d --name "$name" --init --cap-add=NET_ADMIN --shm-size=256m \
     --label io.haetae.managed=simulator-alpha --label "io.haetae.project=$project" \
     -e "GZ_PARTITION=haetae_demo_$port" -e "HAETAE_GUI_PORT=$gui_port" -p "127.0.0.1:$port:8765" -p "127.0.0.1:$gui_port:6080" \
-    -v "$out:/out" "$image" >/dev/null
+    -v "$out:/out" "$image_id" >/dev/null
   printf 'Gazebo와 권한 검증을 준비합니다. 결과 폴더: %s\n' "$out"
   for attempt in {1..240}; do
     health=$(curl -fsS --max-time 2 "$url/health" 2>/dev/null || true)
@@ -139,7 +144,7 @@ case ${1:-help} in
     mv "$temp" "$destination"; printf '리포트 저장: %s\n' "$destination";;
   verify) daemon; new_output verify; build;
     docker run --rm --init --cap-add=NET_ADMIN --shm-size=256m -e ROS_DOMAIN_ID=84 -e "GZ_PARTITION=haetae_verify_$$" \
-      -v "$out:/out" "$image" /bin/bash -c 'source /opt/ros/jazzy/setup.bash; source /opt/haetae/setup.bash; python3 ros/gazebo/run_reference.py bin/haetae --secure-graph --attack-probes --compound-repeat 6 --out /out';
+      -v "$out:/out" "$image_id" /bin/bash -c 'source /opt/ros/jazzy/setup.bash; source /opt/haetae/setup.bash; python3 ros/gazebo/run_reference.py bin/haetae --secure-graph --attack-probes --compound-repeat 6 --out /out';
     printf '검증 완료: %s/verification-report.json\n' "$out";;
   help|--help|-h) usage;;
   *) usage >&2; exit 2;;

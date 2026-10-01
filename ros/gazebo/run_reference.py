@@ -37,6 +37,7 @@ from run_scenario import fixture, public  # noqa: E402
 from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
+from artifact_export import export_artifacts
 from public_report import report as public_report
 from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
@@ -52,6 +53,16 @@ from attack_probe import (prepare_gazebo_security, probe_gazebo_permissions,
 REPO = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 BASE_CONTROLLER_TOPIC = "/diff_drive_base_controller/cmd_vel"
+
+
+class RunInterrupted(Exception):
+    """Operator requested container shutdown, distinct from a failed test."""
+
+
+def interrupt_run(signum, frame):
+    # A second TERM must not interrupt cleanup or the final artifact checkpoint.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise RunInterrupted("operator requested shutdown")
 
 
 class GazeboWorld(Node):
@@ -481,7 +492,7 @@ def exercise_arm_fault(world, processes, case):
 
 def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         gazebo_gui=False, manual_start=False, attack_probes=False,
-        secure_graph=False, step_through=False, arm_fault=None, compound_repeat=0):
+        secure_graph=False, step_through=False, arm_fault=None, compound_repeat=0, output=None):
     root.mkdir(parents=True, exist_ok=True)
     fixture(root, binary, arm=True, arm_policy=arm_policy(), person_distance=PERSON_DISTANCE_M)
     params_path = root / "params.yaml"
@@ -986,6 +997,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         (root / "verification-report.json").write_text(json.dumps(public_report(result,
             os.environ.get("HAETAE_REVISION", "unknown"), live.session_id if live else root.name),
             ensure_ascii=False, indent=2))
+        export_artifacts(root, output)
         if live:
             live.publish({"kind": "result", "sim_ms": stopped_sim_ms, "result": result})
             if live_hold_seconds:
@@ -1062,6 +1074,7 @@ def main():
     if server:
         print(f"Live view: http://127.0.0.1:{args.live_port}/", flush=True)
     shared = Path("/dev/shm")
+    previous_term = signal.signal(signal.SIGTERM, interrupt_run)
     try:
         with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
                                          else None) as directory:
@@ -1069,7 +1082,15 @@ def main():
                 run(Path(directory), binary, live, args.wait_for_viewer,
                     args.live_hold_seconds if live else 0, args.gazebo_gui,
                     args.manual_start, args.attack_probes, args.secure_graph,
-                    args.step_through, args.arm_fault, args.compound_repeat)
+                    args.step_through, args.arm_fault, args.compound_repeat, args.out)
+            except RunInterrupted:
+                if not (Path(directory) / "result.json").exists():
+                    (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(
+                        revision=os.environ.get("HAETAE_REVISION", "unknown"),
+                        run_id=live.session_id if live else Path(directory).name, failed=True), ensure_ascii=False, indent=2))
+                    (Path(directory) / "error.json").write_text(json.dumps({
+                        "error_type": "RunInterrupted", "error": "operator requested shutdown"}) + "\n")
+                raise
             except Exception as exc:
                 (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(
                     revision=os.environ.get("HAETAE_REVISION", "unknown"),
@@ -1084,23 +1105,9 @@ def main():
                                "error_type": type(exc).__name__})
                 raise
             finally:
-                if args.out:
-                    output = args.out.resolve()
-                    output.mkdir(parents=True, exist_ok=True)
-                    for case in ("kill", "stall", "delay"):
-                        src = Path(directory) / ("arm-" + case)
-                        if src.exists():
-                            dst = output / ("arm-" + case)
-                            dst.mkdir(exist_ok=True)
-                            for artifact in ("result.json", "gate.log", "sillok.jsonl"):
-                                if (src / artifact).exists():
-                                    shutil.copy2(src / artifact, dst / artifact)
-                    for name in ("result.json", "error.json", "verification-report.json", "transport-isolation.json", "compound-faults.json", "attack-result.json", "principal-isolation.json", "role-permissions.json", "source-restart.json", "sensor-faults.json", "sensor-person.json", "source_world.log", "source_vla.log", "scenario_vla.log", "setup.log", "gazebo.log", "gazebo_gui.log", "gate.log",
-                                 "clock_bridge.log", "robot_state_publisher.log",
-                                 "sillok.jsonl", "sealed-snapshot.jsonl", "reference_bot.urdf"):
-                        source = Path(directory) / name
-                        if source.exists():
-                            shutil.copy2(source, output / name)
+                export_artifacts(directory, args.out)
+    except RunInterrupted:
+        raise SystemExit(143)
     except Exception:
         if live and args.live_hold_seconds:
             # Physics and ROS have already been stopped by run's finally.
@@ -1109,6 +1116,7 @@ def main():
             time.sleep(args.live_hold_seconds)
         raise
     finally:
+        signal.signal(signal.SIGTERM, previous_term)
         if server:
             server.shutdown()
             server.server_close()
