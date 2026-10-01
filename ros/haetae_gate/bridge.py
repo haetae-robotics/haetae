@@ -27,7 +27,8 @@ def reject_expired_actuation(bridge, reason, now_ms):
     arm = step.get("arm")
     if (step["cmd"]["linear"] != 0 or step["cmd"]["angular"] != 0 or
             (arm is not None and arm != "cancel") or
-            step.get("status", {}).get("armed") != []):
+            step.get("status", {}).get("armed") != [] or
+            "active" not in step.get("status", {}) or step["status"]["active"] is not None):
         raise BridgeFailure("expiry rejection did not stop and disarm the engine")
     return step
 
