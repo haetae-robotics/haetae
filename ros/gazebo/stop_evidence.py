@@ -29,3 +29,12 @@ def person_stop_observed(log_path, reports, zeros, since_ms):
     """Require both a person verdict and a zero command after its world sample."""
     trigger = person_stop_report(log_path, reports, since_ms)
     return trigger is not None and any(wall >= trigger["wall"] for wall, _ in list(zeros))
+def world_expiry_stop_observed(states, outcomes, since):
+    """Accept either engine-age revocation or a timely response-boundary reject."""
+    if any(t >= since and row.get("stop") == "stale_world" for t, row in states):
+        return "stale_world"
+    if (any(t >= since and row.get("stop") == "denied" and not row.get("armed")
+            for t, row in states) and any(t >= since and row.get("rejected", {}).get("error") ==
+                "stale actuation response: world expired" for t, row in outcomes)):
+        return "world_expired_at_response"
+    return None

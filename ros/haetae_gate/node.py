@@ -20,7 +20,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String, UInt64
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from bridge import Bridge, BridgeFailure, StaleActuation, require_fresh_actuation, lease_renewable
+from bridge import (Bridge, BridgeFailure, StaleActuation, ExpiredActuation,
+                    require_fresh_actuation, lease_renewable, reject_expired_actuation)
 from signing import Signer
 from proposals import InvalidProposal, base_action, arm_action
 
@@ -261,6 +262,16 @@ class HaetaeGate(Node):
                 # Use the request's clock, never restamp a delayed response.
                 self.heartbeat_pub.publish(UInt64(data=started_ros_ms))
             self._publish(step)
+        except ExpiredActuation as exc:
+            # Expiry at the response boundary is a normal loss of authority.
+            # Stop before any further IPC; reject clears engine goals/arming.
+            # Keep watchdogs alive, but recovery needs a new explicit stop.
+            self._publish_zero()
+            try:
+                self._cancel_arm()
+                self._publish(reject_expired_actuation(self.bridge, exc, self._now()))
+            except Exception as bridge_exc:
+                self._abort(bridge_exc)
         except InvalidProposal as exc:
             try:
                 self.get_logger().warning("Rejected malformed proposal: " + str(exc))

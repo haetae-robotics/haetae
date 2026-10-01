@@ -177,7 +177,7 @@ The scenario provisioner and physics process remain trusted root processes.
 `role-permissions.json` records denied DDS writers/action clients and matched
 authorized writers. The gateway's legitimate controller/heartbeat authority is
 still trusted: a compromised gateway can actuate, even though it cannot forge
-perception inputs. Gazebo Transport is outside the ROS ACL. See the
+perception inputs. Gazebo Transport is outside the ROS ACL; the secured container adds a kernel network boundary for non-root roles. See the
 [Fast DDS transport options](https://fast-dds.docs.eprosima.com/en/2.14.x/fastdds/env_vars/env_vars.html#fastdds-builtin-transports).
 
 The page also shows an exact signed-command replay and a changed signed world
@@ -249,15 +249,15 @@ The world publisher trusts Gazebo odometry and joint states, adds the model's
 (5, 5) spawn offset to odometry, and uses actual Gazebo lidar ranges for
 occupancy. There is no physical perception sensor, noise model, adversarial
 real-world perception validation, SROS2
-permission test on physical ROSbot XL hardware, or isolation of Gazebo
-Transport from an attacker. The browser demo and Python kinematic fixture remain quicker
+permission test on physical ROSbot XL hardware, or remote/host Gazebo
+Transport isolation. The secured container isolates its non-root roles only. The browser demo and Python kinematic fixture remain quicker
 ways to explore policy behavior; this reference exercises actual ROS
 controllers and Gazebo physics. Only physical hardware can establish a real
 motor's stop time and distance or a real arm's cancel behavior.
 
 ## Isolated role implementation
 
-`--secure-graph` requires the root-run Linux test container; it is not a native
+`--secure-graph` requires the root-run Linux test container with `--cap-add=NET_ADMIN`, `iptables`, `iproute2` and `python3-seccomp`; it is not a native
 host account installer. A trusted test provisioner creates private principal
 folders and launches each child with its UID/GID and no supplementary groups.
 `source_node.py` signs world/fault or VLA exclusively. The VLA signer validates
@@ -282,7 +282,7 @@ cylinder at `(3,7)` proves the scan renderer sees a known calibration target.
 All non-calibration returns in the bay become conservative person obstacles;
 this single torso-height plane is **not** semantic human recognition. It cannot
 establish safety for children below the scan plane, crawling, complex occlusion,
-reflectivity failures or unvalidated clutter. Gazebo geometry/Transport and the
+reflectivity failures or unvalidated clutter. The root simulator, geometry, unrestricted host transport processes and the
 calibrated empty-bay assumption remain trusted. Use a validated perception stack
 and appropriate sensors before adapting this reference to a real robot.
 
@@ -316,3 +316,23 @@ The plugin interpolates all body parts on each physics step and caps root motion
 at 0.24 m/s, so delayed transport targets cannot create catch-up jumps. It only
 controls the twelve named person parts; robot control remains independent. Live
 continuity checks pair measured native poses with their own source timestamps.
+
+## Gazebo Transport boundary
+
+The Docker launcher grants NET_ADMIN to the trusted root provisioner to install
+container-local IPv4/IPv6 OUTPUT rules. All non-root traffic is restricted to
+local IPv4 DDS UDP ports for the configured ROS domain (0..231, fewer than 120
+participants). Every role and attack process starts after UID/capability drop,
+with `no_new_privs` and an inherited libseccomp filter that denies external UNIX,
+TCP, IPv6 and packet sockets and io_uring. Gazebo transport is unchanged for the
+trusted root simulator and perception process. The normal ROS path must still
+match and move the simulated robot. Missing support fails startup, without a
+weaker fallback. Do not run this provisioner on the host.
+
+`transport-isolation.json` contains root positive controls, actual Gazebo pose
+request denials, forbidden UDP receiver observations and per-role inherited
+restriction checks. The root pose request must change the real scan and then be
+restored before any movement starts. This is a boundary for the sandboxed
+container roles. Root/host/simulator compromise, process resource exhaustion,
+remote Gazebo services and malicious use of a gateway's legitimate controller
+permission remain outside it. See [security scope](security-release.md).

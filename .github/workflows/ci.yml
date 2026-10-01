@@ -245,7 +245,9 @@ jobs:
     name: Gazebo physics base and arm reference
     needs: build-linux
     runs-on: ubuntu-latest
-    container: ros:jazzy
+    container:
+      image: ros:jazzy
+      options: --cap-add=NET_ADMIN
     env:
       ROS_DOMAIN_ID: 81
       RMW_IMPLEMENTATION: rmw_fastrtps_cpp
@@ -260,7 +262,7 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp xvfb libgl1-mesa-dri \
+          apt-get install -y python3-cryptography python3-seccomp iptables iproute2 ros-jazzy-rmw-fastrtps-cpp xvfb libgl1-mesa-dri \
             ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
             ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
           source /opt/ros/jazzy/setup.bash

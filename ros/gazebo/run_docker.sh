@@ -8,5 +8,5 @@ out=$(cd "$out" && pwd)
 
 docker build -f "$repo/ros/gazebo/Dockerfile" -t haetae-gazebo-live "$repo"
 printf 'Starting the container. Open http://127.0.0.1:8765/ after "Live view:" appears below.\n'
-docker run --init --rm --shm-size=256m -p 127.0.0.1:8765:8765 -p 127.0.0.1:6080:6080 \
+docker run --init --rm --cap-add=NET_ADMIN --shm-size=256m -p 127.0.0.1:8765:8765 -p 127.0.0.1:6080:6080 \
   -v "$out:/out" haetae-gazebo-live
