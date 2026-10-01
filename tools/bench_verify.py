@@ -11,6 +11,7 @@ import sys
 import time
 
 from bench_link import LinkError, SerialLink
+from bench_gate import BenchGate
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "bench"
@@ -153,6 +154,21 @@ def main():
     try:
         subprocess.run(["cargo", "build", "--release", "--locked", "-p", "haetae"], cwd=ROOT, check=True)
         report["gate_sha256"] = hashlib.sha256((ROOT / "target" / "release" / "haetae").read_bytes()).hexdigest()
+        # Process loading may take >50ms while the device is still OFF. This
+        # allowance must end before any positive gate/USB cycle is possible.
+        wrapper = OUT / "slow-start-gate"
+        binary = str(ROOT / "target" / "release" / "haetae")
+        wrapper.write_text("#!/usr/bin/env python3\nimport os,sys,time\ntime.sleep(.12)\n"
+                           + f"os.execv({binary!r}, [{binary!r}] + sys.argv[1:])\n")
+        wrapper.chmod(0o755)
+        gate = BenchGate(wrapper)
+        try:
+            assert gate.bridge.timeout == .050
+            assert gate.cycle()
+            gate.remaining()
+            report["off_only_slow_bootstrap_passed"] = True
+        finally:
+            gate.close()
         for source, target in (("guard_test.cpp", "guard-test"), ("device.cpp", "device")):
             subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror", "-O2",
                             str(ROOT / "hardware" / "native" / source), "-o", str(OUT / target)], check=True)

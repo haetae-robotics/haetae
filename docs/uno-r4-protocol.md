@@ -49,3 +49,8 @@ signed zero arm the Rust source. Only a positive normal, recorder/state-healthy,
 fresh result maps to RUN. A new run intentionally creates a new normal test
 fixture; it is unsuitable for preserving robot incident mode/auth counters
 across restarts. Secured ROS deployment identity/state rules remain separate.
+
+Process/trust/state initialization has a bounded 500ms RPC budget while no
+USB session has been armed. Only world updates and signed zero are sent then.
+A fresh world/zero completes bootstrap, and the IPC timeout becomes 50ms
+before any positive cycle or USB ARM. Slow-start tests verify that separation.

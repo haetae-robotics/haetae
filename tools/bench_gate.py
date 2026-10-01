@@ -67,11 +67,16 @@ class BenchGate:
         self.bridge = Bridge([str(binary), "enforce", "--stdio", "--policy", str(root / "policy.json"),
                               "--state", str(root / "state.json"), "--trust", str(root / "trust.json"),
                               "--root-pubkey", anchor_public, "--sillok", str(root / "sillok.jsonl"),
-                              "--key", keys["log"]], timeout_ms=50)
+                              "--key", keys["log"]], timeout_ms=500)
         self.proposal = 0
         self.last_motion = None
-        self.world(False)
-        self.motion(stop=True)  # Rust's source re-arm latch requires signed zero first.
+        self.world(False)  # Bounded OFF-only process/trust/state bootstrap.
+        self.world(False)  # Fresh receive timestamp after the startup wait.
+        step = self.motion(stop=True)  # Signed zero re-arms the Rust source.
+        if (step["cmd"] != {"linear": 0.0, "angular": 0.0}
+                or step["status"]["mode"] != "normal" or step["status"]["armed"] != ["vla"]):
+            raise BridgeFailure("OFF-only bootstrap did not arm the Rust source")
+        self.bridge.timeout = .050  # Every operational request retains the 50ms bound.
 
     def signed(self, envelope):
         return self.bridge.request({"t": now_ms(), "k": "signed", "data": json.dumps(envelope)})
