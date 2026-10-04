@@ -19,7 +19,9 @@ def main():
     if role == "gate":
         forbidden = ["/haetae_input/world", "/haetae_input/fault",
                      "/haetae_gate/signed/world", "/haetae_gate/signed/fault"]
-        allowed = node.create_publisher(TwistStamped, "/diff_drive_base_controller/cmd_vel", 1)
+        # An authorized diagnostic route proves DDS matching without adding
+        # a second live actuator writer and correctly tripping the Hold latch.
+        allowed = node.create_publisher(String, "/haetae_gate/state", 1)
     elif role in ("vla", "proposal"):
         forbidden = ["/haetae_input/world", "/haetae_input/fault", "/haetae_gate/signed/world",
                      "/haetae_gate/signed/fault", "/haetae_gate/heartbeat",

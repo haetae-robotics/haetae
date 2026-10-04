@@ -247,7 +247,7 @@ app.applyPolicy = (text) => {
   if (err) { app.toast(`정책이 거부되었습니다: ${err}`); return false; }
   let g;
   try { g = new Gate(text); } catch (e) { app.toast(e.message); return false; }
-  if (app.missionGate) g.raise(app.missionGate.mode);
+  if (app.missionGate && app.missionGate.mode !== 'normal') g.raise(app.missionGate.mode);
   app.missionGate?.free();
   app.missionGate = g;
   app.policyObj = JSON.parse(text);

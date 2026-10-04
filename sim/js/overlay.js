@@ -6,7 +6,7 @@
 // re-derives a verdict. A seal element can only be built from a Decision.
 
 import { VERDICT_UI, verdictIcon, sourceName, zoneName, kindOf, capShort, actionTarget } from './copy.js';
-import { num, MODE_KO, MODES } from './explain.js';
+import { num, pt, MODE_KO, MODES } from './explain.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -815,9 +815,9 @@ export class Overlay {
   }
 }
 
-function slipAction(a) {
+export function slipAction(a) {
   if (!a) return '?';
-  const p = (q) => `(${num(q.x)}, ${num(q.y)})`;
+  const p = pt;
   switch (a.type) {
     case 'move_to': return `이동 ${p(a.goal)}`;
     case 'grasp': return `집기 ${({ knife: '칼', cup: '컵', toy: '장난감' })[a.object] ?? a.object} ${p(a.at)}`;

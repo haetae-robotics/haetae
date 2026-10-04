@@ -76,6 +76,11 @@ class BenchGate:
         if (step["cmd"] != {"linear": 0.0, "angular": 0.0}
                 or step["status"]["mode"] != "normal" or step["status"]["armed"] != ["vla"]):
             raise BridgeFailure("OFF-only bootstrap did not arm the Rust source")
+        # Zero responses precede their durable commit. An OFF-only tick is a
+        # barrier for that bootstrap checkpoint before starting positive cycles.
+        barrier = self.bridge.request({"k": "tick", "t": now_ms()})
+        if barrier["cmd"] != {"linear": 0.0, "angular": 0.0} or barrier["status"]["armed"] != ["vla"]:
+            raise BridgeFailure("OFF-only checkpoint barrier lost rearm")
         self.bridge.timeout = .050  # Every operational request retains the 50ms bound.
 
     def signed(self, envelope):

@@ -1,8 +1,9 @@
 import json
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 import unittest
-from artifact_export import export_artifacts
+from artifact_export import export_artifacts, final_export
 
 
 class ExportTest(unittest.TestCase):
@@ -22,3 +23,10 @@ class ExportTest(unittest.TestCase):
             (root / 'verification-report.json').write_text('{"status":"passed"}')
             export_artifacts(root, output)
             self.assertEqual(json.loads((output / 'verification-report.json').read_text())['status'], 'passed')
+
+    def test_final_export_preserves_existing_failure_but_rejects_success(self):
+        with patch('artifact_export.export_artifacts', side_effect=ValueError('unsafe diagnostic')):
+            with patch('artifact_export.sys.stderr'):
+                self.assertFalse(final_export('synthetic', 'synthetic', prior_failure=True))
+            with self.assertRaises(ValueError):
+                final_export('synthetic', 'synthetic')

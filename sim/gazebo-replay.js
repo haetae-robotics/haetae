@@ -37,6 +37,10 @@ try {
   const jointName = result.arm_joints?.[0] ?? worlds[0].payload.robot.joints?.[0]?.name;
   const measuredJoint = (world) => world.robot.joints.find((j) => j.name === jointName)?.position;
   const armTarget = armAllowed.payload.action.points.at(-1).positions[0];
+  const startX = worlds[0].payload.robot.pose.x;
+  const endX = Math.max(...worlds.map((row) => row.payload.robot.pose.x));
+  const observedSpeedMax = Math.max(.001, ...worlds.map((row) => Math.abs(row.payload.robot.twist.linear)));
+
   const scenes = {
     base: {
       start: baseAllowed.ts_ms - 60, end: baseStopped.ts_ms + 110, rate: 0.2,
@@ -79,14 +83,14 @@ try {
     ctx.fillStyle = '#f8fbf8';
     ctx.fillRect(0, 0, w, h);
     const roadY = 155;
-    const xFrom = 5.0, xTo = 5.18;
+    const xFrom = startX, xTo = Math.max(startX + .01, endX);
     const mapX = (x) => 88 + Math.max(0, Math.min(1, (x - xFrom) / (xTo - xFrom))) * (w - 176);
     ctx.strokeStyle = '#d8e1db'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(58, roadY); ctx.lineTo(w - 58, roadY); ctx.stroke();
     ctx.font = '15px system-ui, sans-serif';
     ctx.fillStyle = '#637571';
     ctx.fillText('Gazebo 바퀴 위치 · x축 확대', 32, 38);
-    ctx.fillText('출발 5.000 m', 58, roadY + 62);
+    ctx.fillText(`출발 ${fmt(startX)} m`, 58, roadY + 62);
 
     const human = world.humans[0];
     if (human) {
@@ -115,7 +119,7 @@ try {
     ctx.fillRect(215, 253, w - 280, 25);
     const speed = Math.abs(world.robot.twist.linear);
     ctx.fillStyle = at >= baseRevoked.ts_ms && selected === 'base' ? '#bd543b' : '#2b8068';
-    ctx.fillRect(215, 253, Math.min(1, speed / 0.2) * (w - 280), 25);
+    ctx.fillRect(215, 253, Math.min(1, speed / observedSpeedMax) * (w - 280), 25);
     ctx.fillStyle = '#29453f';
     ctx.fillText(`${fmt(speed)} m/s`, 215, 307);
 

@@ -38,7 +38,7 @@ from run_scenario import fixture, public  # noqa: E402
 from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
-from artifact_export import export_artifacts
+from artifact_export import export_artifacts, final_export
 from public_report import report as public_report
 from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
@@ -1129,7 +1129,7 @@ def main():
                                "error_type": type(exc).__name__})
                 raise
             finally:
-                export_artifacts(directory, args.out)
+                final_export(directory, args.out, prior_failure=sys.exc_info()[0] is not None)
     except RunInterrupted:
         raise SystemExit(143)
     except Exception:

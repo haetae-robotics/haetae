@@ -338,8 +338,8 @@ permission remain outside it. See [security scope](security-release.md).
 
 ## Repeated compound faults
 
-Add `--compound-repeat 6` to a secured headless run. The viewer runs three
-iterations; CI runs six (two cycles). Each cycle requests 40, 80 and 100
+Add `--compound-repeat 6` to a secured headless run. The viewer and CI each run six
+iterations (two cycles). Each cycle requests 40, 80 and 100
 positive velocity proposals per second while dropping actual lidar delivery
 and SIGSTOP-delaying the world signer for 60, 140 and 220 ms respectively.
 Every iteration requires approved measured motion and delivered signed

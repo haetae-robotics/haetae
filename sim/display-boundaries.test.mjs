@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as THREE from './vendor/three/three.module.js';
 import { actionText, actionTarget } from './js/explain.js';
+import { slipAction } from './js/overlay.js';
 
 const moduleUrl = (source) => 'data:text/javascript,' + encodeURIComponent(source);
 const geometryUrl = moduleUrl(readFileSync(new URL('./js/geom3d.js', import.meta.url), 'utf8')
@@ -44,6 +45,7 @@ test('malformed action captions remain readable and cannot yield invalid targets
   for (const action of [{type: 'move_to'}, {type: 'grasp', at: null},
                        {type: 'place', at: {x: null, y: 3}}]) {
     assert.doesNotThrow(() => actionText(action));
+    assert.doesNotThrow(() => slipAction(action));
     assert.equal(actionTarget(action), null);
   }
 });

@@ -1,5 +1,6 @@
 """Checkpoint diagnostic artifacts without copying credentials or raw inputs."""
 from pathlib import Path
+import sys
 from safe_evidence import checkpoint_evidence
 
 PUBLIC_FILES = (
@@ -26,3 +27,15 @@ def export_artifacts(root, output):
             checkpoint_evidence(root, source, output / name)
         except FileNotFoundError:
             continue
+
+
+def final_export(root, output, prior_failure=False):
+    """Preserve the primary failure while still attempting bounded diagnostics."""
+    try:
+        export_artifacts(root, output)
+    except (OSError, ValueError) as exc:
+        if not prior_failure:
+            raise
+        print('Final artifact export rejected: ' + str(exc), file=sys.stderr)
+        return False
+    return True
