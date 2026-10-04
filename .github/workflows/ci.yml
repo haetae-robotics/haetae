@@ -42,6 +42,15 @@ jobs:
             bench_tmp=$(mktemp -d /dev/shm/haetae-bench.XXXXXX)
             trap 'rm -rf "$bench_tmp"' EXIT
             export TMPDIR="$bench_tmp"
+          elif [ "$RUNNER_OS" = macOS ]; then
+            # Format only the new RAM-backed device returned by this attach.
+            bench_ram=$(hdiutil attach -nomount ram://262144 | tr -d '[:space:]')
+            [[ "$bench_ram" =~ ^/dev/disk[0-9]+$ ]]
+            trap 'hdiutil detach "$bench_ram"' EXIT
+            bench_label="HaetaeBench${GITHUB_RUN_ID}${GITHUB_RUN_ATTEMPT}"
+            diskutil eraseVolume HFS+ "$bench_label" "$bench_ram"
+            bench_tmp=$(mktemp -d "/Volumes/$bench_label/haetae-bench.XXXXXX")
+            export TMPDIR="$bench_tmp"
           fi
           ./haetae-bench verify
       - uses: actions/upload-artifact@v4
