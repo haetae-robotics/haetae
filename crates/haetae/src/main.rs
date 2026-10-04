@@ -9,7 +9,7 @@ use haetae::runtime::{Inbound, Outcome, RecorderConfig, Runtime, RuntimeConfig};
 use haetae::sillok::{self, Keypair, VerifyReport};
 use haetae::{ActionKind, ActionProposal, Mode, Policy, Source, Verdict, WorldSnapshot};
 use haetae_enforce::auth::{self, AuthVerifier, SignedInput};
-use haetae_enforce::{ArmOutput, Enforcer, EnforcerConfig};
+use haetae_enforce::{fault, ArmOutput, Enforcer, EnforcerConfig};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -368,6 +368,10 @@ enum EnforceLine {
         t: u64,
         reason: String,
     },
+    /// Trusted local adapter may raise authority to Hold; never lower it.
+    Hold {
+        t: u64,
+    },
 }
 
 impl EnforceLine {
@@ -379,7 +383,8 @@ impl EnforceLine {
             | Self::Twist { t, .. }
             | Self::Tick { t }
             | Self::Signed { t, .. }
-            | Self::Reject { t, .. } => *t,
+            | Self::Reject { t, .. }
+            | Self::Hold { t } => *t,
         }
     }
 }
@@ -431,6 +436,7 @@ fn enforce_stdio(
                         EnforceLine::Signed { .. }
                             | EnforceLine::Tick { .. }
                             | EnforceLine::Reject { .. }
+                            | EnforceLine::Hold { .. }
                     )
                 {
                     gate.reject(
@@ -441,6 +447,9 @@ fn enforce_stdio(
                 } else {
                     match msg {
                         EnforceLine::Tick { .. } => gate.tick(t),
+                        EnforceLine::Hold { .. } => {
+                            gate.handle(fault("gateway-authority-violation", Mode::Hold, t), t)
+                        }
                         EnforceLine::Reject { reason, .. } => gate.reject(reason, &line, t),
                         EnforceLine::Signed { data, .. } => match &mut verifier {
                             Some(v) => match v.verify(data.as_bytes()) {

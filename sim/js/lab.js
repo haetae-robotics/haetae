@@ -415,12 +415,13 @@ export class Lab {
       if (app.applyPolicy(text)) {
         try {
           const g = new Gate(text);
+          if (this.gate && this.gate.mode !== 'normal') g.raise(this.gate.mode);
           this.gate?.free();
           this.gate = g;
         } catch (e) { app.toast(e.message); }
         this.syncModeUi();
         this.validatePolicy();
-        this.app.announce('정책을 적용했습니다. 게이트를 새로 만들었습니다.');
+        this.app.announce('정책을 적용했습니다. 현재 모드를 유지합니다.');
       }
     });
     $('lab-revert').addEventListener('click', () => { ed.value = app.defaultPolicyText; this.validatePolicy(); });

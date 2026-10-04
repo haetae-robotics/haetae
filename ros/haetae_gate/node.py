@@ -76,6 +76,7 @@ class HaetaeGate(Node):
         self.arm_client = ActionClient(self, FollowJointTrajectory, param("arm_action"))
         self.arm_goal = None
         self.arm_goal_future = None
+        self.arm_goal_deadline = None
         self.arm_result_future = None
         self.arm_cancel_future = None
         self.arm_cancel_deadline = None
@@ -153,6 +154,7 @@ class HaetaeGate(Node):
             p.time_from_start.nanosec *= 1_000_000
             goal.trajectory.points.append(p)
         self.cancel_requested = False
+        self.arm_goal_deadline = time.monotonic() + 0.25
         self.arm_goal_future = self.arm_client.send_goal_async(goal)
         self.arm_goal_future.add_done_callback(self._on_arm_goal)
 
@@ -160,6 +162,11 @@ class HaetaeGate(Node):
         try:
             self.arm_goal = future.result()
             self.arm_goal_future = None
+            self.arm_goal_deadline = None
+            if self.failed:
+                if self.arm_goal.accepted:
+                    self.arm_goal.cancel_goal_async()
+                return
             if not self.arm_goal.accepted:
                 raise BridgeFailure("arm goal rejected")
             self.arm_result_future = self.arm_goal.get_result_async()
@@ -179,6 +186,7 @@ class HaetaeGate(Node):
             self.arm_goal = None
             self.arm_result_future = None
             self.arm_cancel_deadline = None
+            self.cancel_requested = False
         except Exception as exc:
             self._abort(exc)
 
@@ -192,9 +200,12 @@ class HaetaeGate(Node):
             self._abort(exc)
 
     def _cancel_arm(self):
+        if self.arm_goal is None and self.arm_goal_future is None:
+            return
         self.cancel_requested = True
-        if self.arm_goal is not None and self.arm_cancel_future is None:
+        if self.arm_cancel_deadline is None:
             self.arm_cancel_deadline = time.monotonic() + 0.25
+        if self.arm_goal is not None and self.arm_cancel_future is None:
             self.arm_cancel_future = self.arm_goal.cancel_goal_async()
             self.arm_cancel_future.add_done_callback(self._on_arm_cancel)
 
@@ -257,11 +268,12 @@ class HaetaeGate(Node):
             require_fresh_actuation(
                 step, elapsed_ms, now_ros_ms,
                 self.world_max_age_ms, self.max_actuation_response_ms)
-            if self.heartbeat_pub and lease_renewable(step, elapsed_ms,
-                    self.world_max_age_ms, self.max_actuation_response_ms):
+            self._publish(step)
+            if (self.heartbeat_pub and not self.cancel_requested and not self.failed
+                    and lease_renewable(step, elapsed_ms,
+                    self.world_max_age_ms, self.max_actuation_response_ms)):
                 # Use the request's clock, never restamp a delayed response.
                 self.heartbeat_pub.publish(UInt64(data=started_ros_ms))
-            self._publish(step)
         except ExpiredActuation as exc:
             # Expiry at the response boundary is a normal loss of authority.
             # Stop before any further IPC; reject clears engine goals/arming.
@@ -312,14 +324,15 @@ class HaetaeGate(Node):
 
     def _tick(self):
         def request():
-            if self.arm_cancel_deadline is not None and time.monotonic() > self.arm_cancel_deadline:
+            if self.arm_goal_deadline is not None and time.monotonic() >= self.arm_goal_deadline:
+                raise BridgeFailure("arm goal acceptance did not complete in 250 ms")
+            if self.arm_cancel_deadline is not None and time.monotonic() >= self.arm_cancel_deadline:
                 raise BridgeFailure("arm cancellation did not complete in 250 ms")
-            if self.count_publishers("/cmd_vel") > 1:
+            if self.count_publishers(self.command_pub.topic_name) > 1:
                 if self.signer:
                     return self._send("fault", {"code": "rogue-cmd-vel-publisher",
                         "timestamp_ms": self._now(), "raise_to": "hold"})
-                return self.bridge.request({"k": "reject", "t": self._now(),
-                                            "reason": "rogue-cmd-vel-publisher"})
+                return self.bridge.request({"k": "hold", "t": self._now()})
             return self.bridge.request({"k": "tick", "t": self._now()})
         self._receive(request)
 

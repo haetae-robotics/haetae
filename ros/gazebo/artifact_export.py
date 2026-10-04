@@ -1,8 +1,9 @@
 """Checkpoint diagnostic artifacts without copying credentials or raw inputs."""
-import os
 from pathlib import Path
-import shutil
-import tempfile
+import json
+import sys
+from safe_evidence import checkpoint_evidence, read_evidence_text, write_checkpoint
+from public_report import report
 
 PUBLIC_FILES = (
     'result.json', 'error.json', 'verification-report.json', 'transport-isolation.json',
@@ -17,21 +18,47 @@ PUBLIC_FILES = (
 def export_artifacts(root, output):
     if output is None:
         return
-    root, output = Path(root), Path(output).resolve()
+    root, output = Path(root).absolute(), Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     names = [Path(name) for name in PUBLIC_FILES]
     names += [Path('arm-' + case) / name for case in ('kill', 'stall', 'delay')
               for name in ('result.json', 'gate.log', 'sillok.jsonl')]
+    rejected = []
     for name in names:
         source = root / name
-        if not source.is_file():
-            continue
-        target = output / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as temporary:
-            checkpoint = Path(temporary.name)
         try:
-            shutil.copy2(source, checkpoint)
-            os.replace(checkpoint, target)
-        finally:
-            checkpoint.unlink(missing_ok=True)
+            checkpoint_evidence(root, source, output / name)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            rejected.append((name, exc))
+    if rejected:
+        raise ValueError('Artifact export rejected: ' + ', '.join(str(name) for name, _ in rejected)) from rejected[0][1]
+
+
+def final_export(root, output, prior_failure=False):
+    """Preserve the primary failure while still attempting bounded diagnostics."""
+    try:
+        export_artifacts(root, output)
+    except (OSError, ValueError) as exc:
+        # A final collection failure must not leave a previously published
+        # passing report. Use only bounded public metadata for its identity.
+        if output is not None:
+            try:
+                output = Path(output).resolve()
+                try:
+                    previous = json.loads(read_evidence_text(output, 'verification-report.json'))
+                except (OSError, ValueError):
+                    previous = {}
+                previous = previous if isinstance(previous, dict) else {}
+                failed = report(revision=previous.get('source_revision'),
+                                run_id=previous.get('run_id'), failed=True)
+                write_checkpoint(output / 'verification-report.json',
+                                 json.dumps(failed, ensure_ascii=False).encode())
+            except (OSError, ValueError) as publication_error:
+                print('Failed-report publication rejected: ' + str(publication_error), file=sys.stderr)
+        if not prior_failure:
+            raise
+        print('Final artifact export rejected: ' + str(exc), file=sys.stderr)
+        return False
+    return True

@@ -129,7 +129,7 @@ def probe_signed_inputs(root, binary):
 
     try:
         world = {"stamp_ms": 1000, "robot": {"pose": {"x": 5.0, "y": 5.0},
-                                             "yaw": 0.0}, "humans": [], "confidence": 1.0}
+                                             "yaw": 0.0, "twist": {"linear": 0.0, "angular": 0.0}}, "humans": [], "confidence": 1.0}
         send(signer.sign("world", world), 1000)
         send(signer.sign("vla", {"id": 1, "source": "vla", "timestamp_ms": 1000,
                                  "action": {"type": "stop"}}), 1000)

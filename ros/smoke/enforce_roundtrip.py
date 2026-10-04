@@ -92,7 +92,7 @@ def run(binary, output_stamped=True):
 
             def world():
                 stamp = test.get_clock().now().nanoseconds // 1_000_000
-                payload = {"stamp_ms": stamp, "robot": {"pose": {"x": 5.0, "y": 5.0}, "yaw": 0.0},
+                payload = {"stamp_ms": stamp, "robot": {"pose": {"x": 5.0, "y": 5.0}, "yaw": 0.0, "twist": {"linear": 0.0, "angular": 0.0}},
                            "humans": people, "confidence": 1.0}
                 world_pub.publish(String(data=json.dumps(payload)))
 

@@ -57,12 +57,13 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
     for name, title in (("disconnect", "라이다 연결 끊김 정지"), ("coverage", "라이다 검증 표적 손실 정지")):
         row = mapping(mapping(result.get("sensor_faults")).get(name))
         check("sensor_" + name, title, bool(row), row.get("ok") is True and
-              mapping(row.get("unknown")).get("healthy") is False and row.get("recovery_did_not_rearm") is True and
+              mapping(row.get("unknown")).get("healthy") is False and row.get("recovery_did_not_rearm") is True and row.get("post_recovery_proposal_rejected_by_engine") is True and
               within(row.get("fault_to_zero_wall_ms"), 400), {"zero_wall_ms": row.get("fault_to_zero_wall_ms")})
     for name in ("kill", "stall", "delay"):
         row = mapping(mapping(result.get("arm_faults")).get(name))
         check("arm_" + name, "팔 독립 정지 · " + name, bool(row), row.get("ok") is True and
-              row.get("old_goal_did_not_resume") is True and within(row.get("fault_to_hold_wall_ms"), 400) and
+              row.get("old_goal_did_not_resume") is True and within(row.get("pre_fault_lease_age_wall_ms"), 100) and
+              within(row.get("pre_fault_lease_age_sim_ms"), 150) and within(row.get("fault_to_hold_wall_ms"), 400) and
               within(row.get("fault_to_hold_sim_ms"), 320) and within(row.get("post_stop_drift_rad"), .02),
               {"hold_wall_ms": row.get("fault_to_hold_wall_ms")})
     compound = mapping(result.get("compound_faults"))
@@ -70,8 +71,8 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
     rows = [mapping(row) for row in rows] if isinstance(rows, list) else []
     rates = {row.get("proposal_hz_requested") for row in rows if type(row.get("proposal_hz_requested")) is int}
     check("compound", "복합 장애 반복 · 요청 압력 + 센서 끊김 + 처리 지연", bool(compound),
-          compound.get("ok") is True and compound.get("status") == "complete" and len(rows) >= 3 and
-          {40, 80, 100}.issubset(rates) and all(row.get("ok") is True and row.get("moving_positive_control") is True and
+          compound.get("ok") is True and compound.get("status") == "complete" and len(rows) >= 6 and
+          all(sum(row.get("proposal_hz_requested") == rate for row in rows) >= 2 for rate in (40, 80, 100)) and all(row.get("ok") is True and row.get("moving_positive_control") is True and
               row.get("signer_stop_observed") is True and row.get("recovery_did_not_rearm") is True and
               row.get("post_recovery_proposal_rejected_by_engine") is True and
               number(row.get("engine_rejections_after_zero")) is not None and row["engine_rejections_after_zero"] >= 10 and

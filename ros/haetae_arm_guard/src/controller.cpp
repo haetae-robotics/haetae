@@ -96,12 +96,15 @@ public:
     guard_state_ = get_node()->create_publisher<std_msgs::msg::String>(
       "~/guard_state", rclcpp::QoS(1).transient_local());
     state_timer_ = get_node()->create_wall_timer(std::chrono::milliseconds(50), [this]() {
+        const auto lease = *lease_.readFromNonRT();
         std_msgs::msg::String msg;
         msg.data = std::string("{\"holding\":") + (holding_.load() ? "true" : "false") +
           ",\"stamp_ms\":" + std::to_string(updated_ms_.load()) +
           ",\"cutoff_ms\":" + std::to_string(cutoff_ms_.load()) + "}";
         msg.data.pop_back();
-        msg.data += ",\"stop_wall_ns\":" + std::to_string(stop_wall_ns_.load()) + "}";
+        msg.data += ",\"stop_wall_ns\":" + std::to_string(stop_wall_ns_.load()) +
+          ",\"lease_sent_ms\":" + std::to_string(lease.sent_ms) +
+          ",\"lease_received_wall_ns\":" + std::to_string(lease.received_ns) + "}";
         guard_state_->publish(msg);
       });
     return Return::SUCCESS;

@@ -12,7 +12,7 @@ try {
   const rows = (await logResponse.text()).trim().split('\n').map((line) => JSON.parse(line));
   const result = await resultResponse.json();
   if (!result.ok || !result.sillok_incident_snapshot_fully_sealed ||
-      rows.at(-1)?.kind !== 'seal') throw new Error('완료된 Gazebo 검증 기록이 아닙니다.');
+      rows.at(-1)?.kind !== 'seal') throw new Error('완료된 기록의 형식이 아닙니다. 서명 검증은 CLI로 실행하세요.');
 
   const worlds = rows.filter((row) => row.kind === 'world');
   const event = (predicate, name) => {
@@ -34,11 +34,18 @@ try {
   const armRevoked = event((r) => r.kind === 'revoke' &&
     r.payload.reason === 'arm:world-changed', '팔 취소');
 
+  const jointName = result.arm_joints?.[0] ?? worlds[0].payload.robot.joints?.[0]?.name;
+  const measuredJoint = (world) => world.robot.joints.find((j) => j.name === jointName)?.position;
+  const armTarget = armAllowed.payload.action.points.at(-1).positions[0];
+  const startX = worlds[0].payload.robot.pose.x;
+  const endX = Math.max(...worlds.map((row) => row.payload.robot.pose.x));
+  const observedSpeedMax = Math.max(.001, ...worlds.map((row) => Math.abs(row.payload.robot.twist?.linear ?? 0)));
+
   const scenes = {
     base: {
       start: baseAllowed.ts_ms - 60, end: baseStopped.ts_ms + 110, rate: 0.2,
       steps: [
-        { at: baseAllowed.ts_ms, title: '이동 허용', detail: 'AI가 낸 0.2 m/s 제안을 해태가 통과시켰습니다.' },
+        { at: baseAllowed.ts_ms, title: '이동 허용', detail: `기록의 ${fmt(baseAllowed.payload.action.linear)} m/s 명령을 해태가 통과시켰습니다.` },
         { at: baseRevoked.ts_ms, title: '사람 등장 → 명령 차단', detail: '해태가 이동 허가를 취소하고 ROS에 0속도 명령을 냈습니다.' },
         { at: baseStopped.ts_ms, title: 'Gazebo 바퀴 정지', detail: 'Gazebo가 측정한 바퀴 속도가 0.03 m/s 아래로 떨어졌습니다.' },
       ],
@@ -46,13 +53,13 @@ try {
     'arm-deny': {
       start: armDenied.ts_ms - 70, end: armDenied.ts_ms + 140, rate: 0.075,
       steps: [
-        { at: armDenied.ts_ms, title: '팔 명령 거부', detail: 'AI가 요청한 2.0 rad은 허용 범위 ±1.0 rad 밖이라 실행되지 않았습니다.' },
+        { at: armDenied.ts_ms, title: '팔 명령 거부', detail: '기록의 팔 명령이 관절 위치 정책을 벗어나 실행되지 않았습니다.' },
       ],
     },
     'arm-cancel': {
       start: armAllowed.ts_ms - 40, end: worlds.at(-1).ts_ms, rate: 0.16,
       steps: [
-        { at: armAllowed.ts_ms, title: '팔 이동 허용', detail: '0.12 rad 목표의 짧은 팔 궤적이 ROS 컨트롤러에 전달됐습니다.' },
+        { at: armAllowed.ts_ms, title: '팔 이동 허용', detail: `${jointName}의 ${fmt(armTarget)} rad 목표 궤적이 전달됐습니다.` },
         { at: armRevoked.ts_ms, title: '사람 등장 → 팔 취소', detail: '해태가 실행 중인 팔 동작을 취소했습니다. 관절은 관성으로 조금 더 움직인 뒤 멈춥니다.' },
       ],
     },
@@ -76,14 +83,14 @@ try {
     ctx.fillStyle = '#f8fbf8';
     ctx.fillRect(0, 0, w, h);
     const roadY = 155;
-    const xFrom = 5.0, xTo = 5.18;
+    const xFrom = startX, xTo = Math.max(startX + .01, endX);
     const mapX = (x) => 88 + Math.max(0, Math.min(1, (x - xFrom) / (xTo - xFrom))) * (w - 176);
     ctx.strokeStyle = '#d8e1db'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(58, roadY); ctx.lineTo(w - 58, roadY); ctx.stroke();
     ctx.font = '15px system-ui, sans-serif';
     ctx.fillStyle = '#637571';
     ctx.fillText('Gazebo 바퀴 위치 · x축 확대', 32, 38);
-    ctx.fillText('출발 5.000 m', 58, roadY + 62);
+    ctx.fillText(`출발 ${fmt(startX)} m`, 58, roadY + 62);
 
     const human = world.humans[0];
     if (human) {
@@ -112,17 +119,17 @@ try {
     ctx.fillRect(215, 253, w - 280, 25);
     const speed = Math.abs(world.robot.twist.linear);
     ctx.fillStyle = at >= baseRevoked.ts_ms && selected === 'base' ? '#bd543b' : '#2b8068';
-    ctx.fillRect(215, 253, Math.min(1, speed / 0.2) * (w - 280), 25);
+    ctx.fillRect(215, 253, Math.min(1, speed / observedSpeedMax) * (w - 280), 25);
     ctx.fillStyle = '#29453f';
     ctx.fillText(`${fmt(speed)} m/s`, 215, 307);
 
     ctx.fillStyle = '#637571';
     ctx.fillText('Gazebo 팔 관절', 32, 355);
-    const joint = world.robot.joints.find((j) => j.name === 'shoulder')?.position ?? 0;
+    const joint = measuredJoint(world) ?? 0;
     ctx.fillStyle = '#e6eee9';
     ctx.fillRect(215, 336, w - 280, 20);
     ctx.fillStyle = '#5481a6';
-    ctx.fillRect(215, 336, Math.min(1, Math.abs(joint) / 0.12) * (w - 280), 20);
+    ctx.fillRect(215, 336, Math.min(1, Math.abs(joint) / Math.max(.01, Math.abs(armTarget))) * (w - 280), 20);
     ctx.fillStyle = '#29453f';
     ctx.fillText(`${fmt(joint, 4)} rad`, 215, 384);
   }
@@ -132,7 +139,7 @@ try {
     const world = worldAt(time);
     draw(time, world);
     $('speed').textContent = `${fmt(Math.abs(world.robot.twist.linear))} m/s`;
-    $('joint').textContent = `${fmt(world.robot.joints[0]?.position ?? 0, 4)} rad`;
+    $('joint').textContent = `${fmt(measuredJoint(world) ?? 0, 4)} rad`;
     $('human').textContent = world.humans.length ? '있음' : '없음';
     const current = [...scene.steps].reverse().find((step) => time >= step.at);
     $('status-title').textContent = current?.title ?? 'AI 명령 대기';

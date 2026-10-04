@@ -33,7 +33,7 @@ Coordinates are 2D metres in the robot's map frame. Speeds are m/s.
 - `Gate::judge(&self, &ActionProposal, &WorldSnapshot) -> Decision`
   - `Decision { proposal_id, verdict, fired, action, speed_cap, mode }`
   - `Yun`: allow as proposed. `Bul`: deny, and `action = None`.
-  - `speed_cap` is the limit the executor must apply to **all** motion, arm included. Since W2 it is set on every allowed non-stop decision: the envelope maximum for `Yun`, or lower for `Jeol`.
+  - `speed_cap` is the Cartesian speed limit (m/s) for velocity, move, grasp and place: the envelope maximum for `Yun`, or lower for `Jeol`. Joint trajectories use the arm policy’s joint velocity (rad/s) and acceleration (rad/s²) limits and carry no Cartesian cap. They are denied and cancelled in Caution.
   - `Jeol`: allow within limits tighter than the envelope.
     - For `move_to`, the speed is also clamped in `action`.
     - For `grasp` and `place`, `action` is unchanged and `speed_cap` alone carries the limit.

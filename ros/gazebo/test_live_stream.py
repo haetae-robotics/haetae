@@ -74,6 +74,12 @@ class LiveStreamTest(unittest.TestCase):
         self.assertEqual(received[0]["kind"], "telemetry")
         self.assertEqual(received[0]["x"], 5.01)
 
+    def test_untrusted_host_is_rejected_even_without_origin(self):
+        for endpoint in ("/health", "/viewer-config", "/events"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(HTTPError) as failure:
+                urlopen(Request(self.base + endpoint, headers={"Host": "attacker.invalid"}), timeout=3)
+            self.assertEqual(failure.exception.code, 403)
+
     def test_gui_mode_is_advertised_only_when_enabled(self):
         server = start_server(self.hub, 0, gazebo_gui=True, manual_start=True,
                               attack_probes=True, secured_gazebo=True, step_through=True)

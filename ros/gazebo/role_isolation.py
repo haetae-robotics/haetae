@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 from network_guard import sandboxed
+from safe_evidence import read_evidence, write_checkpoint
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -42,9 +43,12 @@ def fresh_fixture(root):
 
 
 def private_tree(directory, uid):
-    for entry in (directory, *directory.rglob("*")):
-        os.chown(entry, uid, uid)
-        entry.chmod(0o700 if entry.is_dir() else 0o600)
+    # Provision under a root-owned 0700 anchor, handing directories over last.
+    entries = sorted((directory, *directory.rglob("*")), key=lambda p: len(p.parts), reverse=True)
+    for entry in entries:
+        is_directory = entry.is_dir()
+        entry.chmod(0o700 if is_directory else 0o600)
+        os.chown(entry, uid, uid, follow_symlinks=False)
 
 
 class Roles:
@@ -60,16 +64,20 @@ class Roles:
         self.directories = {}
         for role, uid in UIDS.items():
             directory = root / ("principal-" + role)
-            directory.mkdir()
+            directory.mkdir(mode=0o700)
             self.directories[role] = directory
             shutil.copytree(keystore / ("enclaves/haetae/" + ENCLAVES[role]),
                             directory / ("keystore/enclaves/haetae/" + ENCLAVES[role]))
             (directory / "logs").mkdir()
+            (directory / "runtime").mkdir()
             shutil.copy2(root / "trust.json", directory / "trust.json")
             key_roles = ("world", "fault") if role == "world" else ("vla",) if role == "vla" else ("log",) if role == "gate" else ()
             for key in key_roles:
                 shutil.copy2(root / (key + ".key"), directory / (key + ".key"))
             private_tree(directory, uid)
+            # Pin principal entry names; only runtime/log and gate session children are writable.
+            os.chown(directory, 0, 0)
+            directory.chmod(0o711)
         self.configure_gate(root)
         for key in ("world", "fault", "vla", "log"):
             (root / (key + ".key")).unlink()
@@ -82,11 +90,12 @@ class Roles:
 
     def configure_gate(self, fixture_root):
         directory = self.directories["gate"] / fixture_root.name
-        directory.mkdir(exist_ok=True)
+        directory.mkdir(mode=0o700)  # Never reopen a role-controlled existing session.
         for name in ("policy.json", "state.json"):
             shutil.copy2(fixture_root / name, directory / name)
         shutil.copy2(self.root / "trust.json", directory / "trust.json")
-        shutil.copy2(self.directories["gate"] / "log.key", directory / "log.key")
+        write_checkpoint(directory / "log.key", read_evidence(
+            self.root, self.directories["gate"] / "log.key", UIDS["gate"]), mode=0o600)
         params = json.loads((fixture_root / "params.yaml").read_text())
         p = params["haetae_gate"]["ros__parameters"]
         p.update({"signed_inputs_only": True, "keys_json": "{}", "inputs_json": "[]",
@@ -103,15 +112,23 @@ class Roles:
 
     def source_params(self, role):
         directory = self.directories[role]
+        if (directory / "params.yaml").exists():
+            return directory / "params.yaml"
         keys = ("world", "fault") if role == "world" else ("vla",)
         params = {"haetae_source_signer": {"ros__parameters": {
             "use_sim_time": True, "role": role, "trust_path": str(directory / "trust.json"),
-            "counter_path": str(directory / "counters.json"),
+            "counter_path": str(directory / "runtime/counters.json"),
             "keys_json": json.dumps({key: str(directory / (key + ".key")) for key in keys}),
             "arm_joints_json": json.dumps(self.arm_joints)}}}
         (directory / "params.yaml").write_text(json.dumps(params))
-        private_tree(directory, UIDS[role])
+        os.chown(directory / "params.yaml", UIDS[role], UIDS[role])
+        (directory / "params.yaml").chmod(0o600)
         return directory / "params.yaml"
+
+    def counter(self, role):
+        from safe_evidence import read_evidence_text
+        path = self.directories[role] / "runtime/counters.json"
+        return json.loads(read_evidence_text(self.root, path, UIDS[role]))["counters"][role]
 
     def probe_read_boundaries(self):
         forbidden = [str(self.directories["world"] / key) for key in (

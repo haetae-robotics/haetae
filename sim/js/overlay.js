@@ -6,7 +6,7 @@
 // re-derives a verdict. A seal element can only be built from a Decision.
 
 import { VERDICT_UI, verdictIcon, sourceName, zoneName, kindOf, capShort, actionTarget } from './copy.js';
-import { num, MODE_KO, MODES } from './explain.js';
+import { num, pt, MODE_KO, MODES } from './explain.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -490,7 +490,7 @@ export class Overlay {
     s.append(act);
     if (proposal.action?.speed != null) {
       const sp = el('div', 'slip-speed');
-      sp.innerHTML = `<span class="req">${num(proposal.action.speed)}</span> m/s`;
+      sp.append(el('span', 'req', num(proposal.action.speed)), document.createTextNode(' m/s'));
       s.append(sp);
       this.slipSpeed = sp;
     } else {
@@ -594,7 +594,8 @@ export class Overlay {
   slipSpeedDiff(executed) {
     if (!this.slipSpeed) return;
     const req = this.slipSpeed.querySelector('.req')?.textContent;
-    this.slipSpeed.innerHTML = `<s>${req}</s> → <b>${num(executed)}</b> m/s`;
+    this.slipSpeed.replaceChildren(el('s', '', req ?? '—'), document.createTextNode(' → '),
+      el('b', '', num(executed)), document.createTextNode(' m/s'));
   }
 
   slipTapeAlarm() {
@@ -814,9 +815,9 @@ export class Overlay {
   }
 }
 
-function slipAction(a) {
+export function slipAction(a) {
   if (!a) return '?';
-  const p = (q) => `(${num(q.x)}, ${num(q.y)})`;
+  const p = pt;
   switch (a.type) {
     case 'move_to': return `이동 ${p(a.goal)}`;
     case 'grasp': return `집기 ${({ knife: '칼', cup: '컵', toy: '장난감' })[a.object] ?? a.object} ${p(a.at)}`;

@@ -28,8 +28,8 @@ def main():
         subprocess.run([sys.executable, str(ROOT / "tools" / "bench_verify.py")], check=True)
     elif args.command == "run":
         from bench_host import run
-        if not args.binary.is_file():
-            raise RuntimeError("first run cargo build --release --locked -p haetae")
+        from bench_provenance import require_verified_binary
+        require_verified_binary(ROOT, args.binary)
         run(args.binary.resolve(), args.port, args.scenario, args.seconds, args.ready_file)
     else:
         import arduino_toolchain as arduino

@@ -32,7 +32,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: python -m pip install cryptography
-      - run: ./haetae-bench verify
+      - run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Native LED guard and signed host scenarios
+        shell: bash
+        run: |
+          # This is an ephemeral software fixture, not a disk durability test.
+          # Keep fsync-heavy signed checkpoints off shared hosted-runner disks.
+          if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+            bench_tmp=$(mktemp -d /dev/shm/haetae-bench.XXXXXX)
+            trap 'rm -rf "$bench_tmp"' EXIT
+            export TMPDIR="$bench_tmp"
+          elif [ "$RUNNER_OS" = macOS ]; then
+            # Format only the new RAM-backed device returned by this attach.
+            bench_ram=$(hdiutil attach -nomount ram://262144 | tr -d '[:space:]')
+            [[ "$bench_ram" =~ ^/dev/disk[0-9]+$ ]]
+            trap 'hdiutil detach "$bench_ram"' EXIT
+            bench_label="HaetaeBench${GITHUB_RUN_ID}${GITHUB_RUN_ATTEMPT}"
+            diskutil eraseVolume HFS+ "$bench_label" "$bench_ram"
+            bench_tmp=$(mktemp -d "/Volumes/$bench_label/haetae-bench.XXXXXX")
+            export TMPDIR="$bench_tmp"
+          fi
+          ./haetae-bench verify
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -84,6 +104,7 @@ jobs:
           VERSION=$(cargo metadata --format-version 1 --locked \
             | python3 -c "import sys,json; print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='wasm-bindgen'))")
           cargo install wasm-bindgen-cli --version "$VERSION" --locked
+      - run: node --test sim/*.test.mjs
       - run: sim/build.sh
       - run: test -s sim/pkg/haetae_wasm_bg.wasm && test -s sim/pkg/haetae_wasm.js
 

@@ -110,7 +110,7 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
     let mut child = spawn("log1.jsonl");
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
-    let world = serde_json::json!({"stamp_ms":1000,"robot":{"pose":{"x":5.0,"y":5.0},"yaw":0.0},"humans":[],"confidence":1.0});
+    let world = serde_json::json!({"stamp_ms":1000,"robot":{"pose":{"x":5.0,"y":5.0},"yaw":0.0,"twist":{"linear":0.0,"angular":0.0}},"humans":[],"confidence":1.0});
     let zero =
         serde_json::json!({"id":1,"source":"vla","timestamp_ms":1000,"action":{"type":"stop"}});
     let move_cmd = serde_json::json!({"id":2,"source":"vla","timestamp_ms":1000,"action":{"type":"velocity","linear":0.5,"angular":0.0,"ttl_ms":200}});
@@ -154,6 +154,40 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
         .as_str()
         .unwrap()
         .contains("replayed"));
+    writeln!(input, "{}", serde_json::json!({"t":1003,"k":"hold"})).unwrap();
+    input.flush().unwrap();
+    let mut held = String::new();
+    output.read_line(&mut held).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&held).unwrap()["status"]["mode"],
+        "hold"
+    );
+    exchange(
+        &mut input,
+        &mut output,
+        1004,
+        "signed",
+        &signed(
+            Role::Vla,
+            3,
+            serde_json::json!({"id":3,"source":"vla","timestamp_ms":1004,"action":{"type":"stop"}}),
+            [4; 32],
+        ),
+    );
+    let denied = exchange(
+        &mut input,
+        &mut output,
+        1005,
+        "signed",
+        &signed(
+            Role::Vla,
+            4,
+            serde_json::json!({"id":4,"source":"vla","timestamp_ms":1005,"action":{"type":"velocity","linear":0.5,"angular":0.0,"ttl_ms":200}}),
+            [4; 32],
+        ),
+    );
+    assert_eq!(denied["cmd"]["linear"], 0.0);
+    assert_eq!(denied["status"]["mode"], "hold");
     child.kill().unwrap();
     child.wait().unwrap();
     let mut child = spawn("log2.jsonl");
@@ -223,7 +257,7 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
     let mut child = spawn("log4.jsonl");
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
-    let fresh_world = serde_json::json!({"stamp_ms":1200,"robot":{"pose":{"x":5.0,"y":5.0},"yaw":0.0},"humans":[],"confidence":1.0});
+    let fresh_world = serde_json::json!({"stamp_ms":1200,"robot":{"pose":{"x":5.0,"y":5.0},"yaw":0.0,"twist":{"linear":0.0,"angular":0.0}},"humans":[],"confidence":1.0});
     exchange(
         &mut input,
         &mut output,
@@ -238,13 +272,13 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
         &mut output,
         1200,
         "signed",
-        &signed(Role::Vla, 3, fresh_zero, [4; 32]),
+        &signed(Role::Vla, 5, fresh_zero, [4; 32]),
     );
     let checkpointed = (0..100).any(|_| {
         let persisted = fs::read(path("state.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .is_some_and(|state| state["counters"]["vla"].as_u64() == Some(3));
+            .is_some_and(|state| state["counters"]["vla"].as_u64() == Some(5));
         if !persisted {
             thread::sleep(Duration::from_millis(10));
         }
@@ -259,7 +293,7 @@ fn authenticated_stdio_refuses_unsigned_and_replayed_motion_then_restart_holds()
         writeln!(
             input,
             "{}",
-            serde_json::json!({"t":1200,"k":"signed","data":signed(Role::Vla, 4, fresh_move, [4; 32])})
+            serde_json::json!({"t":1200,"k":"signed","data":signed(Role::Vla, 6, fresh_move, [4; 32])})
         )?;
         input.flush()
     })();

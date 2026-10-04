@@ -1,9 +1,10 @@
 """Correlate a person-triggered engine stop with measured ROS commands."""
 
 import json
+from safe_evidence import read_evidence_text
 
 
-def person_stop_report(log_path, reports, since_ms):
+def person_stop_report(log_path, reports, since_ms, *, root=None, expected_uid=None):
     """Return the sender's world sample that caused the first person verdict.
 
     World-triggered revocation is recorded in the engine log, but does not
@@ -12,7 +13,7 @@ def person_stop_report(log_path, reports, since_ms):
     """
     samples = {row["stamp_ms"]: row for row in list(reports)}
     last_world = None
-    for line in log_path.read_text().splitlines():
+    for line in read_evidence_text(root or log_path.parent, log_path, expected_uid).splitlines():
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
@@ -25,9 +26,9 @@ def person_stop_report(log_path, reports, since_ms):
     return None
 
 
-def person_stop_observed(log_path, reports, zeros, since_ms):
+def person_stop_observed(log_path, reports, zeros, since_ms, **boundary):
     """Require both a person verdict and a zero command after its world sample."""
-    trigger = person_stop_report(log_path, reports, since_ms)
+    trigger = person_stop_report(log_path, reports, since_ms, **boundary)
     return trigger is not None and any(wall >= trigger["wall"] for wall, _ in list(zeros))
 def world_expiry_stop_observed(states, outcomes, since):
     """Accept either engine-age revocation or a timely response-boundary reject."""

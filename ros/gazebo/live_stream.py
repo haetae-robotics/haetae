@@ -130,7 +130,9 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
             origin = self.headers.get("Origin")
             allowed = {f"http://127.0.0.1:{self.server.server_address[1]}",
                        f"http://localhost:{self.server.server_address[1]}"}
-            if origin and origin not in allowed:
+            host_allowed = {f"127.0.0.1:{self.server.server_address[1]}",
+                            f"localhost:{self.server.server_address[1]}"}
+            if self.headers.get("Host") not in host_allowed or (origin and origin not in allowed):
                 self.send_error(403)
                 return False
             return True
@@ -185,7 +187,7 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
                            "application/json; charset=utf-8", encoding="gzip")
             elif path in ("/", "/gazebo-live.html", "/gazebo-live.js", "/gazebo-live.css",
                           "/assets/haetae-rig.json",
-                          "/gazebo-scene.js", "/product-rig.js", "/person-rig.js", "/vendor/three/three.module.js",
+                          "/gazebo-scene.js", "/telemetry.js", "/product-rig.js", "/person-rig.js", "/vendor/three/three.module.js",
                           "/vendor/three/three.core.js", "/vendor/three/OrbitControls.js",
                           "/gazebo-replay.html", "/gazebo-replay.js",
                           "/evidence/gazebo-snapshot.jsonl", "/evidence/gazebo-result.json"):
