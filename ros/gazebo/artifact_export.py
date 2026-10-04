@@ -1,7 +1,9 @@
 """Checkpoint diagnostic artifacts without copying credentials or raw inputs."""
 from pathlib import Path
+import json
 import sys
-from safe_evidence import checkpoint_evidence
+from safe_evidence import checkpoint_evidence, read_evidence_text, write_checkpoint
+from public_report import report
 
 PUBLIC_FILES = (
     'result.json', 'error.json', 'verification-report.json', 'transport-isolation.json',
@@ -21,12 +23,17 @@ def export_artifacts(root, output):
     names = [Path(name) for name in PUBLIC_FILES]
     names += [Path('arm-' + case) / name for case in ('kill', 'stall', 'delay')
               for name in ('result.json', 'gate.log', 'sillok.jsonl')]
+    rejected = []
     for name in names:
         source = root / name
         try:
             checkpoint_evidence(root, source, output / name)
         except FileNotFoundError:
             continue
+        except (OSError, ValueError) as exc:
+            rejected.append((name, exc))
+    if rejected:
+        raise ValueError('Artifact export rejected: ' + ', '.join(str(name) for name, _ in rejected)) from rejected[0][1]
 
 
 def final_export(root, output, prior_failure=False):
@@ -34,6 +41,22 @@ def final_export(root, output, prior_failure=False):
     try:
         export_artifacts(root, output)
     except (OSError, ValueError) as exc:
+        # A final collection failure must not leave a previously published
+        # passing report. Use only bounded public metadata for its identity.
+        if output is not None:
+            try:
+                output = Path(output).resolve()
+                try:
+                    previous = json.loads(read_evidence_text(output, 'verification-report.json'))
+                except (OSError, ValueError):
+                    previous = {}
+                previous = previous if isinstance(previous, dict) else {}
+                failed = report(revision=previous.get('source_revision'),
+                                run_id=previous.get('run_id'), failed=True)
+                write_checkpoint(output / 'verification-report.json',
+                                 json.dumps(failed, ensure_ascii=False).encode())
+            except (OSError, ValueError) as publication_error:
+                print('Failed-report publication rejected: ' + str(publication_error), file=sys.stderr)
         if not prior_failure:
             raise
         print('Final artifact export rejected: ' + str(exc), file=sys.stderr)

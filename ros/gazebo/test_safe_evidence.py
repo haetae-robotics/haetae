@@ -9,6 +9,30 @@ from artifact_export import export_artifacts
 
 
 class EvidenceBoundaryTest(unittest.TestCase):
+    def test_atomic_counter_rotation_is_retried_and_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'counters.json'
+            source.write_bytes(b'old counter')
+            original_stat = os.fstat
+            calls = 0
+            def rotate_then_stat(fd):
+                nonlocal calls
+                calls += 1
+                replacement = root / 'replacement'
+                replacement.write_bytes(b'new counter')
+                replacement.replace(source)
+                return original_stat(fd)
+            with patch('safe_evidence.os.fstat', side_effect=rotate_then_stat):
+                with self.assertRaises(ValueError):
+                    read_evidence(root, source)
+            self.assertEqual(calls, 3)
+            calls = 0
+            def rotate_once(fd):
+                return rotate_then_stat(fd) if calls == 0 else original_stat(fd)
+            with patch('safe_evidence.os.fstat', side_effect=rotate_once):
+                self.assertEqual(read_evidence(root, source), b'new counter')
+
     def test_regular_append_snapshot_and_atomic_publication(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -62,7 +86,7 @@ class EvidenceBoundaryTest(unittest.TestCase):
             unrelated = Path(directory) / 'fake.key'
             unrelated.write_text('FAKE_TEST_DATA')
             (root / 'sillok.jsonl').symlink_to(unrelated)
-            with self.assertRaises(OSError):
+            with self.assertRaises((OSError, ValueError)):
                 export_artifacts(root, output)
             self.assertEqual((output / 'sillok.jsonl').read_text(), 'previous diagnostic')
             self.assertEqual([p.name for p in output.iterdir()], ['sillok.jsonl'])

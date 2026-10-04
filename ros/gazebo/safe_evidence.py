@@ -24,9 +24,17 @@ def read_evidence(root, path, expected_uid=None, max_bytes=MAX_EVIDENCE_BYTES):
                                      dir_fd=directory)
             os.close(directory)
             directory = next_directory
-        leaf = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                       dir_fd=directory)
-        info = os.fstat(leaf)
+        # A counter writer atomically replaces its file. If that happens
+        # between open and fstat, retry from the same pinned directory rather
+        # than rejecting an ordinary rotation. Never retry unsafe live files.
+        for attempt in range(3):
+            leaf = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                           dir_fd=directory)
+            info = os.fstat(leaf)
+            if info.st_nlink != 0 or attempt == 2:
+                break
+            os.close(leaf)
+            leaf = None
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner or
                 info.st_nlink != 1 or not 0 <= info.st_size <= max_bytes):
             raise ValueError('unsafe evidence file type, owner, links or size')

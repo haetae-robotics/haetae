@@ -39,7 +39,7 @@ try {
   const armTarget = armAllowed.payload.action.points.at(-1).positions[0];
   const startX = worlds[0].payload.robot.pose.x;
   const endX = Math.max(...worlds.map((row) => row.payload.robot.pose.x));
-  const observedSpeedMax = Math.max(.001, ...worlds.map((row) => Math.abs(row.payload.robot.twist.linear)));
+  const observedSpeedMax = Math.max(.001, ...worlds.map((row) => Math.abs(row.payload.robot.twist?.linear ?? 0)));
 
   const scenes = {
     base: {

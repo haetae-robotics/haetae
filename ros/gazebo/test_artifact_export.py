@@ -27,6 +27,19 @@ class ExportTest(unittest.TestCase):
     def test_final_export_preserves_existing_failure_but_rejects_success(self):
         with patch('artifact_export.export_artifacts', side_effect=ValueError('unsafe diagnostic')):
             with patch('artifact_export.sys.stderr'):
-                self.assertFalse(final_export('synthetic', 'synthetic', prior_failure=True))
+                self.assertFalse(final_export('synthetic', None, prior_failure=True))
             with self.assertRaises(ValueError):
-                final_export('synthetic', 'synthetic')
+                final_export('synthetic', None)
+
+    def test_rejection_still_exports_diagnostics_and_invalidates_old_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, output = Path(directory) / 'run', Path(directory) / 'out'
+            root.mkdir()
+            output.mkdir()
+            (root / 'result.json').symlink_to(root / 'absent')
+            (root / 'error.json').write_text('{"error":"synthetic failure"}')
+            (root / 'verification-report.json').write_text('{"status":"passed"}')
+            with self.assertRaises(ValueError):
+                final_export(root, output)
+            self.assertEqual(json.loads((output / 'error.json').read_text())['error'], 'synthetic failure')
+            self.assertEqual(json.loads((output / 'verification-report.json').read_text())['status'], 'failed')

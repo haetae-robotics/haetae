@@ -9,6 +9,8 @@
 - nonzero velocity에 측정 twist 필수. Caution 팔 거부·취소 및 base 즉시 감속. reject 시각 이후 관절 피드백으로 settling 확인.
 - ROS arm 수락·취소 absolute250ms, 취소/settling 동안 heartbeat 금지, resolved command topic의 extra publisher는 지속 Hold.
 - 로컬 unit·native bench 검증 후 전체 변경의 독립 양쪽 리뷰/Claude/정확한 head CI를 확인해야 한다. 이전 리뷰·CI 성공은 승인으로 재사용하지 않는다. 실물 미검증.
+- 진단 counter의 atomic replace 중 이미 unlink된 fd는 같은 pinned directory에서 최대3회 재시도한다. live hardlink·symlink·owner/type/size 검사는 유지한다. export는 거부 파일 외 진단을 계속 수집하고 실패 시 이전 passing report를 무효화한다.
+- Linux CI software bench의 임시 서명 fixture는 `/dev/shm`을 사용한다. 공유 디스크 fsync 지연과 분리한 software 시험이며, 운영50ms/세계200ms/guard200ms 제한은 그대로다. 디스크 전원 장애·실물 보호 검증이 아니다.
 
 ## 현재 구현
 

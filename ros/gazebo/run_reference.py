@@ -1133,6 +1133,9 @@ def main():
     except RunInterrupted:
         raise SystemExit(143)
     except Exception:
+        if live:
+            live.fail({"kind": "error", "label": "시뮬레이션 검증에 실패했습니다",
+                       "detail": "실행 또는 최종 진단 기록 수집을 완료하지 못했습니다."})
         if live and args.live_hold_seconds:
             # Physics and ROS have already been stopped by run's finally.
             # Keep only the error page available, including after a refresh.
