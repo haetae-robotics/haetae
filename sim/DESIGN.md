@@ -1288,7 +1288,9 @@ The English ids `yun` / `jeol` / `bul` remain in code, CSS class names and small
   - "감속: 속도를 줄여 실행"
   - "차단: 실행하지 않음"
 
-**Brand mark.** A shield with one horn and two eye dots, inline SVG `<symbol id="mark">`. It replaces the Han logo everywhere:
+**Brand refresh (2026-10-04).** The user-approved A seated guardian replaces the old shield-and-horn header, favicon and pipeline mark. Canonical vectors and the adaptive external `#mark` symbol are in `brand/haetae/`; see root `DESIGN.md` and `docs/brand.md`. The historical v3.9 robot badge geometry is an illustrative legacy model decoration, not the current identity.
+
+**Historical v3.9 inventory.** The old shield with one horn and two eye dots replaced the Han logo in:
 - the header
 - the favicon (an SVG data URI: white mark on an `--ink` rounded square, never a verdict colour)
 - the pipeline gate node, which becomes `[mark] 해태`

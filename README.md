@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="sim/brand/haetae/logo-light.svg">
+  <img src="sim/brand/haetae/logo.svg" alt="haetae" width="240">
+</picture>
+
 # Haetae (해태) /hɛ.tʰɛ/ "heh-teh"
 
 **A supervisory policy gate for AI-driven robots.**
@@ -131,3 +136,12 @@ builds the UNO R4 Minima LED-only sketch using pinned Arduino tools.
 [First board setup and fault tests](docs/uno-r4-bench.md) cover explicit USB
 upload and LED sessions. Software results do not establish physical USB/watchdog
 timing, motor stopping or protection of a real robot.
+
+## Brand assets
+
+The approved Haetae guardian and haetae-robotics kinematic identity are available as outlined SVGs, transparent PNGs, and app icons. See the [brand guide](docs/brand.md).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="sim/brand/haetae-robotics/logo-light.svg">
+  <img src="sim/brand/haetae-robotics/logo.svg" alt="haetae-robotics" width="240">
+</picture>

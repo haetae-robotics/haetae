@@ -186,6 +186,7 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
                 self._send((STATIC / "assets/rosbot-xl.json.gz").read_bytes(),
                            "application/json; charset=utf-8", encoding="gzip")
             elif path in ("/", "/gazebo-live.html", "/gazebo-live.js", "/gazebo-live.css",
+                          "/brand/haetae/logo-light.svg", "/brand/haetae/favicon.svg",
                           "/assets/haetae-rig.json",
                           "/gazebo-scene.js", "/telemetry.js", "/product-rig.js", "/person-rig.js", "/vendor/three/three.module.js",
                           "/vendor/three/three.core.js", "/vendor/three/OrbitControls.js",
@@ -195,6 +196,7 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
                 content = (STATIC / name).read_bytes()
                 mime = ("text/javascript" if name.endswith(".js") else
                         "text/css" if name.endswith(".css") else
+                        "image/svg+xml" if name.endswith(".svg") else
                         "application/json" if name.endswith(".json") else
                         "application/x-ndjson" if name.endswith(".jsonl") else
                         "text/html")
