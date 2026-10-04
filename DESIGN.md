@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-10-01
+- Last refreshed: 2026-10-04
 - Primary product surfaces: live Gazebo reference at `sim/gazebo-live.html` and the scripted demo at `sim/index.html`.
 - Evidence reviewed: `sim/DESIGN.md`, `sim/index.html`, `sim/gazebo-live.html`, `sim/gazebo-scene.js`, `sim/person-rig.js`, `ros/gazebo/scene_layout.py`, `ros/gazebo/rosbot_xl.urdf.xacro`, the Gazebo runbook, and Claude's source-based consultation in `.omx/artifacts/claude-design-20260930/` (not a rendered visual review).
 - Scope: This file guides the live Gazebo reference. `sim/DESIGN.md` remains the detailed contract for the separate scripted demo.
@@ -11,6 +11,10 @@
 - Personality: calm, capable, and direct.
 - Trust signals: label the actual Gazebo window, the telemetry reconstruction, and injected test reports accurately.
 - Avoid: raw robotics jargon in the first screen, toy-like block geometry, and claims of physical robot safety.
+- Approved identity (2026-10-04): product **haetae A**, a calm seated Haetae guardian; organization **haetae-robotics B**, two kinematic links with one open joint. The user selected this pair after the six-concept exploration and Claude's concept consultation.
+- Assets: `sim/brand/haetae/` and `sim/brand/haetae-robotics/`; outlined wordmarks, transparent vector marks, light and monochrome variants, and PNG/ICO exports. `tools/brand_paths.json` and `tools/build_brand_assets.py` are the editable source. Usage and provenance are in `docs/brand.md`.
+- Brand color: graphite `#111418`, light `#e7ebee`, cyan `#66d5d0`. Cyan belongs only to the product identity and active UI; verdict colors retain their existing meaning. Use the adaptive monochrome guardian in the scripted demo's theme-aware pipeline.
+- Logo use: no distortion, outline, gradient, decorative glow or added text. Use the prepared optical icon at 16–32 px; wordmarks are horizontal paths with no installed-font dependency. Clear space is one quarter of the symbol height.
 
 ## Product goals
 - Goals: a first-time visitor understands how to start, sees a robot move and stop, and can tell what Haetae decided.

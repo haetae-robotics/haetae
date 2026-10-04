@@ -6,18 +6,12 @@
   <meta name="color-scheme" content="light dark">
   <title>해태가 막는다 · Haetae 시뮬레이터</title>
   <meta name="description" content="해킹된 AI의 로봇 명령을 실제 Rust 안전 게이트(WebAssembly)가 모터 앞에서 막는 공격 데모">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%231D1A16'/%3E%3Cpath d='M10.5 5.2L12 0.9L13.5 5.2Z' fill='%23fff'/%3E%3Cpath d='M5 5H10.2L12 6.6L13.8 5H19V10.5Q18.6 17.5 12 22.5Q5.4 17.5 5 10.5Z' fill='%23fff'/%3E%3Ccircle cx='9.5' cy='11.4' r='1.5' fill='%231D1A16'/%3E%3Ccircle cx='14.5' cy='11.4' r='1.5' fill='%231D1A16'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="./brand/haetae/favicon.svg">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body data-state="loading">
-  <!-- Icons: the Haetae mark (a shield with one horn) and the three verdict icons. No Han characters anywhere. -->
+  <!-- Approved Haetae guardian and the three verdict icons. -->
   <svg class="sprite" aria-hidden="true" focusable="false" width="0" height="0">
-    <symbol id="mark" viewBox="0 0 24 24">
-      <path d="M10.5 5.2L12 0.9L13.5 5.2Z" fill="currentColor"/>
-      <path d="M5 5H10.2L12 6.6L13.8 5H19V10.5Q18.6 17.5 12 22.5Q5.4 17.5 5 10.5Z" fill="currentColor"/>
-      <circle cx="9.5" cy="11.4" r="1.5" style="fill: var(--mark-eye, #fff)"/>
-      <circle cx="14.5" cy="11.4" r="1.5" style="fill: var(--mark-eye, #fff)"/>
-    </symbol>
     <symbol id="v-yun" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="11" style="fill: var(--yun-fill)"/>
       <path d="M6.6 12.4l3.6 3.6 7.3-7.9" fill="none" style="stroke: var(--yun-ink)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -35,7 +29,7 @@
 
   <header class="hdr">
     <div class="brand">
-      <svg class="mark" aria-hidden="true" focusable="false"><use href="#mark"/></svg>
+      <svg class="mark" aria-hidden="true" focusable="false"><use href="./brand/haetae/mark-adaptive.svg#mark"/></svg>
       <span class="name">해태</span>
       <span class="pitch">AI의 로봇 명령을 모터 앞에서 심사합니다</span>
     </div>
@@ -81,7 +75,7 @@
         <div class="strip" id="strip" data-state="idle" role="img" aria-label="AI 모델의 명령은 해태의 심사를 거쳐야 모터에 닿습니다">
           <span class="node node-src" id="strip-src"><span class="src-icon"></span><span class="src-name">AI 모델</span><span class="src-note" hidden></span><span class="src-log" hidden>기록됨</span></span>
           <span class="link link-in"><span class="packet"></span></span>
-          <span class="node node-gate"><svg class="gate-mark" aria-hidden="true" focusable="false"><use href="#mark"/></svg> 해태</span>
+          <span class="node node-gate"><svg class="gate-mark" aria-hidden="true" focusable="false"><use href="./brand/haetae/mark-adaptive.svg#mark"/></svg> 해태</span>
           <span class="link link-out"><span class="cap-chip" id="strip-cap"></span><span class="cut" aria-hidden="true">✕</span></span>
           <span class="node node-motor"><span aria-hidden="true">⚙</span> 모터</span>
           <span class="bypass-line" aria-hidden="true"></span>
