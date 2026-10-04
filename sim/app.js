@@ -247,6 +247,7 @@ app.applyPolicy = (text) => {
   if (err) { app.toast(`정책이 거부되었습니다: ${err}`); return false; }
   let g;
   try { g = new Gate(text); } catch (e) { app.toast(e.message); return false; }
+  if (app.missionGate) g.raise(app.missionGate.mode);
   app.missionGate?.free();
   app.missionGate = g;
   app.policyObj = JSON.parse(text);
@@ -261,7 +262,7 @@ app.applyPolicy = (text) => {
     app.director.renderRail();
     const d = app.director;
     const t = app.lab?.active ? app.lab.clock : (d.lastRec?.now ?? d.recs.at(-1)?.now ?? 0);
-    app.log.add({ t, kind: 'policy', text: `정책 적용 — 게이트를 새로 만듦${wasDefault && app.modified ? ' (정책 수정됨)' : ''}` });
+    app.log.add({ t, kind: 'policy', text: `정책 적용 — 모드 ${g.mode} 유지${wasDefault && app.modified ? ' (정책 수정됨)' : ''}` });
   }
   return true;
 };

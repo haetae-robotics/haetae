@@ -15,6 +15,8 @@ python3 -m pip install cryptography
 ./haetae-bench compile
 ```
 
+`run`은 깨끗한 체크아웃에서 완료된 `verify`의 커밋, 실행 파일 해시, 펌웨어 해시를 확인합니다. 코드나 바이너리가 바뀌면 다시 `verify`하세요.
+
 `verify`는 실제 서명 검증 Rust 엔진과 펌웨어와 동일한 C++ guard를 별도
 프로세스로 실행해 가상 직렬 포트(PTY)로 연결한다. 먼저 ON을 관측한 뒤,
 사람 접근·세계 입력 단절·서명 위조·재전송·Rust 종료·호스트 강제 종료와

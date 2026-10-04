@@ -1,3 +1,4 @@
+import { validTelemetry } from './telemetry.js';
 import { createGazeboScene } from './gazebo-scene.js';
 
 const $ = (id) => document.getElementById(id);
@@ -33,7 +34,7 @@ let streamConnected = false;
 let lastTelemetryAt = 0;
 let ready = false;
 let started = false;
-let worldAclBlocked = null;
+let worldAclBlocked = null, signatureBlocked = null;
 let currentCheckpoint = null;
 let stepThrough = false;
 let manualStart = false;
@@ -221,6 +222,10 @@ stream.onmessage = (event) => {
   try { row = JSON.parse(event.data); } catch { return; }
   if (failed) return;
   if (row.kind === 'telemetry') {
+    if (!validTelemetry(row)) {
+      badge('waiting', '측정값 오류 · 마지막 정상 장면 유지');
+      return;
+    }
     telemetry = row;
     lastTelemetryAt = Date.now();
     badge('live', '실시간 연결');
@@ -315,19 +320,16 @@ stream.onmessage = (event) => {
           '공격자 명령이 화면 속 Gazebo 바퀴 제어기에 도달하지 않았습니다.' :
           '공격자 명령이 별도 ROS 테스트 제어기에 도달하지 않았습니다.' :
           '권한 시험에 실패했습니다. 결과 파일을 확인해 주세요.');
-    } else if (row.attack === 'world') {
-      worldAclBlocked = Boolean(row.blocked);
-      attackStatus('world', state, row.blocked ? 'ROS 접근 차단 확인' : '검증 실패',
-        row.blocked ? row.scope === 'gazebo_sros2_graph' ?
-          '공격자의 가짜 사람 정보가 화면 속 Gazebo의 신뢰된 수신기에 도달하지 않았습니다. 서명 검사도 진행합니다.' :
-          '공격자의 가짜 사람 정보가 별도 ROS 테스트 수신기에 도달하지 않았습니다. 서명 검사도 진행합니다.' :
-          '가짜 정보 접근 권한 시험에 실패했습니다.');
-    } else if (row.attack === 'signature') {
-      const blocked = worldAclBlocked && row.blocked;
-      attackStatus('world', blocked ? 'blocked' : 'failed',
-        blocked ? '접근·서명 모두 차단' : '검증 실패',
-        blocked ? 'ROS 접근 권한이 위조 게시를 막았고, 별도 해태 엔진은 변조된 서명을 거부했습니다.' :
-          '접근 권한 또는 서명 검증에 실패했습니다.');
+    } else if (row.attack === 'world' || row.attack === 'signature') {
+      if (row.attack === 'world') worldAclBlocked = Boolean(row.blocked);
+      else signatureBlocked = Boolean(row.blocked);
+      const failedCheck = worldAclBlocked === false || signatureBlocked === false;
+      const blocked = worldAclBlocked === true && signatureBlocked === true;
+      attackStatus('world', failedCheck ? 'failed' : blocked ? 'blocked' : 'pending',
+        failedCheck ? '검증 실패' : blocked ? '접근·서명 모두 차단' : '추가 결과 대기',
+        failedCheck ? '접근 권한 또는 서명 검증에 실패했습니다.' : blocked ?
+          'ROS 접근 권한이 위조 게시를 막았고, 별도 해태 엔진은 변조된 서명을 거부했습니다.' :
+          'ROS 접근 권한과 서명 검사 결과가 모두 도착해야 통과로 표시합니다.');
     } else if (row.attack === 'replay') {
       attackStatus('replay', state, row.blocked ? '재전송 거부 확인' : '검증 실패',
         row.blocked ? '같은 서명 명령을 다시 보냈을 때 해태 엔진의 출력 속도는 0이었습니다.' :

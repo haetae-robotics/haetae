@@ -324,7 +324,7 @@ Fixed in W2 after Devin's review:
 - Worlds are validated at ingest: invalid, far-future, and out-of-order snapshots are rejected (M1).
 - Freshness budgets have a 60 s ceiling, and `future_tolerance_ms <= world_max_age_ms` (M4).
   A huge budget would saturate the clock arithmetic and turn the checks off.
-- Every allowed non-stop decision carries `speed_cap` (the envelope maximum, or lower). The executor never gets "unbounded" for arm motion (M5).
+- Allowed Cartesian motion carries `speed_cap` (the envelope maximum, or lower). Joint trajectories carry no Cartesian cap; joint velocity and acceleration remain bounded by arm policy, and Caution denies new trajectories and cancels active ones (M5).
 - Reject payloads have one shape.
 
 Accepted limitations, to be solved in W3:

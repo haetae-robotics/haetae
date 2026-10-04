@@ -490,7 +490,7 @@ export class Overlay {
     s.append(act);
     if (proposal.action?.speed != null) {
       const sp = el('div', 'slip-speed');
-      sp.innerHTML = `<span class="req">${num(proposal.action.speed)}</span> m/s`;
+      sp.append(el('span', 'req', num(proposal.action.speed)), document.createTextNode(' m/s'));
       s.append(sp);
       this.slipSpeed = sp;
     } else {
@@ -594,7 +594,8 @@ export class Overlay {
   slipSpeedDiff(executed) {
     if (!this.slipSpeed) return;
     const req = this.slipSpeed.querySelector('.req')?.textContent;
-    this.slipSpeed.innerHTML = `<s>${req}</s> → <b>${num(executed)}</b> m/s`;
+    this.slipSpeed.replaceChildren(el('s', '', req ?? '—'), document.createTextNode(' → '),
+      el('b', '', num(executed)), document.createTextNode(' m/s'));
   }
 
   slipTapeAlarm() {

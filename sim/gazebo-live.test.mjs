@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
+const { validTelemetry } = await import('data:text/javascript,' + encodeURIComponent(
+  readFileSync(new URL('./telemetry.js', import.meta.url), 'utf8')));
 
 // Exercise the live controls without needing WebGL or a running robot.
 const source = readFileSync(new URL('./gazebo-live.js', import.meta.url), 'utf8')
-  .replace(/^import .*;\n/, '');
+  .replace(/^import .*;\n/gm, '');
 
 function viewer() {
   const elements = new Map();
@@ -29,6 +31,7 @@ function viewer() {
   vm.runInNewContext(source, {
     document: { getElementById: get, createElement: element, createTextNode: (text) => text },
     window: { location: { hostname: '127.0.0.1' } },
+    validTelemetry,
     createGazeboScene: () => ({ update() {}, setBlocked() {} }),
     Date: { now: () => now },
     setInterval(callback) { tick = callback; },
@@ -143,4 +146,24 @@ test('terminal badge follows the report even when raw summary flags claim succes
   page.emit({ kind: 'result', report_status: 'incomplete', result: {
     ok: true, arm_out_of_bounds_denied: true, sillok_incident_snapshot_fully_sealed: true } });
   assert.equal(page.get('connection').textContent, '실험 결과 확인');
+});
+
+test('signature failure survives later world ACL success in either event order', async () => {
+  for (const order of [['signature', 'world'], ['world', 'signature']]) {
+    const page = viewer(); await page.config();
+    for (const attack of order) page.emit({kind: 'attack_result', attack, blocked: attack === 'world'});
+    assert.equal(page.get('attack-world').dataset.state, 'failed');
+  }
+});
+
+test('invalid telemetry leaves last good measurements intact and finite recovery works', async () => {
+  const page = viewer(); await page.config();
+  const row = {kind: 'telemetry', sim_ms: 1000, x: 5, y: 5, speed: .1, joint: 0, humans: []};
+  page.emit(row);
+  const speed = page.get('speed').textContent;
+  page.emit({...row, speed: null, x: null});
+  assert.equal(page.get('speed').textContent, speed);
+  assert.match(page.get('connection').textContent, /측정값 오류/);
+  page.emit({...row, speed: .2});
+  assert.match(page.get('speed').textContent, /0.200/);
 });

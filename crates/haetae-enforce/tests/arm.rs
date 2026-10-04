@@ -1,8 +1,8 @@
 use haetae_core::{
-    ActionKind, ActionProposal, Human, HumanClass, JointSample, JointWaypoint, Point2, Policy,
-    RobotState, Source, WorldSnapshot,
+    ActionKind, ActionProposal, Human, HumanClass, JointSample, JointWaypoint, Mode, Point2,
+    Policy, RobotState, Source, WorldSnapshot,
 };
-use haetae_enforce::{ArmOutput, Enforcer, EnforcerConfig, StopReason};
+use haetae_enforce::{fault, ArmOutput, Enforcer, EnforcerConfig, StopReason};
 use haetae_runtime::{Inbound, RuntimeConfig};
 
 fn policy() -> Policy {
@@ -116,4 +116,57 @@ fn arm_is_denied_if_a_human_is_present() {
     let denied = g.handle(chunk(2, 1000, 0.0), 1000);
     assert_eq!(denied.stop, Some(StopReason::Denied));
     assert!(denied.arm.is_none());
+}
+
+#[test]
+fn delayed_pre_cancel_measurements_cannot_finish_settling() {
+    let mut g = Enforcer::open(policy(), EnforcerConfig::default(), 1000).unwrap();
+    g.handle(Inbound::World(world(1000, 0.0, 0.0)), 1000);
+    g.handle(proposal(1, 1000, ActionKind::Stop), 1000);
+    assert!(matches!(
+        g.handle(chunk(2, 1000, 0.0), 1000).arm,
+        Some(ArmOutput::Execute { .. })
+    ));
+    assert!(matches!(
+        g.reject("bad input".into(), b"bad", 1050).arm,
+        Some(ArmOutput::Cancel)
+    ));
+    for (stamp, arrival) in [(1025, 1051), (1040, 1052)] {
+        assert_eq!(
+            g.handle(Inbound::World(world(stamp, 0.0, 0.0)), arrival)
+                .stop,
+            Some(StopReason::ArmSettling)
+        );
+    }
+    assert_eq!(
+        g.handle(Inbound::World(world(1055, 0.0, 0.0)), 1055).stop,
+        Some(StopReason::ArmSettling)
+    );
+    assert_eq!(
+        g.handle(Inbound::World(world(1060, 0.0, 0.0)), 1060).stop,
+        Some(StopReason::NoCommand)
+    );
+    assert_eq!(
+        g.handle(chunk(3, 1060, 0.0), 1060).stop,
+        Some(StopReason::Unarmed)
+    );
+}
+
+#[test]
+fn caution_denies_new_arm_chunks_and_cancels_active_chunks() {
+    let mut g = Enforcer::open(policy(), EnforcerConfig::default(), 1000).unwrap();
+    g.handle(Inbound::World(world(1000, 0.0, 0.0)), 1000);
+    g.handle(proposal(1, 1000, ActionKind::Stop), 1000);
+    assert!(matches!(
+        g.handle(chunk(2, 1000, 0.0), 1000).arm,
+        Some(ArmOutput::Execute { .. })
+    ));
+    let step = g.handle(fault("sensor", Mode::Caution, 1010), 1010);
+    assert!(matches!(step.arm, Some(ArmOutput::Cancel)));
+    assert_eq!(step.status.mode, Mode::Caution);
+    let mut g = Enforcer::open(policy(), EnforcerConfig::default(), 1000).unwrap();
+    g.handle(Inbound::World(world(1000, 0.0, 0.0)), 1000);
+    g.handle(proposal(1, 1000, ActionKind::Stop), 1000);
+    g.handle(fault("sensor", Mode::Caution, 1000), 1000);
+    assert!(g.handle(chunk(2, 1000, 0.0), 1000).arm.is_none());
 }

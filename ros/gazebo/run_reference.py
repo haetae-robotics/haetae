@@ -46,6 +46,8 @@ from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy,
 from role_isolation import Roles, UIDS
 from lidar_perception import Perception
 from native_person import NativeScene, add_native_scene
+from safe_evidence import checkpoint_evidence, read_evidence_text
+from functools import partial
 from stop_evidence import person_stop_report, person_stop_observed, world_expiry_stop_observed  # noqa: E402
 from attack_probe import (prepare_gazebo_security, probe_gazebo_permissions,
                           probe_permissions, probe_signed_inputs)  # noqa: E402
@@ -331,7 +333,7 @@ def check_person_sensor(world, label, processes):
             "returns": len(frame.points), "ok": True}
 
 
-def exercise_sensor_fault(world, processes, case):
+def exercise_sensor_fault(world, processes, case, roles=None):
     world.marker("센서 연결 끊김 시험" if case == "disconnect" else "센서 검증 표적 사라짐")
     wait_for(lambda: world.sensor_info.get("healthy") and not world.perception.snapshot(
         world.get_clock().now().nanoseconds // 1_000_000, world.pose())[0],
@@ -366,7 +368,13 @@ def exercise_sensor_fault(world, processes, case):
         raise AssertionError("could not restore native calibration target")
     wait_for(lambda: world.sensor_info.get("healthy"), 5, processes, "sensor recovers")
     # Sensor recovery alone cannot reactivate a disarmed motion source.
-    world.propose_base(0.12)
+    recovered_at = time.monotonic()
+    counter_before = roles.counter("vla") if roles else None
+    wait_for(lambda: (not roles or roles.counter("vla") > counter_before) and any(
+        t >= recovered_at and row.get("rejected", {}).get("error") ==
+        "source must send a zero command to arm" for t, row in world.outcomes),
+        2, processes, "sensor recovery proposal received and rejected by engine",
+        action=lambda: world.propose_base(0.12))
     time.sleep(0.3)
     if abs(world.speed()) >= 0.03 or "vla" in world.states[-1][1]["armed"]:
         raise AssertionError("sensor recovery automatically rearmed motion")
@@ -374,7 +382,7 @@ def exercise_sensor_fault(world, processes, case):
               "last_sensor_ms": last_sensor_ms, "unknown": unknown,
               "fault_to_zero_wall_ms": round((zero_at-fault_at)*1000, 1),
               "stop_reason": world_expiry_stop_observed(world.states, world.outcomes, fault_at),
-              "recovery_did_not_rearm": True}
+              "recovery_did_not_rearm": True, "post_recovery_proposal_rejected_by_engine": True}
     world._emit("sensor_fault_result", **result)
     world.marker("센서 이상 → 정지")
     return result
@@ -409,10 +417,10 @@ def stop(process, force=False):
             process.wait(timeout=3)
 
 
-def sealed_incident_snapshot(log_path, snapshot_path):
+def sealed_incident_snapshot(log_path, snapshot_path, *, root=None, expected_uid=None):
     """Verify a stable sealed prefix while the live world stream continues."""
     entries = []
-    for line in log_path.read_text().splitlines():
+    for line in read_evidence_text(root or log_path.parent, log_path, expected_uid).splitlines():
         try:
             entries.append((line, json.loads(line)))
         except json.JSONDecodeError:
@@ -440,6 +448,10 @@ def exercise_arm_fault(world, processes, case):
     world.propose_arm(initial[0] + (-0.5 if initial[0] > 0.1 else 0.5))
     wait_for(lambda: abs(world.primary_joint() - initial[0]) > 0.10, 5, processes,
              "arm moving before injected fault")
+    wait_for(lambda: world.guard_states and not world.guard_states[-1][1]["holding"] and
+        0 <= time.monotonic() - world.guard_states[-1][1].get("lease_received_wall_ns", 0) / 1e9 <= .1,
+        2, processes, "fresh controller lease measured before fault")
+    pre_fault_lease = dict(world.guard_states[-1][1])
     gate = processes.pop("gate")
     fault_wall = time.monotonic()
     fault_sim = world.get_clock().now().nanoseconds // 1_000_000
@@ -459,7 +471,7 @@ def exercise_arm_fault(world, processes, case):
                            "controller independently expires its lease")
         stop_sim = world.guard_states[-1][1]["cutoff_ms"]
         controller_stop_wall = world.guard_states[-1][1]["stop_wall_ns"] / 1_000_000_000
-        if stop_sim-fault_sim > 320 or controller_stop_wall-fault_wall > 0.4:
+        if not 0 <= stop_sim-fault_sim <= 320 or not 0 <= controller_stop_wall-fault_wall <= 0.4:
             raise AssertionError("controller missed its independent stop deadline")
         wait_for(lambda: world.joint.header.stamp.sec * 1000 +
                  world.joint.header.stamp.nanosec // 1_000_000 >= stop_sim and
@@ -481,6 +493,9 @@ def exercise_arm_fault(world, processes, case):
         return {"ok": True, "case": case, "controller": "independent_arm_lease",
                 "joint_names": list(ARM_JOINTS), "held_positions_rad": positions,
                 "post_stop_drift_rad": drift,
+                "pre_fault_lease_age_wall_ms": round((fault_wall - pre_fault_lease["lease_received_wall_ns"] / 1e9) * 1000, 1),
+                "pre_fault_lease_age_sim_ms": fault_sim - pre_fault_lease["lease_sent_ms"],
+                "timing_scope": "observed_fault_with_fresh_lease_not_worst_case",
                 "fault_to_hold_wall_ms": round((controller_stop_wall-fault_wall)*1000, 1),
                 "hold_observed_after_wall_ms": round((stopped-fault_wall)*1000, 1),
                 "fault_to_hold_sim_ms": stop_sim-fault_sim,
@@ -534,6 +549,10 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         gate_directory = roles.directories["gate"] / root.name
         params_path = gate_directory / "params.yaml"
         (root / "principal-isolation.json").write_text(json.dumps(roles.probe_read_boundaries(), indent=2))
+
+    log_boundary = {"root": root, "expected_uid": UIDS["gate"] if roles else os.geteuid()}
+    stop_report = partial(person_stop_report, **log_boundary)
+    stop_observed = partial(person_stop_observed, **log_boundary)
 
     def role_env(role):
         env = os.environ.copy()
@@ -676,20 +695,20 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         if roles:
             graph_boundaries = roles.probe_graph_boundaries(os.environ.copy())
             (root / "role-permissions.json").write_text(json.dumps(graph_boundaries, indent=2))
-            wait_for(lambda: (roles.directories["vla"] / "counters.json").exists(),
+            wait_for(lambda: (roles.directories["vla"] / "runtime/counters.json").exists(),
                      5, processes, "VLA source counter reservation",
                      action=lambda: world.propose_base(0.0))
-            before = json.loads((roles.directories["vla"] / "counters.json").read_text())["counters"]["vla"]
+            before = roles.counter("vla")
             stop(processes.pop("source_vla"))
             _, log = start([sys.executable, str(REPO / "ros/haetae_gate/source_node.py"),
                             "--ros-args", "--params-file", str(roles.source_params("vla"))],
                            root, "source_vla", processes, role_env("vla"), UIDS["vla"])
             logs.append(log)
-            wait_for(lambda: json.loads((roles.directories["vla"] / "counters.json").read_text())["counters"]["vla"] > before,
+            wait_for(lambda: roles.counter("vla") > before,
                      8, processes, "restarted signer advances reserved counter",
                      action=lambda: world.propose_base(0.0))
             (root / "source-restart.json").write_text(json.dumps({"role": "vla",
-                "before": before, "after": json.loads((roles.directories["vla"] / "counters.json").read_text())["counters"]["vla"],
+                "before": before, "after": roles.counter("vla"),
                 "continued_counter": True}, indent=2))
         # Counter reservation happens before DDS delivery. After a signer
         # restart an old armed-state sample cannot confirm a new rearm.
@@ -702,8 +721,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                  8, processes, "fresh accepted base rearm", action=lambda: world.propose_base(0.0))
         if arm_fault:
             result = exercise_arm_fault(world, processes, arm_fault)
-            if roles and (gate_directory / "sillok.jsonl").exists():
-                shutil.copy2(gate_directory / "sillok.jsonl", root / "sillok.jsonl")
+            if roles:
+                checkpoint_evidence(root, gate_directory / "sillok.jsonl", root / "sillok.jsonl", UIDS["gate"])
             (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result))
             return
@@ -736,7 +755,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             # A world update can revoke active motion without a Decision
             # outcome. Require the causal engine record and observed zero.
             wait_for(lambda: any(t >= entry_at for t, _ in list(world.zero_commands)) and
-                               person_stop_observed(gate_directory / "sillok.jsonl", world.person_reports,
+                               stop_observed(gate_directory / "sillok.jsonl", world.person_reports,
                                                     world.zero_commands, entry_sim_ms),
                                20, processes, "walking person triggers base stop",
                                action=lambda: world.propose_base(0.12))
@@ -744,13 +763,13 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         else:
             world.human = nearby_person(*world.pose(), world.heading())
             world.marker("사람 등장")
-            wait_for(lambda: person_stop_observed(gate_directory / "sillok.jsonl", world.person_reports,
+            wait_for(lambda: stop_observed(gate_directory / "sillok.jsonl", world.person_reports,
                                                  world.zero_commands, entry_sim_ms),
                      5, processes, "native lidar person causes base stop",
                      action=lambda: world.propose_base(0.2))
-        wait_for(lambda: person_stop_report(gate_directory / "sillok.jsonl", world.person_reports, entry_sim_ms),
+        wait_for(lambda: stop_report(gate_directory / "sillok.jsonl", world.person_reports, entry_sim_ms),
                  3, processes, "recorded world sample causing person denial")
-        trigger = person_stop_report(gate_directory / "sillok.jsonl", world.person_reports, entry_sim_ms)
+        trigger = stop_report(gate_directory / "sillok.jsonl", world.person_reports, entry_sim_ms)
         revoked_at, revoked_sim_ms = trigger["wall"], trigger["stamp_ms"]
         moving_x = trigger["robot"][0]
         zero_at, zero_sim_ms = next((t, stamp) for t, stamp in world.zero_commands if t >= revoked_at)
@@ -817,7 +836,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
 
         sensor_faults = {}
         for case in ("disconnect", "coverage"):
-            sensor_faults[case] = exercise_sensor_fault(world, processes, case)
+            sensor_faults[case] = exercise_sensor_fault(world, processes, case, roles)
             presentation_wait(3)
         (root / "sensor-faults.json").write_text(json.dumps(sensor_faults, indent=2))
         (root / "sensor-person.json").write_text(json.dumps(sensor_person_evidence, indent=2))
@@ -828,7 +847,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             presentation_wait(3)
 
         snapshot = root / "sealed-snapshot.jsonl"
-        wait_for(lambda: sealed_incident_snapshot(gate_directory / "sillok.jsonl", snapshot),
+        wait_for(lambda: sealed_incident_snapshot(gate_directory / "sillok.jsonl", snapshot, **log_boundary),
                  3, processes, "sealed arm incident")
         report = subprocess.run([binary, "sillok", "verify", "--log", str(snapshot),
                                  "--pubkey", roles.log_public if roles else public(9)], capture_output=True, text=True)
@@ -924,8 +943,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
                      5, processes, "fault fixture rearm", action=lambda: world.propose_base(0.0))
             arm_fault_results[case] = exercise_arm_fault(world, processes, case)
-            if roles and (fault_gate / "sillok.jsonl").exists():
-                shutil.copy2(fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl")
+            if roles:
+                checkpoint_evidence(root, fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl", UIDS["gate"])
             (fault_root / "result.json").write_text(json.dumps(arm_fault_results[case], indent=2) + "\n")
             world._emit("arm_fault_result", **arm_fault_results[case])
             presentation_wait(2)
@@ -992,8 +1011,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                   "gate_kill_to_base_stop_sim_ms": stopped_sim_ms - killed_sim_ms,
                   "sillok_incident_snapshot_fully_sealed": True,
                   "attack_probes": attacks}
-        if roles and (gate_directory / "sillok.jsonl").exists():
-            shutil.copy2(gate_directory / "sillok.jsonl", root / "sillok.jsonl")
+        if roles:
+            checkpoint_evidence(root, gate_directory / "sillok.jsonl", root / "sillok.jsonl", UIDS["gate"])
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         (root / "verification-report.json").write_text(json.dumps(public_report(result,
             os.environ.get("HAETAE_REVISION", "unknown"), live.session_id if live else root.name),
@@ -1005,8 +1024,6 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                 time.sleep(live_hold_seconds)
         print(json.dumps(result))
     finally:
-        if roles and (gate_directory / "sillok.jsonl").exists():
-            shutil.copy2(gate_directory / "sillok.jsonl", root / "sillok.jsonl")
         for process in list(processes.values())[::-1]:
             stop(process)
         if executor is not None:
@@ -1022,6 +1039,12 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             log.close()
         if network_guard:
             network_guard.close()
+        # Collect only after cleanup; rejection must never skip controller/process cleanup.
+        if roles:
+            try:
+                checkpoint_evidence(root, gate_directory / "sillok.jsonl", root / "sillok.jsonl", UIDS["gate"])
+            except (OSError, ValueError) as exc:
+                print("Final diagnostic collection rejected: " + str(exc), file=sys.stderr)
 
 
 def main():

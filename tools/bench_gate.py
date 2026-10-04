@@ -84,7 +84,7 @@ class BenchGate:
     def world(self, person):
         humans = [{"id": "bench-person", "class": "child", "pos": {"x": 5.1, "y": 5}}] if person else []
         return self.signed(self.signer.sign("world", {"stamp_ms": now_ms(),
-                           "robot": {"pose": {"x": 5, "y": 5}, "yaw": 0}, "humans": humans, "confidence": 1}))
+                           "robot": {"pose": {"x": 5, "y": 5}, "yaw": 0, "twist": {"linear": 0.0, "angular": 0.0}}, "humans": humans, "confidence": 1}))
 
     def motion(self, stop=False):
         self.proposal += 1

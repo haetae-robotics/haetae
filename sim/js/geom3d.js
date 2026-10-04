@@ -6,8 +6,10 @@ import * as THREE from 'three';
 
 export const FLOOR_Y = 0.04;
 
+const displayCoordinate = (value) => Number.isFinite(value) ? Math.max(-100, Math.min(100, value)) : 0;
+
 export function w2v(p, h = 0, out = new THREE.Vector3()) {
-  return out.set(p.x - 5, h, 5 - p.y);
+  return out.set(displayCoordinate(p?.x) - 5, displayCoordinate(h), 5 - displayCoordinate(p?.y));
 }
 
 export function v2w(v) {
@@ -124,8 +126,13 @@ export function dashedRing(r, width, dashes = 36, fill = 0.55) {
  * Returns { geometry, quads, length }.
  */
 export function ribbon(a, b, width, dash = 0, gap = 0) {
-  const dx = b.x - a.x;
-  const dz = -(b.y - a.y);
+  // Bound display geometry independently of policy validation of raw intent.
+  const bounded = displayCoordinate;
+  const dx = bounded(b?.x) - bounded(a?.x);
+  const dz = -(bounded(b?.y) - bounded(a?.y));
+  width = Number.isFinite(width) ? Math.max(0, Math.min(width, 10)) : 0;
+  dash = Number.isFinite(dash) ? Math.max(0, dash) : 0;
+  gap = Number.isFinite(gap) ? Math.max(0, gap) : 0;
   const L = Math.hypot(dx, dz);
   const ux = L ? dx / L : 1;
   const uz = L ? dz / L : 0;
@@ -140,7 +147,12 @@ export function ribbon(a, b, width, dash = 0, gap = 0) {
   };
   let quads = 0;
   if (dash > 0 && L > 0) {
-    for (let s = 0; s < L; s += dash + gap) { quad(s, Math.min(L, s + dash)); quads++; }
+    const count = Math.min(2000, Math.ceil(L / (dash + gap)));
+    const stride = Math.max(dash + gap, L / count);
+    for (let i = 0; i < count; i++) {
+      const start = i * stride;
+      quad(start, Math.min(L, start + dash)); quads++;
+    }
   } else if (L > 0) {
     quad(0, L); quads = 1;
   }

@@ -1,6 +1,14 @@
 # HANDOFF — haetae
 
-갱신: 2026-10-02. 현재 기준은 `main`과 PR의 정확한 커밋별 CI/리뷰 증거다. 실행 설명은 [simulator alpha guide](docs/simulator-alpha.md), 보호용 배포 조건은 [security release gate](docs/security-release.md)를 따른다.
+갱신: 2026-10-04. 현재 기준은 `main`과 PR의 정확한 커밋별 CI/리뷰 증거다. 실행 설명은 [simulator alpha guide](docs/simulator-alpha.md), 보호용 배포 조건은 [security release gate](docs/security-release.md)를 따른다.
+
+## 진행 중 리뷰 수정
+
+- 전체 리뷰 기준 main `17b8931`에서 `fix/full-review-boundaries` 작업 중. 핵심7건 및 낮은 우선순위 표시·운영·증거 경계 수정.
+- 로그 수집은 trusted root 기준 nofollow fd/owner/type/link/256MiB 제한; 역할 준비 폴더는 root0700에서 준비 후 권한 이전. private key0600/public diagnostic0644.
+- nonzero velocity에 측정 twist 필수. Caution 팔 거부·취소 및 base 즉시 감속. reject 시각 이후 관절 피드백으로 settling 확인.
+- ROS arm 수락·취소 absolute250ms, 취소/settling 동안 heartbeat 금지, resolved command topic의 extra publisher는 지속 Hold.
+- 로컬 unit·native bench 검증 후 전체 변경의 독립 양쪽 리뷰/Claude/정확한 head CI를 확인해야 한다. 이전 리뷰·CI 성공은 승인으로 재사용하지 않는다. 실물 미검증.
 
 ## 현재 구현
 

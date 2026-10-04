@@ -15,10 +15,8 @@ PROFILES = ((40, 0.06), (80, 0.14), (100, 0.22))
 
 
 def exercise_compound(world, roles, processes, wait_for, repeats, evidence_path):
-    counters = roles.directories["vla"] / "counters.json"
-
     def counter():
-        return json.loads(counters.read_text())["counters"]["vla"]
+        return roles.counter("vla")
 
     results = []
     evidence = {"ok": False, "status": "running", "iterations": results,

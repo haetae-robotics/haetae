@@ -331,7 +331,7 @@ export class Actors {
     this.buildFakeTag();
     this.buildPeer();
 
-    this.people = new Map(); // id -> person
+    this.people = new Map(); // occurrence key -> person
     this.state = {
       bodyYaw: Math.PI * 0.6, headYaw: 0, lastPose: null, wheel: 0, lidar: 0,
       blinkAt: 0, ghostYaw: 0, lastPeople: '',
@@ -466,17 +466,18 @@ export class Actors {
     const sig = humans.map((h) => `${h.id}:${h.class}`).join('|');
     if (sig === this.state.lastPeople) return;
     this.state.lastPeople = sig;
-    const keep = new Set(humans.map((h) => h.id));
+    const entries = humans.map((h, i) => ({ ...h, key: `${i}:${h.id}` }));
+    const keep = new Set(entries.map((h) => h.key));
     for (const [id, p] of this.people) {
-      if (!keep.has(id) || p.cls !== humans.find((h) => h.id === id)?.class) {
+      if (!keep.has(id) || p.cls !== entries.find((h) => h.key === id)?.class) {
         this.group.remove(p.g);
         p.tag.element.remove();
         p.q.element.remove();
         this.people.delete(id);
       }
     }
-    for (const h of humans) {
-      if (this.people.has(h.id)) continue;
+    for (const h of entries) {
+      if (this.people.has(h.key)) continue;
       const M = (t) => this.robotMat(t);
       const p = buildPerson(M, h.class);
       p.cls = h.class;
@@ -497,12 +498,12 @@ export class Actors {
       }
       p.phase = Math.random() * TAU;
       this.group.add(p.g);
-      this.people.set(h.id, p);
+      this.people.set(h.key, p);
     }
   }
 
   /** Human meshes (for raycasts / screen boxes). */
-  personOf(id) { return this.people.get(id); }
+  personOf(id) { return [...this.people.values()].find((p) => p.id === id); }
 
   // ───────────────────────── Per-frame update ─────────────────────────
 
@@ -724,8 +725,8 @@ export class Actors {
     this.syncPeople(humans);
     let casters = false;
     const unknown = !!sc.decor?.childUnknown;
-    for (const h of humans) {
-      const p = this.people.get(h.id);
+    for (const [i, h] of humans.entries()) {
+      const p = this.people.get(`${i}:${h.id}`);
       if (!p) continue;
       const key = `${h.pos.x},${h.pos.y}`;
       if (p.lastKey !== key) { p.lastKey = key; casters = true; }

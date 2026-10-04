@@ -48,7 +48,7 @@ export function num(v) {
 }
 
 export function pt(p) {
-  return `(${num(p.x)}, ${num(p.y)})`;
+  return p && typeof p === 'object' ? `(${num(p.x)}, ${num(p.y)})` : '(잘못된 좌표)';
 }
 
 export function verdictLabel(v) {
@@ -78,9 +78,8 @@ export function actionText(a) {
 /** Where an action points on the map (null for stop). */
 export function actionTarget(a) {
   if (!a) return null;
-  if (a.type === 'move_to') return a.goal;
-  if (a.type === 'grasp' || a.type === 'place') return a.at;
-  return null;
+  const p = a.type === 'move_to' ? a.goal : ['grasp', 'place'].includes(a.type) ? a.at : null;
+  return p && Number.isFinite(p.x) && Number.isFinite(p.y) ? p : null;
 }
 
 function freshness(policy) {

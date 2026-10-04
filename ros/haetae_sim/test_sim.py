@@ -21,6 +21,14 @@ class SimulationTests(unittest.TestCase):
         self.assertAlmostEqual(base.speed, 0.2)
         self.assertGreater(base.y, 5.0)
 
+    def test_pure_turn_expires_with_deadman(self):
+        base = Base()
+        base.command(0, 1, 0)
+        base.advance(.1, .1)
+        self.assertAlmostEqual(base.yaw, .1)
+        base.advance(.1, .3)
+        self.assertAlmostEqual(base.yaw, .1)
+
     def test_independent_geometry_and_latency(self):
         self.assertAlmostEqual(disc_gap(0, 0, 0.25, 1, 0, 0.2), 0.55)
         self.assertTrue(disc_hits_rect(0.8, 0, 0.25, 1, -1, 2, 1))

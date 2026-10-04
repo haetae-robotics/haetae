@@ -32,9 +32,8 @@ class Base:
     def advance(self, dt: float, now: float) -> None:
         if dt < 0 or dt > 0.1:
             raise ValueError("simulation step must be between 0 and 100 ms")
-        target = self.target if self.last_command is not None and (
-            now - self.last_command < self.deadman_s
-        ) else 0.0
+        leased = self.last_command is not None and 0 <= now - self.last_command < self.deadman_s
+        target = self.target if leased else 0.0
         if target == 0.0 or self.speed * target < 0 or abs(target) < abs(self.speed):
             rate = self.max_decel
         else:
@@ -43,6 +42,6 @@ class Base:
         self.speed += delta
         if abs(self.speed) < 1e-9:
             self.speed = 0.0
-        self.yaw += self.angular * dt if target else 0.0
+        self.yaw += self.angular * dt if leased else 0.0
         self.x += self.speed * math.cos(self.yaw) * dt
         self.y += self.speed * math.sin(self.yaw) * dt

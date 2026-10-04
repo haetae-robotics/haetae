@@ -110,6 +110,7 @@ pub struct Enforcer {
     state_ok: bool,
     ever_armed: bool,
     last_stop: Option<StopReason>,
+    last_cmd: Twist2,
     tick_ms: u64,
     auth_checkpoint: Option<(u64, BTreeMap<Role, u64>)>,
 }
@@ -147,6 +148,7 @@ impl Enforcer {
             state_ok: true,
             ever_armed: false,
             last_stop: Some(StopReason::Startup),
+            last_cmd: zero(),
             tick_ms: cfg.tick_ms,
             auth_checkpoint: None,
         })
@@ -265,6 +267,8 @@ impl Enforcer {
                 if out.is_none() || self.runtime.mode().stop_only() {
                     self.clear_active();
                     self.armed.clear();
+                } else {
+                    self.rejudge(now_ms, &mut forced);
                 }
                 out
             }
@@ -280,6 +284,7 @@ impl Enforcer {
     }
 
     pub fn reject(&mut self, error: String, bytes: &[u8], now_ms: u64) -> Step {
+        self.last_now_ms = now_ms;
         self.clear_active();
         self.armed.clear();
         let outcome = self.runtime.reject_input(error, bytes, now_ms);
@@ -357,6 +362,9 @@ impl Enforcer {
     }
 
     fn monitor_arm(&self) -> Result<(), &'static str> {
+        if self.runtime.mode() != Mode::Normal {
+            return Err("arm:mode-changed");
+        }
         let active = self.active_arm.as_ref().ok_or("arm:no-active")?;
         let world = self.runtime.world().ok_or("arm:no-world")?;
         let arm = self.runtime.policy().arm.as_ref().ok_or("arm:no-policy")?;
@@ -521,7 +529,8 @@ impl Enforcer {
         } else {
             None
         };
-        let publish_now = reason != self.last_stop
+        let publish_now = cmd != self.last_cmd
+            || reason != self.last_stop
             || matches!(reason, Some(StopReason::Denied | StopReason::Revoked));
         if reason != self.last_stop {
             if let Some(r) = &reason {
@@ -529,6 +538,7 @@ impl Enforcer {
             }
         }
         self.last_stop = reason.clone();
+        self.last_cmd = cmd;
         let status = Status {
             mode: self.runtime.mode(),
             stop: reason.clone(),

@@ -1,6 +1,6 @@
 use haetae_core::{
     ActionKind, ActionProposal, Human, HumanClass, Mode, Point2, Policy, RobotState, Source,
-    WorldSnapshot,
+    Twist2, WorldSnapshot,
 };
 use haetae_enforce::{fault, set_state, Enforcer, EnforcerConfig, StopReason};
 use haetae_runtime::{Inbound, RuntimeConfig};
@@ -21,7 +21,10 @@ fn world(t: u64) -> WorldSnapshot {
         robot: RobotState {
             pose: Point2::new(5.0, 5.0),
             yaw: Some(0.0),
-            twist: None,
+            twist: Some(Twist2 {
+                linear: 0.0,
+                angular: 0.0,
+            }),
             joints: None,
             holding: None,
         },
@@ -170,4 +173,15 @@ fn unclean_restart_and_lock_fail_closed() {
     drop(clean);
     let mut after = Enforcer::open(policy(), cfg(), 1300).unwrap();
     assert_eq!(after.tick(1300).status.mode, Mode::EStop);
+}
+
+#[test]
+fn caution_fault_reduces_active_base_in_the_same_step() {
+    let mut g = gate();
+    g.handle(Inbound::World(world(1000)), 1000);
+    g.handle(twist(1, 1000, 0.0), 1000);
+    assert_eq!(g.handle(twist(2, 1000, 0.8), 1000).cmd.linear, 0.8);
+    let step = g.handle(fault("sensor", Mode::Caution, 1010), 1010);
+    assert_eq!(step.cmd.linear, 0.5);
+    assert!(step.publish_now);
 }

@@ -19,9 +19,10 @@ pub struct Decision {
     pub fired: Vec<String>,
     /// The action to execute: as proposed for `yun`, clamped for `jeol`, `None` for `bul`.
     pub action: Option<ActionKind>,
-    /// Speed limit (m/s) the executor must apply to *all* motion for this
-    /// action, arm included: the envelope maximum, or lower if a `jeol` check
-    /// matched. Always set when an action is allowed, except for `stop`.
+    /// Cartesian speed limit (m/s) for velocity, move, grasp and place actions.
+    /// Joint trajectories use the validated joint limits (rad/s, rad/s²) in
+    /// the arm policy instead, and are allowed only in Normal mode.
+    /// Set on allowed Cartesian actions; absent for stop and joint trajectories.
     pub speed_cap: Option<f64>,
     pub mode: Mode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,6 +153,8 @@ impl Gate {
                 Err("source:not-allowed")
             } else if self.mode.stop_only() {
                 Err("mode:arm-stop")
+            } else if self.mode == Mode::Caution {
+                Err("mode:arm-caution")
             } else if !world.humans.is_empty() {
                 Err("arm:human-present")
             } else if let Some(arm) = &self.policy.arm {
@@ -298,6 +301,9 @@ impl Gate {
         let Some(yaw) = world.robot.yaw else {
             return denied("invalid:world".into());
         };
+        if world.robot.twist.is_none() {
+            return denied("invalid:world".into());
+        }
         if self.mode.stop_only() {
             return denied(format!("mode:{}", mode_name(self.mode)));
         }
@@ -353,13 +359,13 @@ impl Gate {
                     }
                 }
             }
+            cap = cap.min(tighter);
             if cmd_linear.abs() <= tighter {
                 break;
             }
             let next = tighter / cmd_linear.abs();
             cmd_linear *= next;
             cmd_angular *= next;
-            cap = cap.min(tighter);
         }
         let verdict = if factor < 1.0
             || (cmd_linear - linear).abs() > f64::EPSILON

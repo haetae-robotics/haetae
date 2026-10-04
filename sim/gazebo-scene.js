@@ -1,3 +1,4 @@
+import { validTelemetry } from './telemetry.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { createProductRig } from './product-rig.js';
@@ -137,6 +138,7 @@ export function createGazeboScene(canvas) {
   let lastPersonAt = 0;
   let lastFrameAt = performance.now();
   function update(row) {
+    if (!validTelemetry(row)) return false;
     targetX = Number(row.x) - 5; targetZ = 5 - Number(row.y);
     latestJoints = row.joints ?? [];
     productRig?.update(latestJoints);
@@ -161,6 +163,7 @@ export function createGazeboScene(canvas) {
     }
     reportRing.visible = personPresent;
     if (human) person.position.set(Number(human.pos.x) - 5, 0, 5 - Number(human.pos.y));
+    return true;
   }
   function setBlocked(value) {
     gateRing.material.color.setHex(value ? 0xe5484d : 0x568e96);

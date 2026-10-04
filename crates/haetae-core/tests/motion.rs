@@ -148,3 +148,55 @@ fn arm_chunk_denies_missing_measured_state() {
     );
     assert_eq!(d.fired, ["envelope:arm-duration"]);
 }
+
+#[test]
+fn velocity_requires_measured_twist_but_zero_remains_available() {
+    let mut w = world();
+    w.robot.twist = None;
+    let d = gate().judge_at(
+        &proposal(ActionKind::Velocity {
+            linear: 0.1,
+            angular: 0.0,
+            ttl_ms: 200,
+        }),
+        &w,
+        1000,
+    );
+    assert_eq!(d.verdict, Verdict::Bul);
+    assert_eq!(d.fired, ["invalid:world"]);
+    assert_eq!(
+        gate()
+            .judge_at(
+                &proposal(ActionKind::Velocity {
+                    linear: 0.0,
+                    angular: 0.0,
+                    ttl_ms: 200
+                }),
+                &w,
+                1000
+            )
+            .verdict,
+        Verdict::Yun
+    );
+}
+
+#[test]
+fn under_cap_velocity_records_active_zone_limit() {
+    let policy = POLICY.replace("\"no_entry\":true", "\"speed_limit\":0.3");
+    let mut w = world();
+    w.robot.pose = Point2::new(2.0, 1.0);
+    let d = Gate::new(Policy::from_json(&policy).unwrap())
+        .unwrap()
+        .judge_at(
+            &proposal(ActionKind::Velocity {
+                linear: 0.2,
+                angular: 0.0,
+                ttl_ms: 200,
+            }),
+            &w,
+            1000,
+        );
+    assert_eq!(d.verdict, Verdict::Yun);
+    assert_eq!(d.speed_cap, Some(0.3));
+    assert_eq!(d.fired, ["zone:thin"]);
+}

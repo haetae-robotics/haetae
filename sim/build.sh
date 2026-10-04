@@ -10,6 +10,10 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+if [ "${1:-}" = "--stage" ]; then
+  stage_path=$(python3 tools/safe_stage.py "${2:?stage directory required}")
+fi
+
 cargo build -p haetae-wasm --release --target wasm32-unknown-unknown
 wasm-bindgen --target web --no-typescript --out-dir sim/pkg \
   target/wasm32-unknown-unknown/release/haetae_wasm.wasm
@@ -18,7 +22,6 @@ cp examples/dinner-party/policy.json examples/dinner-party/world.json \
   examples/dinner-party/proposals.jsonl sim/examples/
 
 if [ "${1:-}" = "--stage" ]; then
-  mkdir -p "$2"
-  rsync -a --delete --exclude build.sh sim/ "$2/"
-  echo "staged to $2"
+  rsync -a --delete --exclude build.sh --exclude .haetae-sim-stage sim/ "$stage_path/"
+  echo "staged to $stage_path"
 fi

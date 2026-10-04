@@ -39,7 +39,7 @@ base. A compromised bridge or privileged host can still command the robot.
 | Policy or trust file changed | Root-signed trust bundle binds exact policy bytes | Provisioning and rollback test on target host |
 | Gateway dies or its response stalls | ROS bridge publishes zero on failure; base deadman is required | Kill -9 tests for bridge and Rust child against configured controllers |
 | Durable checkpoint delays a positive response | Bridge rejects late actuation by response age, proposal expiry and world age; it publishes zero, asks the live Rust child to seal an incident, then exits | Measure worst state fsync on target host; test delayed positive base/arm outputs against controller deadman |
-| Rogue direct `/cmd_vel` publisher | ROS graph count raises Hold after discovery | SROS2 permissions must prevent the publisher from connecting |
+| Rogue direct `/cmd_vel` publisher | Resolved controller-topic graph count raises persistent Hold through the trusted local IPC after discovery | SROS2 permissions must prevent the publisher from connecting |
 | Privileged host compromise, key theft, bad perception, unsafe physics | **Not prevented** | Separate host hardening, key protection, sensor validation and certified safety layer |
 
 ## Current implementation limits
@@ -189,3 +189,23 @@ cannot resume motion. The sensor oracle accepts either engine `stale_world` or
 a disarmed rejection with the exact response-boundary world-expiry error.
 Malformed responses, backwards clock, IPC failures and responses taking 50 ms
 or more still trigger the fatal stop path. No freshness budget is increased.
+
+### Defensive boundary corrections
+
+The authenticated stdio adapter accepts signed source input plus local `tick`,
+`reject`, and upward-only `hold` (`{"k":"hold","t":...}`). Only the trusted
+local gateway owns that pipe. `hold` records a gateway authority fault; signed
+stop/move input cannot lower the resulting mode. It confers no world or fault
+signing key on the gateway.
+
+Nonzero base velocity requires measured linear and angular twist. Joint
+trajectories require Normal mode and joint-policy limits; Caution cancels them.
+ROS goal acceptance and cancellation each have a 250 ms absolute response
+limit. Cancellation/engine settling suppresses lease renewal, and lease renewal
+follows successful output handoff.
+
+Privileged simulator evidence reads walk from a trusted run root without
+following symlinks, require a regular single-link file and the expected role
+owner, and reject files above 256 MiB. Public checkpoints are atomic and 0644;
+private provisioning remains 0600 beneath root-owned 0700 anchors until handoff.
+These are simulator boundary checks, not evidence of physical stop performance.

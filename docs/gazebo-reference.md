@@ -357,3 +357,16 @@ they are not statistical worst-case or hardware evidence. Runtime failure
 invalidates the whole run; no successful summary is produced.
 
 The [simulator alpha guide](simulator-alpha.md) covers operator commands, report downloads, source/evidence packaging and supported scope.
+
+## Evidence collection and timing scope
+
+Role-owned logs and counters are read through directory descriptors anchored
+at the trusted run root. Symlinks, hard links, special files, unexpected owners,
+and logs above 256 MiB are rejected. Collection rejection cannot skip process
+and transport cleanup. Exported diagnostics use ordinary 0644 permissions.
+
+The local viewer now runs the same six compound iterations (two each at
+40/80/100 proposals per second) required by the candidate report. Arm fault
+reports include the measured lease renewal immediately before the fault and
+require nonnegative stop delays. These delays describe the observed runs;
+they are not a worst-case timing guarantee.

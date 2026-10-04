@@ -89,9 +89,11 @@ def host_case(name, scenario="allow", interrupt=None):
     ready.unlink(missing_ok=True)
     try:
         with (OUT / (name + "-host.log")).open("w") as log:
-            host = subprocess.Popen([sys.executable, str(ROOT / "haetae-bench"), "run", "--port", device.port,
-                                     "--binary", str(ROOT / "target" / "release" / "haetae"),
-                                     "--scenario", scenario, "--seconds", "1", "--ready-file", str(ready)],
+            host = subprocess.Popen([sys.executable, "-c",
+                                     "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+                                     "from bench_host import run; run(Path(sys.argv[2]), sys.argv[3], sys.argv[4], 1, sys.argv[5])",
+                                     str(ROOT / "tools"), str(ROOT / "target/release/haetae"),
+                                     device.port, scenario, str(ready)],
                                     stdout=log, stderr=log, start_new_session=True)
             def is_ready():
                 if host.poll() is not None:
