@@ -25,6 +25,20 @@ def arm():
 
 
 class ControllerPermitTest(unittest.TestCase):
+    def test_trusted_holding_state_suppresses_idle_renewal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fixture.key'
+            path.write_text('00' * 32)  # Public non-deployment fixture.
+            signer = PermitSigner(path)
+            self.assertTrue(signer.admitted_arm_holding)
+            signer.observe('arm', {'nonce': 'a' * 32, 'holding': False})
+            self.assertFalse(signer.admitted_arm_holding)
+            signer.observe('arm', {'nonce': 'a' * 32, 'holding': True})
+            self.assertTrue(signer.admitted_arm_holding)
+            for value in (0, 1, None, 'false'):
+                with self.assertRaises(ValueError):
+                    signer.observe('arm', {'nonce': 'a' * 32, 'holding': value})
+
     def test_wall_tick_cannot_extend_frozen_or_rejected_world(self):
         clock = AcceptedWorldClock()
         self.assertEqual(clock.remaining(1_000_000_000, 2_000_000_000, 200_000_000), 0)

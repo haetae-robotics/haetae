@@ -94,6 +94,7 @@ class PermitSigner:
         self.admitted_arm = IDLE
         self.goal_sequence = 0
         self.admitted_goal_sequence = 0
+        self.admitted_arm_holding = True
 
     def observe(self, target, value):
         nonce = value.get("nonce", "")
@@ -109,6 +110,10 @@ class PermitSigner:
             if type(sequence) is not int or not 0 <= sequence < 2**63:
                 raise ValueError("invalid admitted goal sequence")
             self.admitted_goal_sequence = sequence
+            holding = value.get("holding", True)
+            if type(holding) is not bool:
+                raise ValueError("invalid admitted arm holding state")
+            self.admitted_arm_holding = holding
 
     def sign(self, target, kind, digest, sim_ns, remaining_ns=MAX_LEASE_NS, wall_ns=None):
         if target not in self.challenges:

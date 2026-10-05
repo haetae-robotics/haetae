@@ -74,12 +74,28 @@ class NodeBoundaryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             g._permit("arm", "stop", "0" * 64)
 
+    def test_short_original_grant_is_not_dispatched_near_expiry(self):
+        g = self.gate
+        signed = []
+        g.permits = SimpleNamespace(sign=lambda *args: signed.append(args) or "token")
+        g.permit_sim_ns, g.permit_wall_ns = 1_000_000_000, 0
+        clock.value = .006
+        g.permit_remaining_ns = 56_000_000
+        for kind in ("goal", "lease", "reset", "command"):
+            with self.assertRaises(ExpiredActuation):
+                g._permit("arm", kind, "a" * 64)
+        self.assertFalse(signed)
+        g.permit_remaining_ns += 1
+        g._permit("arm", "lease", "a" * 64)
+        self.assertEqual(signed[-1][3:], (1_000_000_000, 56_000_001, 0))
+
     def test_relay_ack_cannot_renew_before_trusted_controller_admission(self):
         g = self.gate
         g.arm_goal_future = None  # The untrusted relay already acknowledged.
         digest = "a" * 64
         g.permits = SimpleNamespace(challenges={"arm": "b" * 32},
                                     active_arm=digest, admitted_arm="0" * 64,
+                                    admitted_arm_holding=False,
                                     goal_sequence=3, admitted_goal_sequence=0)
         g.permit_reset = False
         g.permit_stop = False
@@ -106,6 +122,14 @@ class NodeBoundaryTest(unittest.TestCase):
         g.permits.admitted_goal_sequence = 0
         g._heartbeat(1000)
         self.assertEqual(g.heartbeats[-1], "lease:" + "0" * 64)
+        g.permits.admitted_arm_holding = True
+        count = len(g.heartbeats)
+        g._heartbeat(1000)
+        self.assertEqual(len(g.heartbeats), count)  # Locked/holding IDLE cannot renew.
+        g.permit_reset = True
+        g._heartbeat(1000)
+        self.assertEqual(g.heartbeats[-1], "reset:" + "0" * 64)
+        g.permit_reset = False
         g.permit_stop = True
         count = len(g.heartbeats)
         g._heartbeat(1000)

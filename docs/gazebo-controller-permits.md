@@ -99,6 +99,13 @@ create motion authority. Goals, commands, leases and especially resets retain
 the original Rust request clocks and remaining world/proposal budget; a delayed
 response or cancel callback cannot refresh that positive authority.
 
+Before signing non-stop permits, the owner rechecks both original clock ages
+and reserves the existing 50ms admission window within the original remaining
+world/proposal budget. If that margin is unavailable, it revokes and disarms
+early rather than dispatching an already nearly expired grant. Expiry is never
+extended. Non-reset arm renewal is also suppressed while trusted controller
+telemetry reports holding; only an explicit accepted Rust stop can reset it.
+
 Telemetry keeps the total rejection counter, including invalid stop packets,
 and a separate motion/reset/lease rejection counter. Normal arm completion
 checks the latter: a rejected locking-only stop still locks and cannot be

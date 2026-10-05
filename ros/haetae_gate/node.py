@@ -311,8 +311,10 @@ class HaetaeGate(Node):
         sim_age = self._now() * 1_000_000 - self.permit_sim_ns
         wall_age = time.monotonic_ns() - self.permit_wall_ns
         if (min(sim_age, wall_age) < 0 or max(sim_age, wall_age) >= 50_000_000
-                or max(sim_age, wall_age) >= self.permit_remaining_ns):
-            raise ExpiredActuation("original controller authority expired before signing")
+                or self.permit_remaining_ns - max(sim_age, wall_age) <= 50_000_000):
+            # Reserve the existing admission window INSIDE original expiry.
+            # A 1ms grant can otherwise be fresh at signing but expired on DDS.
+            raise ExpiredActuation("original controller authority has insufficient admission budget")
         return self.permits.sign(target, kind, digest, self.permit_sim_ns,
                                  self.permit_remaining_ns, self.permit_wall_ns)
 
@@ -332,6 +334,7 @@ class HaetaeGate(Node):
                 # an idle lease afterwards is a spurious locked rejection.
                 return
             if not self.permit_reset and (
+                    self.permits.admitted_arm_holding or
                     self.permits.admitted_arm != self.permits.active_arm or
                     self.permits.admitted_goal_sequence != self.permits.goal_sequence):
                 # The relay's outer action acknowledgement is not controller

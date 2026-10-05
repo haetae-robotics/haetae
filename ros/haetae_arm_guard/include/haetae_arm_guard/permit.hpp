@@ -127,6 +127,7 @@ public:
   {
     std::lock_guard<std::mutex> lock(mutex_);
     live_unlocked(sim, wall);
+    diagnostic_.clear();
     try {
       if (token.size() > 512 || sim < 0 || wall < 0) {throw std::invalid_argument("token bounds");}
       std::vector<std::string> fields;
