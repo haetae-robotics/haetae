@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Controller-authenticated built-in LED bench; trusted operator entry point."""
+import argparse
+from pathlib import Path
+import sys
+import subprocess
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "tools"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Haetae signed controller LED permit bench")
+    commands = parser.add_subparsers(dest="command", required=True)
+    provision = commands.add_parser("provision", help="create new private device installation; never overwrite")
+    provision.add_argument("--directory", type=Path, required=True)
+    for name in ("compile", "flash"):
+        build = commands.add_parser(name, help="build isolated core with runtime USB upload entry removed")
+        build.add_argument("--deployment", type=Path, required=True)
+        build.add_argument("--controller-key", type=Path, required=True)
+        if name == "flash":
+            build.add_argument("--port", required=True)
+    authorize = commands.add_parser("authorizer", help="trusted key-owning gate service; explicit single operator session")
+    authorize.add_argument("--deployment", type=Path, required=True)
+    authorize.add_argument("--key", type=Path, required=True)
+    authorize.add_argument("--socket", type=Path, required=True)
+    authorize.add_argument("--socket-group", type=int)
+    authorize.add_argument("--scenario", choices=["allow", "person", "world-loss", "replay", "invalid-signature"], default="person")
+    authorize.add_argument("--seconds", type=float, default=3)
+    authorize.add_argument("--binary", type=Path, default=ROOT / "target/release/haetae")
+    authorize.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
+    relay = commands.add_parser("relay", help="USB packet relay; never receives private keys")
+    relay.add_argument("--port", required=True)
+    relay.add_argument("--deployment", type=Path, required=True)
+    relay.add_argument("--authorizer-socket", type=Path, required=True)
+    relay.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
+    run = commands.add_parser("run", help="trusted-host operator demo; launches authorizer and key-free relay")
+    run.add_argument("--port", required=True)
+    run.add_argument("--device-directory", type=Path, required=True)
+    run.add_argument("--scenario", choices=["allow", "person", "world-loss", "replay", "invalid-signature"], default="person")
+    run.add_argument("--seconds", type=float, default=3)
+    usb = commands.add_parser("verify-usb", help="LED-only USB checks on a provisioned hardened UNO; not motor proof")
+    usb.add_argument("--port", required=True)
+    usb.add_argument("--device-directory", type=Path, required=True)
+    commands.add_parser("verify", help="native crypto/epoch/controller/authorizer fault verification")
+    isolation = commands.add_parser("verify-isolation", help="Linux root supervisor: prove gateway UID cannot access authority keys")
+    isolation.add_argument("--binary", type=Path, default=ROOT / "target/release/haetae")
+    args = parser.parse_args()
+    if args.command == "provision":
+        from permit_keys import provision
+        result = provision(args.directory)
+        print("Provisioned public installation " + result["install"] + "; private seeds remain owner-only.")
+    elif args.command in ("compile", "flash"):
+        from permit_build import build
+        build(args.deployment, args.controller_key, getattr(args, "port", None))
+    elif args.command == "authorizer":
+        from permit_authorizer import serve
+        serve(args.binary, args.key, args.deployment, args.socket, args.scenario,
+              args.seconds, args.ready_file, args.socket_group)
+    elif args.command == "relay":
+        from permit_keys import deployment
+        from permit_link import relay
+        relay(args.port, deployment(args.deployment)["install"], args.authorizer_socket, args.ready_file)
+    elif args.command == "run":
+        from permit_run import run
+        run(args.port, args.device_directory, args.scenario, args.seconds)
+    elif args.command == "verify-usb":
+        from permit_usb_verify import main
+        main(args.port, args.device_directory)
+    elif args.command == "verify":
+        from permit_verify import main
+        main()
+    else:
+        from permit_isolation_verify import main
+        main(args.binary)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print("permit 오류: " + str(exc), file=sys.stderr)
+        sys.exit(1)

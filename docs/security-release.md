@@ -5,6 +5,13 @@ This page records exactly which attack paths are covered by code and which
 still need evidence. Haetae is a supervisory control layer, never a certified
 safety function or a general network intrusion prevention system.
 
+The separate [H2 UNO LED permit reference](controller-permits.md) authenticates
+an OFF-only MCU connection and every exact LED action, with independent local
+expiry and a hardened runtime USB profile. Its Linux role isolation, synthetic
+inputs and USB acknowledgments do not qualify ROS arm/base ingress, real
+perception, electrical stopping or secure boot. The protective release status
+above is unchanged.
+
 ## Protected boundary
 
 The intended deployment has three distinct processes or principals:

@@ -47,7 +47,7 @@ is [controllers.yaml](../ros/gazebo/controllers.yaml).
 | `/gripper_hold_controller/joint_trajectory` and its action | Trusted simulator fixture holds the gripper. No model grasp path is exposed. This separate actuator is not protected by household semantic execution permits; actual manipulation remains disabled. |
 | `/controller_manager/*`, controller parameters/configuration | Trusted simulator/root authority provisions and switches controllers. VLA/signer roles lack manager authority. Gateway compromise and privileged graph reconfiguration are not covered by M1. |
 | Gazebo Transport `/world/empty/set_pose_vector`, `/world/empty/pose/info` | Trusted root lab/perception may place and observe fixtures. SROS2 does not secure Gazebo Transport. Separate UIDs, the container network guard and role sandbox restrict nonroot roles to the allowed local DDS network; host/root remain trusted. |
-| UNO USB/GPIO | Separate LED-only bench using H1 session/challenge and a timeout. It has no authenticated motor ingress and is not a household protection path. See [UNO protocol](uno-r4-protocol.md). |
+| UNO USB/GPIO | H1 is a trusted-USB LED bench. Separate [H2 permits](controller-permits.md) authenticate an OFF-only connection and every exact LED action in the MCU. Neither is motor/household ingress; final ROS arm/base permits remain M3 work. |
 | Web controls | Start/advance the root-owned fixed lab scenarios. They do not select policy bytes, create signed observer facts or submit arbitrary model motion to the protected gate. |
 
 The relevant isolation implementation is

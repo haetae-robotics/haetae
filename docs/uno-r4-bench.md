@@ -1,6 +1,8 @@
 # UNO R4 도착 전 준비와 첫 실물 시험
 
 대상: **정식 Arduino UNO R4 Minima (ABX00080)**. USB와 내장 LED만 사용한다.
+USB를 신뢰하는 H1 시험이다. 보드가 인증된 실행 허가를 검사하는 후속 구현은
+[H2 controller permits](controller-permits.md)를 따른다.
 외부 모터·릴레이·로봇 제어선은 연결하지 않는다. LED ON은 가상 이동 명령이
 Rust 판정 엔진을 통과했다는 표시다. 로봇 정지 검증은 아직 남아 있다.
 

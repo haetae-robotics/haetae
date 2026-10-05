@@ -19,6 +19,10 @@ robot action passes through a single policy gate that returns one of three verdi
 Workspace and keep-out zone violations are denied (`bul`), never clamped.
 Haetae does no force or torque limiting.
 
+For the UNO R4 Minima, the separate [controller permit LED reference](docs/controller-permits.md)
+verifies authenticated action permits inside the MCU. It is an LED bench,
+not a real robot protection release.
+
 ## What Haetae is and is not
 
 Haetae is a **non-safety-rated supervisory layer**. It judges untrusted AI
@@ -133,7 +137,17 @@ trusted-adapter preflight checks; it is not physical safety qualification.
 
 [Simple launch, verification and report guide](docs/simulator-alpha.md): `./haetae-demo doctor`, `start`, `status`, `stop`, `restart`, `verify`, `report`. Successful CI runs provide an unsigned source/evidence candidate with SHA256 checksums.
 
-## UNO R4 LED bench preparation
+## UNO R4 LED benches
+
+### H2 authenticated controller permits
+
+`./haetae-permit verify` tests the actual Rust gate and controller crypto.
+The [H2 setup guide](docs/controller-permits.md) covers private provisioning,
+hardened USB firmware, physical USB qualification and LED sessions. The
+controller checks each authenticated permit even if the relay is compromised.
+This remains a built-in LED reference, without motor or electrical stop proof.
+
+### H1 trusted USB legacy bench
 
 `./haetae-bench verify` connects the actual signed Rust gate and the firmware
 guard through virtual serial ports without a board. `./haetae-bench compile`
