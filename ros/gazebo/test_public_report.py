@@ -12,6 +12,16 @@ class PublicReportTest(unittest.TestCase):
                                'recovery_did_not_rearm':True,'drift':0.,
                                'recovery_rejection_observed':True,'recovery_drift':0.}
                for target in ('base','arm') for case in ('unsigned','altered','signature','replay','delay','target')}
+        for target in ('base', 'arm'):
+            for case in ('unsigned', 'altered', 'signature', 'replay', 'delay', 'target'):
+                cases[target + '_' + case]['negative_admission'] = {
+                    'nonce_before': 'b' * 32, 'nonce_after': 'b' * 32,
+                    'holding_before': False, 'reason_before': 'accepted',
+                    'accepted_before': 2, 'accepted_after': 2, 'rejected_before': 0, 'rejected_after': 1,
+                    'before_published_wall_ns': 110, 'sent_wall_ns': 120,
+                    'rejection_published_wall_ns': 130, 'lease_wall_end_ns': 200,
+                    'rejection_reason': {'unsigned': 'binding', 'altered': 'binding',
+                        'signature': 'signature', 'replay': 'sequence', 'delay': 'freshness', 'target': 'binding'}[case]}
         cases.update({'base_positive':{'ok':True,'moved_m':.04},'arm_positive':{'ok':True,'moved_rad':.1},
                       'base_expiry':{'ok':True,'old_goal_did_not_resume':True,'expiry_hold_observed':True,'expiry_drift':0.},
                       'arm_expiry':{'ok':True,'old_goal_did_not_resume':True,'expiry_hold_observed':True,'expiry_drift':0.}})
@@ -22,6 +32,8 @@ class PublicReportTest(unittest.TestCase):
                 'first_sent_wall_ns': 100, 'first_admission_published_wall_ns': 110,
                 'replay_sent_wall_ns': 120, 'rejection_published_wall_ns': 130,
                 'first_packet_sha256': 'a' * 64, 'replay_packet_sha256': 'a' * 64}
+            cases[target + '_replay']['replay_admission'].update({
+                'first_admission_reason': 'accepted', 'replay_rejection_reason': 'sequence'})
         value={'controller_permits':{'ok':True,'scope':'gazebo_exact_action_permits_with_compromised_relay_uid',
                                     'attacker_uid':2005,'checks':cases,
                                     'relay_boundaries': {
@@ -42,6 +54,7 @@ class PublicReportTest(unittest.TestCase):
                                ('rejected_after_first', 1), ('rejected_after_replay', 0),
                                ('accepted_before', True), ('rejection_published_wall_ns', 115),
                                ('first_admission_published_wall_ns', 90),
+                               ('first_admission_reason', 'sequence'), ('replay_rejection_reason', 'expired'),
                                ('replay_packet_sha256', 'b' * 64)):
             original = witness[field]
             witness[field] = invalid
@@ -50,6 +63,19 @@ class PublicReportTest(unittest.TestCase):
         cases['base_replay'].pop('replay_admission')
         self.assertEqual(check(), 'failed')
         cases['base_replay']['replay_admission'] = witness
+        for target in ('base', 'arm'):
+            for case in ('unsigned', 'altered', 'signature', 'replay', 'delay', 'target'):
+                negative = cases[target + '_' + case]['negative_admission']
+                for field, invalid in (('holding_before', True), ('reason_before', 'sequence'),
+                        ('rejection_reason', 'expired'), ('accepted_after', 3), ('rejected_after', 2),
+                        ('rejected_before', True), ('nonce_after', 'c' * 32),
+                        ('lease_wall_end_ns', 130), ('before_published_wall_ns', 121)):
+                    original = negative[field]; negative[field] = invalid
+                    self.assertEqual(check(), 'failed', target + '_' + case + '_' + field)
+                    negative[field] = original
+                cases[target + '_' + case].pop('negative_admission')
+                self.assertEqual(check(), 'failed')
+                cases[target + '_' + case]['negative_admission'] = negative
         denied = value['controller_permits']['relay_boundaries']['denied_services']
         denied['/controller_manager/switch_controller'] = False
         self.assertEqual(check(),'failed')

@@ -31,12 +31,33 @@ def replay_admitted_then_rejected(value):
     digest = row.get("first_packet_sha256")
     return (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
             and digest == row.get("replay_packet_sha256")
+            and row.get("first_admission_reason") == "accepted"
+            and row.get("replay_rejection_reason") == "sequence"
             and row["accepted_after_first"] == row["accepted_before"] + 1
             and row["accepted_after_replay"] == row["accepted_after_first"]
             and row["rejected_after_first"] == row["rejected_before"]
             and row["rejected_after_replay"] > row["rejected_after_first"]
             and row["first_sent_wall_ns"] <= row["first_admission_published_wall_ns"]
             <= row["replay_sent_wall_ns"] <= row["rejection_published_wall_ns"])
+
+
+def negative_permit_rejected(value, case):
+    """An expired reset or generic lock is not a policy-specific rejection."""
+    row = mapping(value)
+    fields = ("accepted_before", "accepted_after", "rejected_before", "rejected_after",
+              "before_published_wall_ns", "sent_wall_ns", "rejection_published_wall_ns", "lease_wall_end_ns")
+    if any(type(row.get(key)) is not int or not 0 <= row[key] < 2**63 for key in fields):
+        return False
+    nonce = row.get("nonce_before")
+    return (isinstance(nonce, str) and re.fullmatch(r"[0-9a-f]{32}", nonce) is not None
+            and nonce == row.get("nonce_after") and row.get("holding_before") is False
+            and row.get("reason_before") == "accepted"
+            and row.get("rejection_reason") == {"unsigned": "binding", "altered": "binding",
+                "signature": "signature", "replay": "sequence", "delay": "freshness", "target": "binding"}.get(case)
+            and row["accepted_after"] == row["accepted_before"]
+            and row["rejected_after"] == row["rejected_before"] + 1
+            and 0 <= row["sent_wall_ns"] - row["before_published_wall_ns"] < 50_000_000
+            and row["sent_wall_ns"] <= row["rejection_published_wall_ns"] < row["lease_wall_end_ns"])
 
 
 def report(result=None, revision="unknown", run_id="unknown", failed=False):
@@ -134,6 +155,7 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
               within(mapping(permit_checks.get(target + "_expiry")).get("expiry_drift"), .02)
               for target in ("base", "arm")) and
           all(mapping(permit_checks.get(target + "_" + case)).get("controller_rejection_observed") is True and
+              negative_permit_rejected(mapping(permit_checks.get(target + "_" + case)).get("negative_admission"), case) and
               mapping(permit_checks.get(target + "_" + case)).get("recovery_did_not_rearm") is True and
               mapping(permit_checks.get(target + "_" + case)).get("recovery_rejection_observed") is True and
               within(mapping(permit_checks.get(target + "_" + case)).get("recovery_drift"), .02) and

@@ -173,7 +173,9 @@ be rejected; the backdate also leaves less than 40 ms nominal verifier admission
 margin when the controller is ahead. These cases stop rather than retry motion.
 Replay evidence requires the first packet to be admitted without a rejection,
 then an identical packet hash to produce a fresh rejection without another
-acceptance. A rejected first copy never qualifies as a replay test pass.
+acceptance and the actual `sequence` rejection reason. Acceptance, activation,
+manual stop/rejection and expiry replace previous diagnostic reasons, so a stale
+sequence reason cannot qualify. A rejected first copy never qualifies as a pass.
 
 ```bash
 ./haetae-demo verify
@@ -191,12 +193,17 @@ activation/fixture reset is recorded in `setup.log`.
 `controller-permits.json` records separate normal wheel/arm physical movement,
 independent expiry, and unsigned, payload-altered, signature-altered, replayed,
 delayed and cross-target commands for each controller. Negative cases require
-an observed controller rejection, holding state, at most 0.02 m/rad motion drift
+fresh unlocked telemetry under the same nonce before delivery, no acceptance,
+one new rejection with the expected binding/signature/sequence/freshness reason
+observed before the prior lease's wall expiry, holding state, at most 0.02 m/rad motion drift
 and no rearm from subsequent traffic. Native tests cover clock rollback, exact
 expiry boundaries, stale activation nonces, oversized parser inputs and latch
 recovery. Ordinary ROS/Gazebo scenarios still exercise the production
 authorizer → relay → controller path, people revocation, tracking, cancellation
 and authorizer kill/stall/delay faults.
+The stale-packet case signs deliberately older origins rather than waiting for
+the controller reset lease to expire. An expired reset or a generic locked-arm
+precheck cannot count as a successful property-specific negative control.
 
 ## Remaining boundaries
 

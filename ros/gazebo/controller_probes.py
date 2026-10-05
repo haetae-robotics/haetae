@@ -169,11 +169,16 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
             signer.observe(target, guard(target)); signer.sequence[target] = 0
         sim, wall, step = approve({"type": "stop"})
         msg = TwistStamped(); msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(sim, 1_000_000_000)
-        send({"base": {"stamp": sim, "linear": 0.0, "angular": 0.0,
+        packet = {"base": {"stamp": sim, "linear": 0.0, "angular": 0.0,
                        "permit": token("base", "reset", base_digest(msg), sim, wall, budget(step, sim))},
-              "heartbeat": token("arm", "reset", IDLE, sim, wall, budget(step, sim))})
+              "heartbeat": token("arm", "reset", IDLE, sim, wall, budget(step, sim))}
+        send(packet)
         wait_for(lambda: not guard("base").get("holding", True) and not guard("arm").get("holding", True),
             2, processes, "explicit signed controller reset")
+        return {target: {"nonce": signer.challenges[target],
+                         "wall_end_ns": int(value.split(":")[7]),
+                         "sim_end_ns": int(value.split(":")[6])}
+                for target, value in (("base", packet["base"]["permit"]), ("arm", packet["heartbeat"]))}
     try:
         resetter, reset_log = start([sys.executable, str(REPO / "ros/gazebo/controller_reset.py"), "--stdio"],
             root, "controller_reset", processes, env, input_pipe=True)
@@ -239,7 +244,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                               "expiry_drift": max(abs(a-b) for a,b in zip(held,world.arm_positions()))}
         for target in ("base","arm"):
             for case in ("unsigned","altered","signature","replay","delay","target"):
-                reset()
+                reset_grants = reset()
                 # Build before measuring rejection; the old world input cannot be restamped by relay.
                 packet = base_packet() if target=="base" else arm_packet()[0]
                 data=packet[target]
@@ -254,12 +259,34 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                     foreign = "arm" if target == "base" else "base"
                     fields = data["permit"].split(":")
                     data["permit"] = token(foreign, "goal" if foreign == "arm" else "command",
-                        fields[8], int(fields[4]), int(fields[5]), int(fields[6])-int(fields[4]))
-                elif case=="delay":time.sleep(.06)
+                        fields[8], int(fields[4]) + SIM_ORDERING_BACKDATE_NS,
+                        int(fields[5]), int(fields[6])-int(fields[4]))
+                elif case=="delay":
+                    # Deliberately stale signed origins exercise freshness while
+                    # the independent reset lease remains live. Never wait for
+                    # the reset itself to expire and count that as protection.
+                    fields = data["permit"].split(":")
+                    data["permit"] = token(target, "command" if target == "base" else "goal",
+                        fields[8], int(fields[4]) + SIM_ORDERING_BACKDATE_NS - 60_000_000,
+                        int(fields[5]) - 60_000_000, int(fields[6])-int(fields[4]))
+                reset_grant = reset_grants[target]
+                wait_for(lambda: guard(target).get("nonce") == reset_grant["nonce"]
+                         and guard(target).get("holding") is False
+                         and guard(target).get("reason") == "accepted"
+                         and 0 <= time.monotonic_ns() - guard(target).get("published_wall_ns", 0) < 50_000_000
+                         and time.monotonic_ns() < reset_grant["wall_end_ns"]
+                         and now() * 1_000_000 < reset_grant["sim_end_ns"],
+                         .2, processes, target + " " + case + " live reset before negative packet")
                 prior = guard(target).get("rejected",0)
                 accepted_before = guard(target).get("accepted", 0)
+                negative_witness = {"nonce_before": guard(target)["nonce"],
+                    "holding_before": guard(target)["holding"], "reason_before": guard(target)["reason"],
+                    "before_published_wall_ns": guard(target)["published_wall_ns"],
+                    "accepted_before": accepted_before, "rejected_before": prior,
+                    "lease_wall_end_ns": reset_grant["wall_end_ns"]}
                 pose, joints=world.pose(),world.arm_positions()
                 first_sent = time.monotonic_ns()
+                negative_witness["sent_wall_ns"] = first_sent
                 send(packet)
                 replay_admission = None
                 if case=="replay":
@@ -269,12 +296,14 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                              and guard(target).get("nonce") == signer.challenges[target]
                              and guard(target).get("accepted", 0) == accepted_before + 1
                              and guard(target).get("rejected", 0) == prior
+                             and guard(target).get("reason") == "accepted"
                              and guard(target).get("holding") is False,
                              1, processes, target + " replay first packet actually admitted")
                     replay_admission = {"accepted_before": accepted_before,
                         "accepted_after_first": guard(target)["accepted"],
                         "rejected_before": prior, "rejected_after_first": guard(target)["rejected"],
                         "first_sent_wall_ns": first_sent,
+                        "first_admission_reason": guard(target)["reason"],
                         "nonce": guard(target)["nonce"],
                         "first_packet_sha256": hashlib.sha256(json.dumps(packet, sort_keys=True).encode()).hexdigest(),
                         "first_admission_published_wall_ns": guard(target)["published_wall_ns"]}
@@ -283,13 +312,30 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                     duplicate = copy.deepcopy(packet)
                     replay_admission["replay_packet_sha256"] = hashlib.sha256(
                         json.dumps(duplicate, sort_keys=True).encode()).hexdigest()
+                    negative_witness.update({"before_published_wall_ns": guard(target)["published_wall_ns"],
+                        "accepted_before": guard(target)["accepted"], "rejected_before": guard(target)["rejected"],
+                        "sent_wall_ns": replay_sent, "lease_wall_end_ns": int(data["permit"].split(":")[7])})
                     send(duplicate)
                     replay_admission["replay_sent_wall_ns"] = replay_sent
-                wait_for(lambda:guard(target).get("rejected",0)>prior and guard(target).get("holding") is True,
+                expected_reason = {"unsigned": "binding", "altered": "binding", "signature": "signature",
+                                   "replay": "sequence", "delay": "freshness", "target": "binding"}[case]
+                wait_for(lambda:guard(target).get("rejected",0) == prior + 1
+                         and guard(target).get("holding") is True
+                         and guard(target).get("reason") == expected_reason
+                         and guard(target).get("published_wall_ns", 0) >= negative_witness["sent_wall_ns"],
                     2,processes,target+" "+case+" consumed and rejected at controller")
+                negative_witness.update({"nonce_after": guard(target)["nonce"],
+                    "accepted_after": guard(target)["accepted"], "rejected_after": guard(target)["rejected"],
+                    "rejection_reason": guard(target)["reason"],
+                    "rejection_published_wall_ns": guard(target)["published_wall_ns"]})
+                if (negative_witness["accepted_after"] != negative_witness["accepted_before"] or
+                        negative_witness["nonce_after"] != negative_witness["nonce_before"] or
+                        negative_witness["rejection_published_wall_ns"] >= negative_witness["lease_wall_end_ns"]):
+                    raise AssertionError("negative packet was not rejected under the witnessed live lease")
                 if replay_admission is not None:
                     replay_admission.update({"rejected_after_replay": guard(target)["rejected"],
                         "accepted_after_replay": guard(target)["accepted"],
+                        "replay_rejection_reason": guard(target)["reason"],
                         "rejection_published_wall_ns": guard(target)["published_wall_ns"]})
                     if (replay_admission["accepted_after_replay"] != accepted_before + 1 or
                             guard(target).get("nonce") != replay_admission["nonce"] or
@@ -324,6 +370,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                         guard(target).get("accepted", 0) != accepted_before or recovery_drift > .02):
                     raise AssertionError("automatic recovery")
                 results[target+"_"+case]={"ok":True,"controller_rejection_observed":True,
+                    "negative_admission": negative_witness,
                     "drift":drift,"recovery_did_not_rearm":True,
                     "recovery_rejection_observed":True, "recovery_drift": recovery_drift}
                 if replay_admission is not None:

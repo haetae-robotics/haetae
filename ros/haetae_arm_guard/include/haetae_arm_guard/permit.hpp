@@ -107,7 +107,9 @@ class PermitGuard
   {
     if (!locked_ && (sim < 0 || wall < 0 || static_cast<uint64_t>(sim) < grant_.sim ||
       static_cast<uint64_t>(wall) < grant_.wall || static_cast<uint64_t>(sim) >= grant_.sim_end ||
-      static_cast<uint64_t>(wall) >= grant_.wall_end)) {locked_ = true; grant_ = {}; ++generation_;}
+      static_cast<uint64_t>(wall) >= grant_.wall_end)) {
+      locked_ = true; grant_ = {}; ++generation_; reason_ = "expired"; diagnostic_.clear();
+    }
     return !locked_;
   }
 public:
@@ -121,6 +123,7 @@ public:
     std::array<unsigned char, 16> random{};
     if (RAND_bytes(random.data(), random.size()) != 1) {throw std::runtime_error("controller RNG failed");}
     nonce_ = hex(random.data(), random.size()); seq_ = 0; grant_ = {}; locked_ = true; ++generation_;
+    reason_ = "startup"; diagnostic_.clear();
   }
   bool accept(const std::string & token, const std::string & kind, const std::string & digest,
     int64_t sim, int64_t wall, bool reset = false, bool stop = false)
@@ -139,7 +142,8 @@ public:
       Grant next{integer(fields[3]), integer(fields[4]), integer(fields[5]),
         integer(fields[6]), integer(fields[7]), digest};
       const auto s = static_cast<uint64_t>(sim), w = static_cast<uint64_t>(wall);
-      if (!next.seq || next.seq <= seq_ || next.sim > s || next.wall > w ||
+      if (!next.seq || next.seq <= seq_) {throw std::invalid_argument("sequence");}
+      if (next.sim > s || next.wall > w ||
         s - next.sim >= 50000000 || w - next.wall >= 50000000 ||
         next.sim_end <= s || next.wall_end <= w || next.sim_end <= next.sim ||
         next.wall_end <= next.wall || next.sim_end - next.sim > 200000000 ||
@@ -163,6 +167,7 @@ public:
       ++accepted_;
       if (stop) {locked_ = true; ++generation_; grant_ = {};}
       else {if (reset) {++generation_;} locked_ = false; grant_ = next;}
+      reason_ = stop ? "stop" : "accepted";
       return true;
     } catch (const std::exception & e) {
       locked_ = true; grant_ = {}; ++generation_; ++rejected_;
@@ -182,10 +187,12 @@ public:
   void stop()
   {
     std::lock_guard<std::mutex> lock(mutex_); locked_ = true; grant_ = {}; ++generation_;
+    reason_ = "stop"; diagnostic_.clear();
   }
   void reject()
   {
     std::lock_guard<std::mutex> lock(mutex_); locked_ = true; grant_ = {}; ++generation_; ++rejected_; ++rejected_motion_;
+    reason_ = "rejected"; diagnostic_.clear();
   }
   std::string nonce() {std::lock_guard<std::mutex> lock(mutex_); return nonce_;}
   uint64_t generation() {std::lock_guard<std::mutex> lock(mutex_); return generation_;}

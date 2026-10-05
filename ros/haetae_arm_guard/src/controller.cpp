@@ -66,6 +66,7 @@ class LeaseTrajectoryController : public joint_trajectory_controller::JointTraje
           ",\"accepted\":" + std::to_string(permit_.accepted()) +
           ",\"rejected\":" + std::to_string(permit_.rejected()) +
           ",\"rejected_motion\":" + std::to_string(permit_.rejected_motion()) +
+          ",\"reason\":\"" + permit_.reason() + "\"" +
           ",\"lease_sent_ms\":" + std::to_string(lease.sent_ms) +
           ",\"lease_received_wall_ns\":" + std::to_string(lease.received_ns) + "}";
         guard_state_->publish(msg);

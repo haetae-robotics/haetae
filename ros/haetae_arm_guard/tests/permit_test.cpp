@@ -34,6 +34,7 @@ int main()
   check(EVP_PKEY_get_raw_public_key(key, public_key.data(), &size) == 1, "fixture public key");
   EVP_PKEY_free(key);
   PermitGuard guard; guard.configure(hex(public_key.data(), size), "base"); guard.activate();
+  check(guard.reason() == "startup", "activation clears stale reason");
   const auto nonce = guard.nonce();
   auto admit = [&](const std::string & permit, const std::string & kind, bool reset = false,
       uint64_t sim = 1000000000, uint64_t wall = 2000000000) {
@@ -43,13 +44,16 @@ int main()
   check(admit(token(nonce, 2, "reset"), "reset", true), "explicit reset");
   auto command = token(nonce, 3, "command");
   check(admit(command, "command"), "fresh exact command");
+  check(guard.reason() == "accepted", "acceptance clears stale rejection reason");
   check(guard.authorizes(1000000000, 2000000000, idle_digest), "atomic exact grant snapshot");
   check(!guard.authorizes(1000000000, 2000000000, std::string(64, '1')), "wrong digest never authorized");
   check(!admit(command, "command"), "replay rejected and locks");
+  check(guard.reason() == "sequence", "replay has specific sequence rejection reason");
   check(!guard.authorizes(1000000000, 2000000000, idle_digest), "rejected grant cannot authorize next sample");
   check(guard.grant().seq == 0, "rejection clears stale grant across separate reads");
   check(!admit(token(nonce, 4, "command"), "command"), "fresh command cannot rearm a latch");
   check(admit(token(nonce, 5, "reset"), "reset", true), "fresh reset after rejection");
+  check(guard.reason() == "accepted", "reset clears replay reason");
   auto altered = token(nonce, 6, "command"); altered.back() = altered.back() == '0' ? '1' : '0';
   check(!admit(altered, "command"), "forged signature");
   check(!admit(token(nonce, 7, "reset", 1000000000, 2000000000, 200000001), "reset", true), "overlong lease");
@@ -77,6 +81,7 @@ int main()
   check(!skew.fresh(origin + 200000000 - backdate, 2000000000), "backdated simulation expiry enforced");
   check(admit(token(nonce, 12, "reset"), "reset", true), "reset for wall expiry");
   check(!guard.fresh(1000000000, 2200000000), "paused simulation still expires");
+  check(guard.reason() == "expired" && guard.diagnostic().empty(), "expiry reason is current");
   check(guard.grant().seq == 0, "expiry clears stale grant");
   check(!admit(token(nonce, 13, "command", 1000000000, 2200000000), "command", false, 1000000000, 2200000000),
     "recovery cannot revive movement");
@@ -85,6 +90,7 @@ int main()
   check(admit(token(nonce, 15, "reset"), "reset", true), "reset for clock rollback");
   check(!guard.fresh(999999999, 2000000000), "clock rollback locks");
   guard.activate();
+  check(guard.reason() == "startup", "reactivation reason is current");
   check(guard.nonce() != nonce, "activation nonce rotates");
   check(!admit(token(nonce, 16, "reset"), "reset", true), "old activation rejected");
   check(!admit(token(guard.nonce(), 17, "reset", 1000000000, 2000000000, 200000000, std::string(64, '1')),
@@ -101,6 +107,15 @@ int main()
   check(!guard.fresh(1000000000, 2000000000), "invalid stop cannot unlock");
   check(!admit("invalid", "reset", true), "invalid reset still rejects");
   check(guard.rejected_motion() == motion_before + 1, "reset rejection is motion authority rejection");
+  // Telemetry must not reuse a previous sequence reason after other transitions.
+  guard.activate();
+  check(admit(token(guard.nonce(), 1, "reset"), "reset", true), "diagnostic reset");
+  const auto duplicate_reset = token(guard.nonce(), 1, "reset");
+  check(!admit(duplicate_reset, "reset", true) && guard.reason() == "sequence", "diagnostic sequence");
+  guard.reject(); check(guard.reason() == "rejected", "manual rejection clears sequence reason");
+  guard.stop(); check(guard.reason() == "stop", "manual stop clears sequence reason");
+  check(guard.accept(token(guard.nonce(), 2, "stop"), "stop", idle_digest,
+    1000000000, 2000000000, false, true) && guard.reason() == "stop", "signed stop has current reason");
   bool invalid = false;
   try {integer("9223372036854775808");} catch (const std::exception &) {invalid = true;}
   check(invalid, "integer overflow rejected");
