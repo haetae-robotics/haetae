@@ -698,6 +698,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                  "completed motion or verified expected rejection before explicit test rearm")
         rearm_at = time.monotonic()
         wait_for(lambda: world.states and "vla" in world.states[-1][1].get("armed", [])
+                 and world.controllers_unlocked()
                  and sum(t >= rearm_at and row.get("decision", {}).get("verdict") == "yun"
                          and row.get("decision", {}).get("action", {}).get("type") == "stop"
                          for t, row in world.outcomes) >= 2,

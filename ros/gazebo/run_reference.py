@@ -69,6 +69,11 @@ def interrupt_run(signum, frame):
 
 
 class GazeboWorld(Node):
+    def controllers_unlocked(self):
+        return (bool(self.base_guard_states) and bool(self.guard_states) and
+                not self.base_guard_states[-1][1].get("holding", True) and
+                not self.guard_states[-1][1].get("holding", True))
+
     def __init__(self, live=None, isolated=False):
         super().__init__("haetae_gazebo_world", parameter_overrides=[
             Parameter("use_sim_time", Parameter.Type.BOOL, True)],
@@ -772,6 +777,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         world.states.clear()
         world.outcomes.clear()
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"]
+                 and world.controllers_unlocked()
                  and sum(1 for _, row in world.outcomes
                          if row.get("decision", {}).get("verdict") == "yun"
                          and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
@@ -855,7 +861,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         time.sleep(0.3)
 
         world.propose_base(0.0)
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                  5, processes, "arm rearm", action=lambda: world.propose_base(0.0))
         prepare_scene("다음은 허용 범위를 넘는 팔 명령입니다. 팔이 움직이지 않는지 확인하세요.")
         bad_at = time.monotonic()
@@ -870,7 +876,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         review_scene("팔 명령 거부 장면", "허용 범위를 넘는 명령을 거부했고 팔 관절이 움직이지 않았습니다.",
                      "움직이는 팔 중단 시험")
         world.propose_base(0.0)
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                  5, processes, "arm rearm after denial", action=lambda: world.propose_base(0.0))
         time.sleep(0.3)
         prepare_scene("이번에는 정상 팔 동작 중 사람 근접 보고를 넣습니다. 팔 움직임과 취소 결과를 확인하세요.")
@@ -929,7 +935,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         attacks = {}
         if attack_probes and secure_graph:
             world.propose_base(0.0)
-            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                      5, processes, "base rearm before attacker",
                      action=lambda: world.propose_base(0.0))
             prepare_scene("공격자 노드가 바퀴에 직접 명령을 보내고 사람 정보를 위조합니다. 아래 공격 카드에서 결과를 확인하세요.")
@@ -963,7 +969,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
 
         time.sleep(0.3)
         world.propose_base(0.0)
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                  5, processes, "base rearm before kill", action=lambda: world.propose_base(0.0))
         prepare_scene("로봇을 다시 움직인 뒤 해태 프로세스를 종료합니다. 명령이 끊겼을 때 바퀴가 멈추는지 확인하세요.")
         world.marker("두 번째 바퀴 이동")
@@ -1019,7 +1025,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
                  and world.states[-1][1].get("arm_controller_ready"),
                      10, processes, "new isolated arm fault fixture")
-            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                      5, processes, "fault fixture rearm", action=lambda: world.propose_base(0.0))
             arm_fault_results[case] = exercise_arm_fault(world, processes, case)
             if roles:
