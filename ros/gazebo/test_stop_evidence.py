@@ -131,6 +131,27 @@ class SensorStopTest(unittest.TestCase):
                          {"stop_reason": "stale_world", "zero_at": 10.05})
         self.assertIsNone(self.check([], states=states, zeros=[], require_perception=False))
 
+    def test_world_admission_cutoff_requires_named_cause_disarm_and_later_zero(self):
+        error = "trusted world has insufficient controller admission budget"
+        outcomes = [(10.04, {"rejected": {"error": error}})]
+        states = [(10.06, {"stop": "unarmed", "armed": [], "active": None})]
+        self.assertEqual(self.check([], states=states, outcomes=outcomes, require_perception=False),
+                         {"stop_reason": "world_admission_budget_exhausted", "zero_at": 10.05})
+        self.assertIsNone(self.check([], states=states, outcomes=outcomes))
+        for rejected in ([], [(9.99, {"rejected": {"error": error}})],
+                         [(10.04, {"rejected": {"error": "original controller authority has insufficient admission budget"}})]):
+            self.assertIsNone(self.check([], states=states, outcomes=rejected, require_perception=False))
+        for bad_state in ({"stop": "unarmed", "armed": ["vla"]},
+                          {"stop": "unarmed", "armed": [], "active": {"id": 1}},
+                          {"stop": "no_command", "armed": []}):
+            self.assertIsNone(self.check([], states=[(10.06, bad_state)], outcomes=outcomes,
+                                         require_perception=False))
+        self.assertIsNone(self.check([], states=[(10.03, states[0][1])], outcomes=outcomes,
+                                     require_perception=False))
+        for zeros in ([], [(10.03, 1050)]):
+            self.assertIsNone(self.check([], states=states, outcomes=outcomes, zeros=zeros,
+                                         require_perception=False))
+
     def test_dual_clock_world_expiry_needs_engine_disarm_and_named_rejection(self):
         states = [(10.05, {"stop": "denied", "armed": []})]
         outcomes = [(10.06, {"rejected": {"error":

@@ -71,6 +71,7 @@ class HaetaeGate(Node):
         self.permit_reset = False
         self.permit_stop = True
         self.permit_remaining_ns = 200_000_000
+        self.permit_world_remaining_ns = 0
         self.permit_sim_ns = 0
         self.permit_wall_ns = 0
         if self.permits:
@@ -313,6 +314,10 @@ class HaetaeGate(Node):
             raise ValueError("revocation requires the dedicated stop path")
         sim_age = self._now() * 1_000_000 - self.permit_sim_ns
         wall_age = time.monotonic_ns() - self.permit_wall_ns
+        age = max(sim_age, wall_age)
+        if (min(sim_age, wall_age) >= 0 and age < 50_000_000
+                and self.permit_world_remaining_ns - age <= 50_000_000):
+            raise ExpiredActuation("trusted world has insufficient controller admission budget")
         if (min(sim_age, wall_age) < 0 or max(sim_age, wall_age) >= 50_000_000
                 or self.permit_remaining_ns - max(sim_age, wall_age) <= 50_000_000):
             # Reserve the existing admission window INSIDE original expiry.
@@ -386,8 +391,9 @@ class HaetaeGate(Node):
                 remaining_ms = min(200, self.world_max_age_ms - (status.get("world_age_ms") or 0))
                 if status.get("active_expires_ms") is not None:
                     remaining_ms = min(remaining_ms, status["active_expires_ms"] - started_ros_ms)
-                remaining_ns = min(remaining_ms * 1_000_000, self.permit_world.remaining(
-                    self.permit_sim_ns, self.permit_wall_ns, self.world_max_age_ms * 1_000_000))
+                self.permit_world_remaining_ns = self.permit_world.remaining(
+                    self.permit_sim_ns, self.permit_wall_ns, self.world_max_age_ms * 1_000_000)
+                remaining_ns = min(remaining_ms * 1_000_000, self.permit_world_remaining_ns)
                 if remaining_ns <= 0:
                     raise ExpiredActuation("trusted world did not advance within dual-clock freshness")
                 self.permit_remaining_ns = remaining_ns

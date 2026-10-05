@@ -110,6 +110,14 @@ early rather than dispatching an already nearly expired grant. Expiry is never
 extended. Non-reset arm renewal is also suppressed while trusted controller
 telemetry reports holding; only an explicit accepted Rust stop can reset it.
 
+World-budget admission cutoff has a distinct owner rejection from proposal TTL
+or response delay. Disconnect and compound-fault evidence may use this earlier
+world-authority cutoff only with a named rejection, disarmed engine state and
+a subsequent observed zero command. Coverage loss still requires the signed
+unknown-perception revocation; a generic admission-budget rejection cannot
+stand in for either cause. Normal household arm completion can enter measured
+arm settling before `no_command`; arbitrary denied states are not completion.
+
 Telemetry keeps the total rejection counter, including invalid stop packets,
 and a separate motion/reset/lease rejection counter. Normal arm completion
 checks the latter: a rejected locking-only stop still locks and cannot be

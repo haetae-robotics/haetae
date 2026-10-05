@@ -76,6 +76,21 @@ def sensor_stop_report(log_path, states, outcomes, zeros, since, since_ms,
                     return {"stop_reason": "perception_unknown", "zero_at": zero_at,
                             "world_stamp_ms": last_world["stamp_ms"]}
     if not require_perception:
+        # A controller cannot receive a useful grant in the last 50ms of
+        # original world authority. This named owner rejection identifies
+        # that cutoff separately from proposal TTL or generic response age.
+        # Require disarm and a subsequent observed zero after the rejection;
+        # coverage loss still requires the signed perception-unknown path.
+        error = "trusted world has insufficient controller admission budget"
+        for rejected_at, row in list(outcomes):
+            if rejected_at < since or row.get("rejected", {}).get("error") != error:
+                continue
+            disarmed = any(t >= rejected_at and state.get("stop") in ("denied", "unarmed")
+                           and not state.get("armed") and state.get("active") is None
+                           for t, state in states)
+            zero_at = next((wall for wall, _ in zeros if wall >= rejected_at), None)
+            if disarmed and zero_at is not None:
+                return {"stop_reason": "world_admission_budget_exhausted", "zero_at": zero_at}
         reason = world_expiry_stop_observed(states, outcomes, since)
         zero_at = next((wall for wall, _ in zeros if wall >= since), None)
         if reason and zero_at is not None:

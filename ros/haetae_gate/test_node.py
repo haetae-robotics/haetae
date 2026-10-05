@@ -38,6 +38,7 @@ class NodeBoundaryTest(unittest.TestCase):
         g.arm_cancel_deadline = None
         g.cancel_requested = False
         g.world_max_age_ms = 200
+        g.permit_world_remaining_ns = 200_000_000
         g.max_actuation_response_ms = 50
         g.command_pub = SimpleNamespace(topic_name='/resolved/base/cmd_vel')
         g.count_publishers = lambda topic: 1
@@ -87,6 +88,24 @@ class NodeBoundaryTest(unittest.TestCase):
         self.assertFalse(signed)
         g.permit_remaining_ns += 1
         g._permit("arm", "lease", "a" * 64)
+        self.assertEqual(signed[-1][3:], (1_000_000_000, 56_000_001, 0))
+
+    def test_world_admission_cutoff_is_distinct_from_proposal_expiry(self):
+        g = self.gate
+        signed = []
+        g.permits = SimpleNamespace(sign=lambda *args: signed.append(args) or "token")
+        g.permit_sim_ns, g.permit_wall_ns = 1_000_000_000, 0
+        clock.value = .006
+        g.permit_remaining_ns = g.permit_world_remaining_ns = 56_000_000
+        with self.assertRaisesRegex(ExpiredActuation, "trusted world has insufficient"):
+            g._permit("base", "command", "a" * 64)
+        self.assertFalse(signed)
+        g.permit_world_remaining_ns = 200_000_000
+        with self.assertRaisesRegex(ExpiredActuation, "original controller authority"):
+            g._permit("base", "command", "a" * 64)
+        self.assertFalse(signed)
+        g.permit_remaining_ns = g.permit_world_remaining_ns = 56_000_001
+        g._permit("base", "command", "a" * 64)
         self.assertEqual(signed[-1][3:], (1_000_000_000, 56_000_001, 0))
 
     def test_relay_ack_cannot_renew_before_trusted_controller_admission(self):
