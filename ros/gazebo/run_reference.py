@@ -35,7 +35,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
 from run_scenario import fixture, public  # noqa: E402
-from arm_barrier import gazebo_rearm_ready, activated_guards_ready  # noqa: E402
+from arm_barrier import gazebo_rearm_ready, activated_guards_ready, accepted_world_ready  # noqa: E402
 from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
@@ -485,7 +485,11 @@ def prepare_arm_fault(world, processes, roles=None):
     """Bounded OFF-only preparation; returns before any arm goal is sent."""
     nonces = {target: samples[-1][1].get("nonce") if samples else None
               for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))}
-    deadline = time.monotonic() + 5
+    started_at = time.monotonic()
+    deadline = started_at + 5
+    previous_stamp = max((updated["stamp_ms"] for _, row in world.outcomes
+        if isinstance(updated := row.get("world_updated"), dict)
+        and type(updated.get("stamp_ms")) is int), default=-1)
     attempts = []
     timeout_observations = []
     def routes():
@@ -497,7 +501,29 @@ def prepare_arm_fault(world, processes, roles=None):
         except Exception as exc:
             return {"unavailable": type(exc).__name__}
     world.arm_preparation_diagnostics = None
+    try:
+        # A discovered world subscription is not proof that the restarted
+        # owner has accepted a world. Spend the existing OFF-only deadline on
+        # that prerequisite before consuming either explicit reset attempt.
+        wait_for(lambda: accepted_world_ready(world.states, world.outcomes,
+                  started_at, time.monotonic(), previous_stamp)
+                  and all(samples and samples[-1][1].get("nonce") == nonces[target]
+                      for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))),
+                 deadline - time.monotonic(),
+                 processes, "owner accepted fresh world before fixture reset")
+    except TimeoutError:
+        world.arm_preparation_diagnostics = {"attempts": [], "timeout_observations": [],
+            "routes_at_failure": routes(),
+            "outcomes": [(at, row) for at, row in list(world.outcomes) if at >= started_at],
+            "states": [(at, row) for at, row in list(world.states) if at >= started_at]}
+        raise
     for attempt in range(2 if roles else 1):
+        if (time.monotonic() >= deadline or not accepted_world_ready(
+                world.states, world.outcomes, started_at, time.monotonic(), previous_stamp)
+                or any(not samples or
+                samples[-1][1].get("nonce") != nonces[target] for target, samples in
+                (("arm", world.guard_states), ("base", world.base_guard_states)))):
+            break
         # In the isolated profile each parsed proposal increments both this
         # durable VLA reservation and proposal_id once, before DDS publication.
         # No other proposal producer runs during this stopped fixture setup.
@@ -533,8 +559,8 @@ def prepare_arm_fault(world, processes, roles=None):
                 break  # Missing/competing source parse is not proof of DDS loss.
     world.arm_preparation_diagnostics = {"attempts": attempts, "timeout_observations": timeout_observations,
         "routes_at_failure": routes(),
-        "outcomes": [(at, row) for at, row in list(world.outcomes) if at >= attempts[0]["sent_wall"]],
-        "states": [(at, row) for at, row in list(world.states) if at >= attempts[0]["sent_wall"]]}
+        "outcomes": [(at, row) for at, row in list(world.outcomes) if at >= started_at],
+        "states": [(at, row) for at, row in list(world.states) if at >= started_at]}
     raise TimeoutError("fresh explicit arm fault fixture reset: " + json.dumps({
         "attempts": attempts, "expected_nonces": nonces,
         "state": world.states[-1] if world.states else None,

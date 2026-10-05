@@ -34,8 +34,14 @@ class ProbeEntryStopTest(unittest.TestCase):
                     and len(call.args) == 2 and isinstance(call.args[0], ast.Constant)
                     and call.args[0].value == 'world']
         self.assertEqual(len(payloads), 2)
+        snapshots = [node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == 'snapshot' for target in node.targets)]
+        self.assertEqual(len(snapshots), 2)
+        for expression in snapshots:
+            self.assertEqual(ast.unparse(expression), 'world_snapshot()')
         for angular in (.7, -.8, float('nan'), float('inf')):
             world.odom.twist.twist.angular.z = angular
+            scope['snapshot'] = scope['measured_world'](world)
             for expression in payloads:
                 payload = eval(compile(ast.Expression(expression), 'actual-world-ingress', 'eval'), scope)
                 self.assertEqual(payload['robot']['twist']['linear'], .2)
@@ -47,6 +53,50 @@ class ProbeEntryStopTest(unittest.TestCase):
                 self.assertEqual(payload['stamp_ms'], 1020)
         world.joint.header = header(980)
         self.assertEqual(scope['measured_world'](world)['stamp_ms'], 980)
+
+    def test_rejected_or_mismatched_world_cannot_propose_or_renew(self):
+        tree = ast.parse(Path(__file__).with_name('controller_probes.py').read_text())
+        nodes = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        helper = nodes['require_world_accepted']
+        # Execute the actual two ingress functions, including their acceptance
+        # checks. No proposal or permit may follow a rejected world response.
+        approve = nodes['approve']
+        approve.body = [node for node in approve.body if not isinstance(node, ast.Nonlocal)]
+        snapshot = {'stamp_ms': 980}
+        invalid = [{}, {'rejected': {'error': 'invalid world'}},
+                   {'world_updated': {'stamp_ms': 981}}, {'world_updated': {'stamp_ms': True}}]
+        for name in ('approve', 'renew'):
+            for outcome in invalid:
+                calls = []
+                scope = dict(json=json, world_snapshot=lambda: snapshot, proposal_id=0,
+                    now=lambda: 1000, time=SimpleNamespace(monotonic_ns=lambda: 10_000_000),
+                    feed=lambda role, value: calls.append((role, value)) or {'outcome': outcome},
+                    send=lambda packet: self.fail('rejected world forwarded a permit'))
+                exec(compile(ast.Module(body=[helper, nodes[name]], type_ignores=[]),
+                             'actual-world-admission', 'exec'), scope)
+                with self.assertRaisesRegex(AssertionError, 'measured world was not accepted'):
+                    scope[name]({'type': 'velocity'}) if name == 'approve' else scope[name]()
+                self.assertEqual(calls, [('world', snapshot)])
+        scope = dict(json=json)
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), 'actual-world-accepted', 'exec'), scope)
+        scope['require_world_accepted']({'outcome': {'world_updated': {'stamp_ms': 980}}}, snapshot)
+
+    def test_actual_world_snapshot_requires_fresh_feedback(self):
+        tree = ast.parse(Path(__file__).with_name('controller_probes.py').read_text())
+        node = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                    and node.name == 'world_snapshot')
+        world = SimpleNamespace(joint_received=9.99, odom_received=9.99)
+        def wait_for(predicate, *args):
+            if not predicate():
+                raise TimeoutError('fresh feedback required')
+        scope = dict(world=world, processes={}, wait_for=wait_for,
+                     time=SimpleNamespace(monotonic=lambda: 10.), measured_world=lambda value: value)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), 'actual-feedback-wait', 'exec'), scope)
+        self.assertIs(scope['world_snapshot'](), world)
+        for joint, odom in ((9.8, 9.99), (9.99, 9.8), (10.01, 9.99), (9.99, 10.01)):
+            world.joint_received, world.odom_received = joint, odom
+            with self.assertRaises(TimeoutError):
+                scope['world_snapshot']()
 
     def test_maintenance_requires_fresh_base_and_every_arm_joint_stopped(self):
         tree = ast.parse(Path(__file__).with_name('controller_probes.py').read_text())

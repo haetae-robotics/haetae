@@ -6,9 +6,11 @@ import re
 import select
 import socket
 import time
+from collections import deque
 
 from bench_link import LinkError, SerialLink
 from permit_protocol import context, frame
+from permit_ipc import send_line, receive_line
 
 
 class PermitLink(SerialLink):
@@ -89,11 +91,11 @@ class PermitLink(SerialLink):
 def relay(port, install, authorizer_socket, ready_file=None):
     link = PermitLink(port, install)
     service = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    traces = deque(maxlen=4)
     try:
         # Authorizer is already bootstrapped before the short-lived MCU challenge.
         time.sleep(.5)
         service.connect(str(authorizer_socket))
-        stream = service.makefile("rwb", buffering=0)
         link.query("HELLO")
         op = "BIND"
         positive = False
@@ -103,11 +105,12 @@ def relay(port, install, authorizer_socket, ready_file=None):
             request = dict(link.current, op=op)
             started = time.monotonic()
             budget = .500 if op == "BIND" else .050
-            service.settimeout(budget)
-            stream.write(json.dumps(request, separators=(",", ":")).encode() + b"\n")
-            raw = stream.readline(513)
-            if not raw.endswith(b"\n"):
-                raise LinkError("authorizer response closed/oversized")
+            stages = {"op": op, "started_ns": time.monotonic_ns()}
+            traces.append(stages)
+            deadline = started + budget
+            send_line(service, json.dumps(request, separators=(",", ":")).encode() + b"\n",
+                      deadline, stages, "request")
+            raw = receive_line(service, deadline, stages)
             permit = json.loads(raw)
             if permit.get("kind") != "permit":
                 link.query("STOP")
@@ -117,6 +120,7 @@ def relay(port, install, authorizer_socket, ready_file=None):
             if left <= 0:
                 raise LinkError("authorizer permit arrived late")
             link.execute(request, permit, left)
+            stages["controller_ack_ns"] = time.monotonic_ns()
             if time.monotonic() - started >= budget:
                 raise LinkError("late controller acknowledgment")
             if op == "RUN" and not positive:
@@ -129,6 +133,9 @@ def relay(port, install, authorizer_socket, ready_file=None):
                 continue  # No output and no inter-cycle sleep during bootstrap.
             op = "RUN"
             time.sleep(.025)
+    except (RuntimeError, OSError, ValueError):
+        print(json.dumps({"event": "permit_ipc_failure", "stages": list(traces)}), flush=True)
+        raise
     finally:
         link.stop()
         link.close()

@@ -3,6 +3,24 @@
 import math
 
 
+def accepted_world_ready(states, outcomes, started_at, now, previous_stamp=-1):
+    """Discovery prerequisite only; this never arms a source or controller."""
+    worlds = [(at, row.get("world_updated")) for at, row in outcomes
+              if at >= started_at and isinstance(row.get("world_updated"), dict)]
+    if not states or not worlds:
+        return False
+    world_at, updated = worlds[-1]
+    state_at, state = states[-1]
+    age = state.get("world_age_ms")
+    return (type(updated.get("stamp_ms")) is int and updated["stamp_ms"] > previous_stamp
+            and updated["stamp_ms"] >= 0
+            and 0 <= now - world_at < .1 and world_at < state_at
+            and 0 <= now - state_at < .1
+            and state.get("mode") == "normal" and state.get("active") is None
+            and not state.get("arm_cancelling") and state.get("recorder_ok") is True
+            and state.get("state_ok") is True and type(age) is int and 0 <= age < 75)
+
+
 def rearm_ready(states, outcomes, sent_at, proposal_id=None):
     decisions = [(at, value) for at, value in outcomes if at >= sent_at
                  and ("decision" in value or "rejected" in value)]

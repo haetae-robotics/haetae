@@ -5,10 +5,30 @@ from pathlib import Path
 import unittest
 from types import SimpleNamespace
 
-from arm_barrier import rearm_ready, gazebo_rearm_ready, activated_guards_ready
+from arm_barrier import rearm_ready, gazebo_rearm_ready, activated_guards_ready, accepted_world_ready
 
 
 class ArmBarrierTest(unittest.TestCase):
+    def test_discovered_graph_or_old_world_does_not_allow_fixture_reset(self):
+        state = {'mode': 'normal', 'active': None, 'recorder_ok': True,
+                 'state_ok': True, 'world_age_ms': 20, 'arm_cancelling': False}
+        updated = {'world_updated': {'stamp_ms': 9900}}
+        states, outcomes = [(9.98, state)], [(9.96, updated)]
+        self.assertTrue(accepted_world_ready(states, outcomes, 9.93, 10.))
+        self.assertFalse(accepted_world_ready(states, outcomes, 9.93, 10., 9900))
+        self.assertFalse(accepted_world_ready(states, outcomes, 9.93, 10., 9901))
+        self.assertTrue(accepted_world_ready(states, outcomes, 9.93, 10., 9899))
+        for rows in ([], [(9.92, updated)], [(10.01, updated)],
+                     [(9.96, {'world_updated': {'stamp_ms': True}})],
+                     [(9.96, {'rejected': {'error': 'invalid world'}})]):
+            self.assertFalse(accepted_world_ready(states, rows, 9.93, 10.))
+        self.assertFalse(accepted_world_ready([(9.94, state)], outcomes, 9.93, 10.))
+        self.assertFalse(accepted_world_ready(states, outcomes, 9.93, 10.2))
+        for change in ({'world_age_ms': 75}, {'world_age_ms': True}, {'world_age_ms': -1},
+                       {'active': {'id': 1}}, {'mode': 'hold'}, {'state_ok': False},
+                       {'recorder_ok': False}, {'arm_cancelling': True}):
+            self.assertFalse(accepted_world_ready([(9.98, dict(state, **change))], outcomes, 9.93, 10.))
+
     def test_requires_latest_accepted_stop_and_newer_fresh_idle_state(self):
         state = {"mode": "normal", "armed": ["vla"], "active": None,
                  "arm_cancelling": False, "arm_controller_ready": True,
@@ -160,6 +180,10 @@ class ArmBarrierTest(unittest.TestCase):
                 remaining = [misses]
                 def wait(predicate, timeout, processes, description):
                     self.assertLessEqual(timeout, 5)
+                    if description == 'owner accepted fresh world before fixture reset':
+                        self.assertFalse(sent)
+                        self.assertTrue(predicate())
+                        return
                     if remaining[0]:
                         remaining[0] -= 1
                         raise TimeoutError(description)
@@ -169,7 +193,7 @@ class ArmBarrierTest(unittest.TestCase):
                     return args[-1] == counter[0]
                 scope = dict(time=SimpleNamespace(monotonic=lambda: 10.), json=json,
                              ARM_JOINTS=['j1', 'j2', 'j3', 'j4'], wait_for=wait,
-                             gazebo_rearm_ready=ready)
+                             gazebo_rearm_ready=ready, accepted_world_ready=lambda *args: True)
                 exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-preparation', 'exec'), scope)
                 roles = SimpleNamespace(counter=lambda role: counter[0])
                 if misses < 2 and counter_delta == 1:
@@ -193,11 +217,50 @@ class ArmBarrierTest(unittest.TestCase):
         world._emit = lambda *args, **kwargs: self.fail('failed preparation cannot emit success')
         def wait(predicate, timeout, processes, description):
             self.assertEqual(timeout, 5)
+            if description == 'owner accepted fresh world before fixture reset':
+                self.assertFalse(requests)
+                return
             raise TimeoutError(description)
         scope = dict(time=SimpleNamespace(monotonic=lambda: 10.), json=json,
                      ARM_JOINTS=['j1', 'j2', 'j3', 'j4'], wait_for=wait,
-                     gazebo_rearm_ready=lambda *args: False)
+                     gazebo_rearm_ready=lambda *args: False, accepted_world_ready=lambda *args: True)
         exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-nonsecure-preparation', 'exec'), scope)
         with self.assertRaises(TimeoutError):
             scope['prepare_arm_fault'](world, {}, None)
         self.assertEqual(requests, [0.])
+
+    def test_failed_world_prerequisite_sends_no_reset_and_preserves_diagnostics(self):
+        tree = ast.parse((Path(__file__).parents[1] / 'gazebo/run_reference.py').read_text())
+        method = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == 'prepare_arm_fault')
+        world = self.fixture()
+        world.propose_base = lambda value: self.fail('reset sent before accepted world')
+        def wait(*args):
+            raise TimeoutError('no accepted world')
+        scope = dict(time=SimpleNamespace(monotonic=lambda: 10.), wait_for=wait,
+                     accepted_world_ready=lambda *args: False)
+        exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-missing-world', 'exec'), scope)
+        with self.assertRaisesRegex(TimeoutError, 'no accepted world'):
+            scope['prepare_arm_fault'](world, {}, None)
+        self.assertEqual(world.arm_preparation_diagnostics['attempts'], [])
+
+    def test_expired_deadline_or_rotated_nonce_after_world_wait_sends_no_reset(self):
+        tree = ast.parse((Path(__file__).parents[1] / 'gazebo/run_reference.py').read_text())
+        method = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == 'prepare_arm_fault')
+        for failure in ('deadline', 'nonce', 'world'):
+            world, clock, fresh = self.fixture(), [10.], [True]
+            world.propose_base = lambda value: self.fail('reset sent after prerequisite invalidation')
+            def wait(*args):
+                if failure == 'deadline':
+                    clock[0] = 15.
+                elif failure == 'nonce':
+                    world.guard_states[-1][1]['nonce'] = 'changed'
+                else:
+                    fresh[0] = False
+            scope = dict(json=json, time=SimpleNamespace(monotonic=lambda: clock[0]), wait_for=wait,
+                         accepted_world_ready=lambda *args: fresh[0])
+            exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-expired-preparation', 'exec'), scope)
+            with self.assertRaises(TimeoutError):
+                scope['prepare_arm_fault'](world, {}, None)
+            self.assertEqual(world.arm_preparation_diagnostics['attempts'], [])

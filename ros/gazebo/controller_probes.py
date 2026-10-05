@@ -46,6 +46,13 @@ def measured_world(world):
         "humans": [], "confidence": 1.0}
 
 
+def require_world_accepted(step, snapshot):
+    updated = (step.get("outcome") or {}).get("world_updated")
+    if (not isinstance(updated, dict) or type(updated.get("stamp_ms")) is not int
+            or updated["stamp_ms"] != snapshot["stamp_ms"]):
+        raise AssertionError("controller probe measured world was not accepted: " + json.dumps(step))
+
+
 def exercise(world, root, binary, roles, processes, start, stop, command, wait_for, env):
     """Never invoked unless the ordinary authorization process is already gone."""
     if "gate" in processes:
@@ -95,8 +102,8 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
     def world_snapshot():
         # Provisioning a fresh Rust fixture is synchronous. Wait for actual
         # fresh feedback afterwards; never relabel an old observation as fresh.
-        wait_for(lambda: time.monotonic()-world.joint_received < .05 and
-                 time.monotonic()-world.odom_received < .05,
+        wait_for(lambda: 0 <= time.monotonic()-world.joint_received < .05 and
+                 0 <= time.monotonic()-world.odom_received < .05,
                  2, processes, "fresh measured controller probe world")
         return measured_world(world)
     def budget(step, sim):
@@ -109,7 +116,9 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         return remaining * 1_000_000
     def approve(action):
         nonlocal proposal_id
-        feed("world", world_snapshot())
+        snapshot = world_snapshot()
+        world_step = feed("world", snapshot)
+        require_world_accepted(world_step, snapshot)
         proposal_id += 1
         begin = time.monotonic_ns()
         stamp = now()
@@ -229,7 +238,9 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
             # The world response already rechecks the same Rust goal. A second
             # audited tick adds IPC/commit delay without adding authorization.
             sim, wall = now()*1_000_000, time.monotonic_ns()
-            step = feed("world", world_snapshot())
+            snapshot = world_snapshot()
+            step = feed("world", snapshot)
+            require_world_accepted(step, snapshot)
             elapsed = max((time.monotonic_ns()-wall)/1e6, now()-sim//1_000_000)
             require_fresh_actuation(step,elapsed,now(),200,50)
             if elapsed >= 50:

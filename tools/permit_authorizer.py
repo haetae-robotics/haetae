@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import socket
 import time
+from collections import deque
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -12,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from bench_gate import BenchGate
 from permit_keys import deployment, private_bytes
 from permit_protocol import context, decode_json, payload, bind_payload
+from permit_ipc import send_line, receive_line, mark
 
 
 class Authorizer:
@@ -33,7 +35,7 @@ class Authorizer:
         self.session_key = None
         self.armed_authorized = False
 
-    def approve(self, request):
+    def approve(self, request, stages=None):
         try:
             context(request)
             binding = request["epoch"], request["generation"]
@@ -66,10 +68,14 @@ class Authorizer:
             if fault and fault != self.last_fault:
                 self.last_fault = fault
                 print("Authorizer fault injected: " + fault, flush=True)
-            if not self.gate.cycle(fault):
+            mark(stages, "gate_started_ns")
+            allowed = self.gate.cycle(fault)
+            mark(stages, "gate_completed_ns")
+            if not allowed:
                 self.locked = True
                 return {"kind": "terminal", "reason": "gate_denied"}
             signature = hashlib.blake2b(payload(request), key=self.session_key, digest_size=32).hexdigest()
+            mark(stages, "sign_completed_ns")
             # Signing cannot turn a late gate decision into fresh authorization.
             remaining = self.gate.remaining()
             if not 0 < remaining <= .05:
@@ -94,6 +100,7 @@ def serve(binary, key, config, path, scenario, seconds, ready_file=None, socket_
         raise ValueError("authorizer socket already exists; no automatic replacement")
     authorizer = Authorizer(binary, key, config, scenario, seconds)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    traces = deque(maxlen=4)
     try:
         server.bind(str(path))
         if socket_group is not None:
@@ -105,20 +112,23 @@ def serve(binary, key, config, path, scenario, seconds, ready_file=None, socket_
             Path(ready_file).write_text(json.dumps({"ready": True}))
         connection, _ = server.accept()
         with connection:
-            connection.settimeout(.5)
-            stream = connection.makefile("rwb", buffering=0)
             deadline = time.monotonic() + seconds + 3
             while time.monotonic() < deadline:
-                raw = stream.readline(513)
-                if not raw:
-                    return
-                if not raw.endswith(b"\n"):
-                    return
-                result = authorizer.approve(decode_json(raw))
-                stream.write(json.dumps(result, separators=(",", ":")).encode() + b"\n")
+                stages = {}
+                traces.append(stages)
+                raw = receive_line(connection, min(deadline, time.monotonic() + .5), stages, "request")
+                request = decode_json(raw)
+                result = authorizer.approve(request, stages)
+                send_line(connection, json.dumps(result, separators=(",", ":")).encode() + b"\n",
+                          min(deadline, time.monotonic() + .5), stages)
                 if result["kind"] == "terminal":
                     print("Authorizer terminal: " + result["reason"], flush=True)
+                    if result["reason"] in ("authorizer_failure", "gate_expired"):
+                        print(json.dumps({"event": "permit_ipc_failure", "stages": list(traces)}), flush=True)
                     return
+    except (RuntimeError, OSError, ValueError):
+        print(json.dumps({"event": "permit_ipc_failure", "stages": list(traces)}), flush=True)
+        raise
     finally:
         authorizer.close()
         server.close()

@@ -115,7 +115,8 @@ def host_case(name, scenario="allow", interrupt=None):
                 os.kill(gate_pid, signal.SIGKILL)
             expected = "lease" if interrupt in ("kill", "pause") else "stop"
             stopped = wait_for(lambda: device.stopped(positive["device_ms"], expected) or
-                              (device.stopped(positive["device_ms"], "lease") if scenario == "allow" else None))
+                              (device.stopped(positive["device_ms"], "lease")
+                               if interrupt is None and scenario == "allow" else None))
             if interrupt == "pause":
                 os.kill(host.pid, signal.SIGCONT)
             code = host.wait(timeout=3)

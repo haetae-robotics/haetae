@@ -103,3 +103,9 @@ host gap of at least 200ms, failing host exit, and no subsequent ON/rearm.
 It is not a normal availability success or a physical timing qualification.
 The aggregate report sets `availability_degraded: true` whenever a case has
 this classification, even when its fail-closed checks pass.
+The Rust-kill case requires an observed `stop` event; a lease timeout cannot
+pass that STOP-delivery check. The signed-controller socket uses bounded bulk
+reads and complete writes against each frame's original monotonic deadline.
+Failures retain the last four request/gate/sign/response stage timestamps.
+Its operational request/acknowledgment
+budget remains 50 ms; a socket timeout still fails the named scenario.
