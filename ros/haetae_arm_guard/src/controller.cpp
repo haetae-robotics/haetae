@@ -104,7 +104,8 @@ public:
           if (reset || stop) {publish_guard_state();}
         } else {
           RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
-            "Controller %s rejected: %s", reset ? "reset" : stop ? "stop" : "lease", permit_.reason().c_str());
+            "Controller %s rejected: %s %s", reset ? "reset" : stop ? "stop" : "lease",
+            permit_.reason().c_str(), permit_.diagnostic().c_str());
         }
       });
     // Replace both inherited ingress paths; stale/closed goals never enter the

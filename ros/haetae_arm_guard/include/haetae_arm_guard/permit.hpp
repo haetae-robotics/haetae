@@ -102,6 +102,7 @@ class PermitGuard
   uint64_t generation_ = 0;
   uint64_t accepted_ = 0, rejected_ = 0, rejected_motion_ = 0;
   std::string reason_ = "startup";
+  std::string diagnostic_;
   bool live_unlocked(int64_t sim, int64_t wall)
   {
     if (!locked_ && (sim < 0 || wall < 0 || static_cast<uint64_t>(sim) < grant_.sim ||
@@ -141,7 +142,12 @@ public:
         s - next.sim >= 50000000 || w - next.wall >= 50000000 ||
         next.sim_end <= s || next.wall_end <= w || next.sim_end <= next.sim ||
         next.wall_end <= next.wall || next.sim_end - next.sim > 200000000 ||
-        next.wall_end - next.wall > 200000000) {throw std::invalid_argument("freshness");}
+        next.wall_end - next.wall > 200000000) {
+        diagnostic_ = "sim_age_ns=" + std::to_string(sim - static_cast<int64_t>(next.sim)) +
+          " wall_age_ns=" + std::to_string(wall - static_cast<int64_t>(next.wall)) +
+          " seq=" + std::to_string(next.seq) + " last_seq=" + std::to_string(seq_);
+        throw std::invalid_argument("freshness");
+      }
       auto key_bytes = unhex(public_, 32), signature = unhex(fields[9], 64);
       auto key = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr, key_bytes.data(), key_bytes.size());
       auto context = EVP_MD_CTX_new();
@@ -182,5 +188,6 @@ public:
   uint64_t rejected() {std::lock_guard<std::mutex> lock(mutex_); return rejected_;}
   uint64_t rejected_motion() {std::lock_guard<std::mutex> lock(mutex_); return rejected_motion_;}
   std::string reason() {std::lock_guard<std::mutex> lock(mutex_); return reason_;}
+  std::string diagnostic() {std::lock_guard<std::mutex> lock(mutex_); return diagnostic_;}
 };
 }  // namespace haetae_arm_guard
