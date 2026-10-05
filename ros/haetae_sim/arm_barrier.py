@@ -1,5 +1,7 @@
 """Causal OFF-only rearm barrier for the software action reference."""
 
+import math
+
 
 def rearm_ready(states, outcomes, sent_at):
     decisions = [(at, value) for at, value in outcomes if at >= sent_at
@@ -16,3 +18,36 @@ def rearm_ready(states, outcomes, sent_at):
             and state.get("active") is None and not state.get("arm_cancelling")
             and state.get("arm_controller_ready") and state.get("recorder_ok")
             and state.get("state_ok") and type(age) is int and 0 <= age < 75)
+
+
+def gazebo_rearm_ready(world, sent_at, now, arm_joints, nonces):
+    """Fresh explicit fixture reset, immediately before a single arm dispatch."""
+    if not rearm_ready(world.states, world.outcomes, sent_at):
+        return False
+    if not 0 <= now - world.states[-1][0] < 0.1:
+        return False
+    for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states)):
+        if not samples:
+            return False
+        received, guard = samples[-1]
+        published = guard.get("published_wall_ns", 0) / 1e9
+        if (not nonces.get(target) or guard.get("nonce") != nonces[target]
+                or received < sent_at or published < sent_at or guard.get("holding", True)
+                or not 0 <= now - received < 0.1
+                or not 0 <= now - published < 0.1):
+            return False
+    arm = world.guard_states[-1][1]
+    if arm.get("active_digest") != "0" * 64 or arm.get("goal_sequence") != 0:
+        return False
+    lease = arm.get("lease_received_wall_ns", 0) / 1e9
+    if lease < sent_at or not 0 <= now - lease < 0.1:
+        return False
+    if (world.joint is None or not 0 <= now - world.joint_received < 0.1
+            or not 0 <= now - world.odom_received < 0.1):
+        return False
+    speed = world.speed()
+    if not math.isfinite(speed) or abs(speed) >= 0.03:
+        return False
+    velocities = dict(zip(world.joint.name, world.joint.velocity))
+    return all(name in velocities and math.isfinite(velocities[name])
+               and abs(velocities[name]) < 0.03 for name in arm_joints)

@@ -35,6 +35,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
 from run_scenario import fixture, public  # noqa: E402
+from arm_barrier import gazebo_rearm_ready  # noqa: E402
 from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
@@ -472,9 +473,25 @@ def sealed_incident_snapshot(log_path, snapshot_path, *, root=None, expected_uid
 
 def exercise_arm_fault(world, processes, case):
     """Fault injection is confined to this test harness, never the gate."""
-    time.sleep(0.3)  # Drain the rearm stop proposals before submitting motion.
-    wait_for(lambda: world.guard_states and not world.guard_states[-1][1]["holding"],
-             5, processes, "independent controller lease opens")
+    nonces = {target: samples[-1][1].get("nonce") if samples else None
+              for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))}
+    sent = time.monotonic()
+    # This newly activated fixture emits exactly one stop. Wait for its newer
+    # accepted outcome and current-nonce idle controller grant, issued after
+    # that send, before dispatch. No trailing preparation stop can cancel it.
+    world.propose_base(0.0)
+    try:
+        wait_for(lambda: gazebo_rearm_ready(world, sent, time.monotonic(), ARM_JOINTS, nonces),
+                 5, processes, "fresh explicit arm fault fixture reset")
+    except TimeoutError as exc:
+        raise TimeoutError(str(exc) + ": " + json.dumps({
+            "sent_wall": sent, "expected_nonces": nonces,
+            "state": world.states[-1] if world.states else None,
+            "outcome": world.outcomes[-1] if world.outcomes else None,
+            "arm_guard": world.guard_states[-1] if world.guard_states else None,
+            "base_guard": world.base_guard_states[-1] if world.base_guard_states else None,
+            "joint_received": world.joint_received, "odom_received": world.odom_received,
+            "base_speed": world.speed()})) from exc
     initial = world.arm_positions()
     world.marker("팔 독립 정지 시험", case=case)
     dispatched_at = time.monotonic()
@@ -1040,8 +1057,6 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
                  and world.states[-1][1].get("arm_controller_ready"),
                      10, processes, "new isolated arm fault fixture")
-            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
-                     5, processes, "fault fixture rearm", action=lambda: world.propose_base(0.0))
             arm_fault_results[case] = exercise_arm_fault(world, processes, case)
             if roles:
                 checkpoint_evidence(root, fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl", UIDS["gate"])
