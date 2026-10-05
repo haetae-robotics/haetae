@@ -142,6 +142,27 @@ class NodeBoundaryTest(unittest.TestCase):
         self.assertFalse(g.aborts)
         self.assertEqual(g.permits.active_arm, "a" * 64)
 
+    def test_completion_winning_signed_stop_race_cannot_restore_authority(self):
+        g = self.gate
+        signed = []
+        g.permits = SimpleNamespace(challenges={"arm": "b" * 32},
+                                    active_arm="a" * 64, goal_sequence=3,
+                                    sign=lambda *args: signed.append(args) or "stop-token")
+        g.arm_goal = SimpleNamespace(cancel_goal_async=lambda: SimpleNamespace(add_done_callback=lambda _: None))
+        g.arm_goal_future = None
+        g._cancel_arm()
+        self.assertTrue(g.cancel_requested)
+        self.assertEqual(signed[-1][1], "stop")
+        g._on_arm_result(SimpleNamespace(result=lambda: SimpleNamespace(status=4)))
+        self.assertFalse(g.aborts)
+        self.assertIsNone(g.arm_goal)
+        self.assertEqual(g.permits.active_arm, "0" * 64)
+        self.assertEqual(g.permits.goal_sequence, 0)
+        g.permits = None
+        g.cancel_requested = True
+        g._on_arm_result(SimpleNamespace(result=lambda: SimpleNamespace(status=4)))
+        self.assertEqual(g.aborts, ['arm did not report a cancelled result'])
+
     def test_pending_goal_cancellation_has_absolute_deadline_and_no_renewal(self):
         g = self.gate
         g._cancel_arm()

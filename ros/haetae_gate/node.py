@@ -219,8 +219,11 @@ class HaetaeGate(Node):
         try:
             status = future.result().status
             if self.cancel_requested and status != GoalStatus.STATUS_CANCELED and not (
-                    self.permits and status == GoalStatus.STATUS_ABORTED):
+                    self.permits and status in (GoalStatus.STATUS_ABORTED, GoalStatus.STATUS_SUCCEEDED)):
                 raise BridgeFailure("arm did not report a cancelled result")
+            # In permit mode a signed stop already revoked controller authority.
+            # SUCCESS can win the completion/cancel race before its result is
+            # delivered. It cannot rearm or restore the cleared owner identity.
             if not self.cancel_requested and status != GoalStatus.STATUS_SUCCEEDED:
                 raise BridgeFailure("arm goal did not succeed")
             self.arm_goal = None
