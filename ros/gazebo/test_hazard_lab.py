@@ -22,6 +22,39 @@ from public_report import report, failed_household_result
 
 
 class WorldPublicationTest(unittest.TestCase):
+    def test_hazard_rejection_binds_after_explicit_rearm_queue_drains(self):
+        # Exercise the actual fixture dispatcher against an observer revision
+        # that changes while the explicit STOP/rearm queue drains.
+        from typing import Union, Callable, Literal
+        tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
+        lab = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_lab")
+        method = next(n for n in lab.body if isinstance(n, ast.FunctionDef) and n.name == "reject_at_gate")
+        revision = {"value": 1}
+        world = SimpleNamespace(arm_positions=lambda: [0] * 4, outcomes=[])
+
+        def rearm():
+            revision["value"] = 2
+
+        def submit(points, semantic):
+            fired = "household:human" if semantic["world_revision"] == revision["value"] else "household:binding-mismatch"
+            world.outcomes.append((10, {"decision": {"verdict": "bul", "fired": [fired]}}))
+
+        def wait(check, *_):
+            result = check()
+            if not result:
+                raise TimeoutError("expected hazard verdict, not stale fixture reference")
+            return result
+
+        world.propose_arm_plan = submit
+        scope = {"Union": Union, "Callable": Callable, "Literal": Literal,
+                 "world": world, "current_binding": lambda *_: {"world_revision": revision["value"]},
+                 "rearm_for_test": rearm, "wait_for": wait, "processes": {},
+                 "verified_denial": {"at": None},
+                 "time": SimpleNamespace(monotonic=lambda: 10, sleep=lambda _: None)}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "hazard_lab.py", "exec"), scope)
+        result = scope["reject_at_gate"]([], "inert", expected="household:human")
+        self.assertTrue(result["signed_gate_rejection_observed"])
+
     def test_absent_semantics_preserves_observations_but_failure_guard_blocks_them(self):
         # Exercise the actual ROS callback without requiring ROS on the host.
         tree = ast.parse(Path(__file__).with_name("run_reference.py").read_text())

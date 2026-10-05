@@ -709,8 +709,10 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
 
     def reject_at_gate(points, item, contents=(), expected=None,
                        binding_override: Union[dict, Callable[[dict], dict], None, Literal[False]] = False):
-        binding = current_binding(item, contents)
         rearm_for_test()
+        # STOP/rearm queue draining can admit a newer native scene. Bind only
+        # after that preparation, immediately before the signed proposal.
+        binding = current_binding(item, contents)
         if binding_override is not False:
             binding = binding_override(binding) if callable(binding_override) else binding_override
         before = world.arm_positions()
@@ -740,8 +742,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         # A completed arm lease intentionally unarms the source. This fixed
         # test explicitly requests a new lease only after ordinary completion;
         # a stale/denied/revoked/faulted gate is never automatically rearmed.
-        binding = current_binding(item, contents)
         rearm_for_test()
+        binding = current_binding(item, contents)
         # Local preflight is diagnostic only. The signed policy also requires
         # Rust to derive/check the exact trajectory at central execution.
         checked = request(item, points, contents)
