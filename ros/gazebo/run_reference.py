@@ -25,7 +25,7 @@ from xml.etree import ElementTree
 import rclpy
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.signals import SignalHandlerOptions
@@ -103,6 +103,7 @@ class GazeboWorld(Node):
         self.base_guard_states = []
         self.attack_world_received = 0
         self.world_count = 0
+        self.published_world_stamp = None
         self.hazard_guard = None
         self.semantic_snapshot = None
         self.semantic_last = None
@@ -164,6 +165,10 @@ class GazeboWorld(Node):
         if all(name in msg.name for name in ARM_JOINTS):
             self.joint = msg
             self.joint_received = time.monotonic()
+            # Do not leave a new fused observation waiting for the next
+            # periodic tick. Only advancing healthy samples use this path;
+            # the existing timer still delivers health/semantic changes.
+            self._publish_observation(only_advanced=True)
 
     def _command(self, msg):
         now = time.monotonic()
@@ -229,6 +234,9 @@ class GazeboWorld(Node):
             self.human = self.human_walk = self.human_motion = None
 
     def _publish_world(self):
+        self._publish_observation()
+
+    def _publish_observation(self, *, only_advanced=False):
         now = time.monotonic()
         stamp = self.get_clock().now().nanoseconds // 1_000_000
         if (not stamp or self.odom is None or self.joint is None or
@@ -253,6 +261,9 @@ class GazeboWorld(Node):
         # a new world. Joint/odom freshness was checked above independently.
         if sensor["healthy"]:
             stamp = min(stamp, odom_stamp, sensor["stamp_ms"])
+        if only_advanced and (not sensor["healthy"] or
+                (self.published_world_stamp is not None and stamp <= self.published_world_stamp)):
+            return
         with self.human_lock:
             human_motion = self.human_motion
             present = self.human is not None
@@ -280,6 +291,7 @@ class GazeboWorld(Node):
         if self.hazard_guard is None or self.hazard_guard():
             self.world_pub.publish(String(data=json.dumps(payload)))
             self.world_count += 1
+            self.published_world_stamp = stamp
         # Unknown coverage is an explicit negative observation, never a safe
         # empty scene. The root-signed perception-unknown rule revokes motion
         # immediately; mechanical/signing disappearance still ages out.
@@ -786,7 +798,11 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                        root, "robot_state_publisher", processes, gazebo_env)
         logs.append(log)
         world = GazeboWorld(live, isolated=secure_graph)
-        executor = MultiThreadedExecutor(num_threads=3)
+        # These observation callbacks share the default mutually exclusive
+        # group. Run them directly in the spin thread instead of dispatching
+        # already serialized work through a worker pool. Scenario waits and
+        # native sensor/pose transport run on their existing separate threads.
+        executor = SingleThreadedExecutor()
         executor.add_node(world)
         thread = threading.Thread(target=executor.spin, daemon=True)
         thread.start()

@@ -140,8 +140,9 @@ bound to the new nonces, an unlocked arm with a fresh idle lease, and measured
 wheel/all-four-joint stop immediately
 before dispatch. There is no repeating request producer or trailing stop after
 the final accepted ID from the ordered signed VLA writer. The non-secure path
-without the durable VLA counter allows only one preparation request. A fixed 300 ms
-preparation sleep can hide a lapse beyond the 200 ms permit lifetime.
+without the durable VLA counter allows only one preparation request. The barrier
+avoids a fixed preparation sleep, which could hide a lapse beyond the 200 ms
+permit lifetime.
 Preparation emits no further stops or resets once the single arm goal is sent;
 failure after dispatch cannot use this barrier to recover or retry motion.
 The arm-only fixture permits a locked wheel controller when its current report
@@ -155,6 +156,22 @@ interpreted as a denied positive action. Hostile probes keep requiring total
 rejection plus fresh holding/drift evidence. Log messages name the ingress kind.
 
 ## Verification
+
+The Gazebo observation node uses a single-threaded executor on its own spin
+thread. Its callbacks already share the default mutually exclusive group, so
+direct dispatch removes worker-pool handoffs without reducing callback
+concurrency. Scenario waits and native sensor/pose transport retain their
+separate threads. This reduces dispatch overhead; it is not a hard realtime
+guarantee or proof of the cause of a previous qualification failure. Original
+measurement timestamps, freshness limits and failure stops remain unchanged.
+
+A complete joint observation also attempts publication of a newly advancing,
+healthy fused world sample. This avoids waiting for the next 50 ms publication
+tick after a new lidar/odom/joint measurement becomes available. The original
+oldest measurement stamp is retained; an equal/older fused stamp cannot use
+this additional path. The existing 50 ms timer still publishes sensor health
+and semantic changes, including unknown coverage and repeated/frozen samples.
+Neither path refreshes the original authority clock for a repeated world stamp.
 
 The supported reference runs its controllers at 100 Hz. The trusted owner
 conservatively backdates each permit's simulation origin and simulation expiry
