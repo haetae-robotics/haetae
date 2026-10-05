@@ -90,7 +90,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         end = [positions[0] + (-.3 if positions[0] > .2 else .3), *positions[1:]]
         sim, wall, step = approve({"type": "joint_trajectory", "ttl_ms": 1000,
             "points": [{"time_from_start_ms": 0, "positions": positions},
-                       {"time_from_start_ms": 500, "positions": [(a+b)/2 for a,b in zip(positions,end)]},
+                       {"time_from_start_ms": 800, "positions": end},
                        {"time_from_start_ms": 1000, "positions": end}]})
         trajectory = JointTrajectory()
         trajectory.joint_names = list(ARM_JOINTS)
@@ -213,7 +213,13 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         (root/"controller-permits.json").write_text(json.dumps(result,indent=2))
         return result
     finally:
-        if bridge is not None:
-            bridge.close()
-        stop(processes.pop("controller_attacker"),force=True)
-        log.close()
+        try:
+            if bridge is not None:
+                bridge.close()
+        finally:
+            try:
+                process = processes.pop("controller_attacker", None)
+                if process is not None:
+                    stop(process, force=True)
+            finally:
+                log.close()
