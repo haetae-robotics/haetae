@@ -10,7 +10,8 @@ PUBLIC_FILES = (
     'compound-faults.json', 'attack-result.json', 'principal-isolation.json',
     'role-permissions.json', 'source-restart.json', 'sensor-faults.json', 'sensor-person.json',
     'source_world.log', 'source_vla.log', 'scenario_vla.log', 'setup.log', 'gazebo.log',
-    'gazebo_gui.log', 'gate.log', 'relay.log', 'controller-permits.json', 'clock_bridge.log', 'robot_state_publisher.log',
+    'gazebo_gui.log', 'gate.log', 'relay.log', 'controller-permits.json',
+    'controller_attacker.log', 'controller_reset.log', 'clock_bridge.log', 'robot_state_publisher.log',
     'sillok.jsonl', 'sealed-snapshot.jsonl', 'reference_bot.urdf',
 )
 

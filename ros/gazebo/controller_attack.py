@@ -27,6 +27,7 @@ def main():
     arm = ActionClient(node, FollowJointTrajectory, "/joint_trajectory_controller/follow_joint_trajectory")
     packets = queue.Queue(maxsize=32)
     done = threading.Event()
+    ready = False
     def reader():
         try:
             for line in sys.stdin:
@@ -37,6 +38,13 @@ def main():
             done.set()
     threading.Thread(target=reader, daemon=True).start()
     def deliver():
+        nonlocal ready
+        if not ready:
+            if not (base.get_subscription_count() and heartbeat.get_subscription_count()
+                    and arm.server_is_ready()):
+                return
+            ready = True
+            print(json.dumps({"ready": True}), flush=True)
         try:
             packet = packets.get_nowait()
         except queue.Empty:

@@ -138,6 +138,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
     def reset():
         nonlocal reset_id
         new_issuer()
+        previous = {target: guard(target).get("nonce") for target in ("base", "arm")}
         reset_id += 1
         resetter.stdin.write((json.dumps(reset_id) + "\n").encode())
         resetter.stdin.flush()
@@ -146,8 +147,9 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                  15, processes, "bounded trusted controller maintenance reset")
         with (root / "setup.log").open("a") as audit:
             audit.write("$ trusted controller maintenance reset " + str(reset_id) + "\n" + marker + "\n")
-        until = time.monotonic()+.1
-        wait_for(lambda: time.monotonic() >= until, 2, processes, "fresh activation telemetry")
+        wait_for(lambda: all(guard(target).get("nonce") and
+                 guard(target).get("nonce") != previous[target] for target in ("base", "arm")),
+                 2, processes, "fresh activation nonce telemetry")
         for target in ("base", "arm"):
             signer.observe(target, guard(target)); signer.sequence[target] = 0
         sim, wall, step = approve({"type": "stop"})
@@ -162,6 +164,10 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
     try:
         resetter, reset_log = start([sys.executable, str(REPO / "ros/gazebo/controller_reset.py"), "--stdio"],
             root, "controller_reset", processes, env, input_pipe=True)
+        # Actor readiness is synchronization only, never evidence of admission
+        # or blocking. Trusted counters and actual motion still decide verdicts.
+        wait_for(lambda: '{"ready": true}' in (root / "controller_attacker.log").read_text(),
+                 15, processes, "relay DDS endpoints discovered before positive control")
         # Distinct physical positive controls, through the relay's permitted DDS routes.
         reset()
         before = world.pose()
