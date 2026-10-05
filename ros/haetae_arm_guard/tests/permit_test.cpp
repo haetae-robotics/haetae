@@ -43,7 +43,10 @@ int main()
   check(admit(token(nonce, 2, "reset"), "reset", true), "explicit reset");
   auto command = token(nonce, 3, "command");
   check(admit(command, "command"), "fresh exact command");
+  check(guard.authorizes(1000000000, 2000000000, idle_digest), "atomic exact grant snapshot");
+  check(!guard.authorizes(1000000000, 2000000000, std::string(64, '1')), "wrong digest never authorized");
   check(!admit(command, "command"), "replay rejected and locks");
+  check(!guard.authorizes(1000000000, 2000000000, idle_digest), "rejected grant cannot authorize next sample");
   check(guard.grant().seq == 0, "rejection clears stale grant across separate reads");
   check(!admit(token(nonce, 4, "command"), "command"), "fresh command cannot rearm a latch");
   check(admit(token(nonce, 5, "reset"), "reset", true), "fresh reset after rejection");

@@ -174,6 +174,11 @@ public:
   {
     std::lock_guard<std::mutex> lock(mutex_); return live_unlocked(sim, wall);
   }
+  bool authorizes(int64_t sim, int64_t wall, const std::string & digest)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return live_unlocked(sim, wall) && grant_.digest == digest;
+  }
   void stop()
   {
     std::lock_guard<std::mutex> lock(mutex_); locked_ = true; grant_ = {}; ++generation_;

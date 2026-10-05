@@ -64,11 +64,9 @@ public:
   controller_interface::return_type update_and_write_commands(const rclcpp::Time & time,
     const rclcpp::Duration & period) override
   {
-    bool allowed = permit_.fresh(time.nanoseconds(), steady_ns());
-    if (allowed) {
-      try {allowed = base_digest(command_msg_) == permit_.grant().digest;}
-      catch (const std::exception &) {allowed = false;}
-    }
+    bool allowed = false;
+    try {allowed = permit_.authorizes(time.nanoseconds(), steady_ns(), base_digest(command_msg_));}
+    catch (const std::exception &) {allowed = false;}
     if (allowed) {
       // Exported chain references cannot change the verified command.
       if (!ordered_exported_reference_interfaces_[0]->set_value(command_msg_.twist.linear.x) ||
