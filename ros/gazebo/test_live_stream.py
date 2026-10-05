@@ -28,6 +28,7 @@ class LiveStreamTest(unittest.TestCase):
     def test_household_failure_keeps_partial_evidence_after_outer_failure(self):
         hub = LiveHub(household_hazards=True)
         row = {"id": "human", "blocked": True, "allowed": True,
+               "mandatory_semantic_gate": True, "signed_gate_rejection_observed": True,
                "reason": "human:protected-volume", "denied_drift_rad": .001,
                "measured_motion_rad": .3, "plan_sha256": "a" * 64,
                "signed_arm_acceptance_observed": True, "accepted_waypoints_match": True,

@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::Point2;
+use crate::household::SemanticBinding;
 use crate::world::Twist2;
 
 /// Where a proposal came from. Every source is untrusted.
@@ -151,4 +152,7 @@ pub struct ActionProposal {
     pub source: Source,
     pub timestamp_ms: u64,
     pub action: ActionKind,
+    /// Untrusted references into the trusted semantic snapshot; no scene facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<SemanticBinding>,
 }

@@ -56,7 +56,7 @@ def final_export(root, output, prior_failure=False):
                 except (OSError, ValueError):
                     result = {}
                 result = result if isinstance(result, dict) else {}
-                household = (previous.get('scope') == 'household_hazard_preflight_simulation'
+                household = (previous.get('scope') in ('household_hazard_preflight_simulation', 'household_hazard_mandatory_gate_simulation')
                              or result.get('profile') == 'household_hazards')
                 partial = (result if result.get('profile') == 'household_hazards' else
                            failed_household_result(output)) if household else None

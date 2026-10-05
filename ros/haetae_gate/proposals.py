@@ -1,9 +1,61 @@
 """Strict source proposal decoding shared by isolated and legacy transports."""
 import math
+import json
+
+SEMANTIC_PREFIX = "haetae.semantic.v1:"
+SEMANTIC_FIELDS = {"schema_version", "world_revision", "task_revision", "task_id",
+                   "step_id", "robot_id", "model_sha256", "tool_id", "item_id"}
 
 
 class InvalidProposal(ValueError):
     pass
+
+
+def semantic_binding(frame_id):
+    """Decode untrusted references, never world facts or a safety verdict.
+
+    Legacy frame names carry no semantic authority. Household policy decides
+    whether missing references are acceptable at the authenticated Rust gate.
+    """
+    if not isinstance(frame_id, str) or not frame_id.startswith(SEMANTIC_PREFIX):
+        return None
+    if len(frame_id) > 2048:
+        raise InvalidProposal("semantic reference exceeds bounds")
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise InvalidProposal("duplicate semantic reference field")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(frame_id[len(SEMANTIC_PREFIX):], object_pairs_hook=unique)
+    except (ValueError, TypeError) as exc:
+        raise InvalidProposal("malformed semantic reference") from exc
+    if not isinstance(value, dict) or set(value) != SEMANTIC_FIELDS:
+        raise InvalidProposal("unexpected semantic reference fields")
+    for key in ("schema_version", "world_revision", "task_revision"):
+        if type(value[key]) is not int or not 0 < value[key] <= 2**64 - 1:
+            raise InvalidProposal("invalid semantic revision")
+    if value["schema_version"] != 1:
+        raise InvalidProposal("unsupported semantic schema")
+    for key in SEMANTIC_FIELDS - {"schema_version", "world_revision", "task_revision"}:
+        text = value[key]
+        if (not isinstance(text, str) or not 1 <= len(text) <= 64
+                or not text.isascii() or any(not (c.isalnum() or c in "_.-") for c in text)):
+            raise InvalidProposal("invalid semantic identity")
+    digest = value["model_sha256"]
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise InvalidProposal("invalid semantic model hash")
+    return value
+
+
+def semantic_frame(binding):
+    frame = SEMANTIC_PREFIX + json.dumps(binding, sort_keys=True, separators=(",", ":"))
+    semantic_binding(frame)
+    return frame
 
 
 def base_action(msg, ttl):

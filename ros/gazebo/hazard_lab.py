@@ -11,6 +11,7 @@ import json
 import math
 import multiprocessing
 import select
+from typing import Callable, Literal, Optional, Union
 from pathlib import Path
 import subprocess
 import threading
@@ -38,6 +39,8 @@ CASES = [
     ("fall", "추락 공간 접근", "inert", "fall", "fall:protected-volume"),
 ]
 PLAN_TTL_MS = 1000
+ROBOT_ID = "rosbot_xl_open_manipulator_x"
+TOOL_ID = "household_fixture_v1"
 
 
 def lab_posture(urdf):
@@ -162,6 +165,27 @@ class Kinematics:
     def point(self, positions, pose, yaw):
         matrix = self.frame(positions, pose, yaw)
         return {"x": matrix[0][3], "y": matrix[1][3], "z": matrix[2][3]}
+
+    def household_policy(self, urdf):
+        """Root-provisioned FK data bound into the signed policy bytes."""
+        chain = []
+        for joint in self.chain:
+            origin = joint.find("origin")
+            segment: dict[str, object] = {key: [float(v) for v in origin.get(key, "0 0 0").split()]
+                       if origin is not None else [0.0, 0.0, 0.0]
+                       for key in ("xyz", "rpy")}
+            segment.update(joint_index=None, axis=None)
+            if joint.get("type") != "fixed":
+                segment["joint_index"] = ("joint1", "joint2", "joint3", "joint4").index(joint.get("name"))
+                axis = [float(v) for v in joint.find("axis").get("xyz").split()]
+                if axis not in ([0, 0, 1], [0, 1, 0]):
+                    raise ValueError("unsupported household policy axis")
+                segment["axis"] = "z" if axis == [0, 0, 1] else "y"
+            chain.append(segment)
+        return {"schema_version": 1, "robot_id": ROBOT_ID,
+                "model_sha256": hashlib.sha256(urdf.encode()).hexdigest(),
+                "tool_id": TOOL_ID, "chain": chain,
+                "sample_step_rad": 0.002, "swept_radius_m": 0.15}
 
     def orientation(self, positions, pose, yaw):
         m = self.frame(positions, pose, yaw)
@@ -435,6 +459,12 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
     completed = False
     judge_engine = None
     motion_guard = {"active": False, "base": None, "yaw": None, "target": None}
+    semantic_lock = threading.RLock()
+    semantic_context = {"item": None, "contents": [], "revision": 0,
+                        "task_revision": 0, "facts": None, "task_id": None,
+                        "base_pose": None, "base_yaw": None}
+    verified_denial: dict[str, Optional[float]] = {"at": None}
+    policy_binding = kinematics.household_policy(urdf)
     world.hazard_guard = lambda: not motion_guard["active"] or healthy()
 
     def now():
@@ -591,41 +621,131 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             ],
         }
 
+    def set_semantic_context(item, contents=()):
+        # Only this root-owned fixture transaction can set material/device
+        # facts. The untrusted proposal writer receives references only.
+        with semantic_lock:
+            task_id = "household-lab-" + active["case"]
+            if (semantic_context["item"] != item
+                    or semantic_context["contents"] != list(contents)
+                    or semantic_context["task_id"] != task_id):
+                semantic_context.update(item=item, contents=list(contents), task_id=task_id,
+                    task_revision=semantic_context["task_revision"] + 1,
+                    base_pose={"x": world.pose()[0], "y": world.pose()[1]},
+                    base_yaw=world.heading())
+
+    def semantic_snapshot(fused_stamp_ms):
+        with semantic_lock:
+            if not active["case"] or semantic_context["item"] is None:
+                return None
+            try:
+                positions = world.arm_positions()
+                measured = request(semantic_context["item"], ((0, positions), (1, positions)),
+                                   semantic_context["contents"])
+            except (RuntimeError, ValueError, KeyError):
+                return None
+            facts = {"schema_version": 1, "task_revision": semantic_context["task_revision"],
+                     "task_id": semantic_context["task_id"], "step_id": "fixture-motion",
+                     "robot_id": policy_binding["robot_id"],
+                     "model_sha256": policy_binding["model_sha256"],
+                     "tool_id": policy_binding["tool_id"],
+                     "item_id": "hazard_" + active["case"] + "_item",
+                     "item": measured["item"], "regions": measured["regions"],
+                     "base_pose": semantic_context["base_pose"], "base_yaw": semantic_context["base_yaw"]}
+            fingerprint = json.dumps(facts, sort_keys=True, separators=(",", ":"))
+            if semantic_context["facts"] != fingerprint:
+                semantic_context["facts"] = fingerprint
+                semantic_context["revision"] += 1
+            return {**facts, "revision": semantic_context["revision"],
+                    # Fuse semantic fixtures with the same oldest mechanical/
+                    # lidar observation as the outer world; never renew time.
+                    "observed_ms": min(measured["observed_ms"], fused_stamp_ms), "confidence": 1.0,
+                    "coverage_known": True}
+
+    def current_binding(item, contents=()):
+        set_semantic_context(item, contents)
+
+        def accepted_context():
+            snapshot = world.semantic_last
+            if not snapshot or not world.states:
+                return False
+            state = world.states[-1][1]
+            with semantic_lock:
+                return (snapshot["task_revision"] == semantic_context["task_revision"]
+                        and state.get("semantic_revision") == snapshot["revision"]
+                        and state.get("semantic_task_revision") == snapshot["task_revision"])
+
+        wait_for(accepted_context, 3, processes, "trusted household snapshot accepted by Rust gate")
+        snapshot = dict(world.semantic_last)
+        fields = ("schema_version", "task_revision", "task_id", "step_id", "robot_id",
+                  "model_sha256", "tool_id", "item_id")
+        return {**{key: snapshot[key] for key in fields}, "world_revision": snapshot["revision"]}
+
+    def rearm_for_test():
+        def ready_for_explicit_test_rearm():
+            if not world.states:
+                return False
+            state = world.states[-1][1]
+            expected_rejection = (verified_denial["at"] is not None
+                                  and world.states[-1][0] >= verified_denial["at"]
+                                  and state.get("mode") == "normal"
+                                  and state.get("stop") == "denied"
+                                  and state.get("active") is None
+                                  and not state.get("arm_cancelling"))
+            return ordinary_completion(state) or expected_rejection
+
+        wait_for(ready_for_explicit_test_rearm, 3, processes,
+                 "completed motion or verified expected rejection before explicit test rearm")
+        rearm_at = time.monotonic()
+        wait_for(lambda: world.states and "vla" in world.states[-1][1].get("armed", [])
+                 and sum(t >= rearm_at and row.get("decision", {}).get("verdict") == "yun"
+                         and row.get("decision", {}).get("action", {}).get("type") == "stop"
+                         for t, row in world.outcomes) >= 2,
+                 3, processes, "explicit signed zero-command rearm for fixed test",
+                 action=lambda: world.propose_base(0.0))
+        verified_denial["at"] = None
+        drain_until = now() + 150
+        wait_for(lambda: now() >= drain_until, 2, processes, "rearm queue drains")
+
+    def reject_at_gate(points, item, contents=(), expected=None,
+                       binding_override: Union[dict, Callable[[dict], dict], None, Literal[False]] = False):
+        rearm_for_test()
+        # STOP/rearm queue draining can admit a newer native scene. Bind only
+        # after that preparation, immediately before the signed proposal.
+        binding = current_binding(item, contents)
+        if binding_override is not False:
+            binding = binding_override(binding) if callable(binding_override) else binding_override
+        before = world.arm_positions()
+        submitted_at = time.monotonic()
+        world.propose_arm_plan(points, semantic=binding)
+
+        def rejection():
+            for t, row in world.outcomes:
+                decision = row.get("decision", {})
+                if t >= submitted_at and decision.get("verdict") == "bul" and (
+                        expected is None or expected in decision.get("fired", [])):
+                    return decision
+            return None
+
+        denied = wait_for(rejection, 3, processes, "signed proposal rejected by mandatory Rust household gate")
+        time.sleep(0.4)
+        drift = max(abs(a - b) for a, b in zip(before, world.arm_positions()))
+        if drift > 0.02 or any(t >= submitted_at and row.get("decision", {}).get("verdict") == "yun"
+                              and row.get("decision", {}).get("action", {}).get("type") == "joint_trajectory"
+                              for t, row in world.outcomes):
+            raise AssertionError("rejected signed plan acquired actuator authority")
+        verified_denial["at"] = submitted_at
+        return {"allowed": False, "reason": expected or denied["fired"][0],
+                "signed_gate_rejection_observed": True, "denied_drift_rad": drift}
+
     def execute(points, item, contents=()):
         # A completed arm lease intentionally unarms the source. This fixed
         # test explicitly requests a new lease only after ordinary completion;
         # a stale/denied/revoked/faulted gate is never automatically rearmed.
-        wait_for(
-            lambda: world.states and ordinary_completion(world.states[-1][1]),
-            3,
-            processes,
-            "ordinary completed arm session before explicit test rearm",
-        )
-        rearm_at = time.monotonic()
-        wait_for(
-            lambda: world.states
-            and "vla" in world.states[-1][1].get("armed", [])
-            and sum(
-                t >= rearm_at
-                and row.get("decision", {}).get("verdict") == "yun"
-                and row.get("decision", {}).get("action", {}).get("type") == "stop"
-                for t, row in world.outcomes
-            )
-            >= 2,
-            3,
-            processes,
-            "explicit signed zero-command rearm for next fixed plan",
-            action=lambda: world.propose_base(0.0),
-        )
-        drain_until = now() + 150
-        wait_for(
-            lambda: now() >= drain_until,
-            2,
-            processes,
-            "zero-command rearm queue drains",
-        )
-        # Binding is local to this trusted fixed-plan adapter. Other callers
-        # of the existing arm gate do not acquire semantic protection.
+        rearm_for_test()
+        binding = current_binding(item, contents)
+        # Local preflight is diagnostic only. The signed policy also requires
+        # Rust to derive/check the exact trajectory at central execution.
         checked = request(item, points, contents)
         base, yaw = world.pose(), world.heading()
         target = native.sample(f"hazard_{active['case']}_target")[0]
@@ -660,7 +780,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         )
         if time.monotonic() - started_wall > 0.05:
             raise RuntimeError("hazard dispatch preparation exceeded 50 ms")
-        world.propose_arm_plan(points)
+        world.propose_arm_plan(points, semantic=binding)
         goal = points[-1][1][0]
         wait_for(
             lambda: abs(world.primary_joint() - goal) < 0.02
@@ -714,6 +834,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             "measured_motion_rad": moved,
             "plan_sha256": fingerprint,
             "signed_arm_acceptance_observed": True,
+            "mandatory_semantic_gate": True,
             "accepted_waypoints_match": True,
             "max_joint_tracking_error_rad": tracking["max_error"],
             "tracking_samples": tracking["samples"],
@@ -721,6 +842,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
 
     try:
         judge_engine = HazardJudge(binary)
+        world.semantic_snapshot = semantic_snapshot
         timer = world.create_timer(0.08, publish)
         tracking_timer = world.create_timer(0.02, monitor_tracking)
         for index, (case, title, item, kind, expected) in enumerate(CASES, 1):
@@ -834,11 +956,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             verdict = judge_engine.decide(checked)
             if verdict["allowed"] or verdict["reason"] != expected:
                 raise AssertionError(f"{case}: expected {expected}, got {verdict}")
-            before = world.arm_positions()
-            time.sleep(0.4)
-            drift = max(abs(a - b) for a, b in zip(before, world.arm_positions()))
-            if drift > 0.02:
-                raise AssertionError("denied plan moved the robot")
+            gate_denial = reject_at_gate(dangerous, item, contents, "household:" + expected)
+            drift = gate_denial["denied_drift_rad"]
             world._emit(
                 "hazard_decision",
                 **verdict,
@@ -847,7 +966,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             )
             review_scene(
                 title + " · 차단 장면",
-                "위험 경로는 제어기로 보내지 않았습니다. 다음에는 위험 공간을 피해 가는 정상 명령을 실행합니다.",
+                "유효하게 서명된 위험 명령을 중앙 Rust 게이트가 차단했습니다. 다음에는 정상 명령을 명시적으로 재검사해 실행합니다.",
                 "정상 동작 대조",
             )
             safe = plan(world.arm_positions(), world.primary_joint() - direction * 0.3)
@@ -871,6 +990,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 "blocked": True,
                 "reason": verdict["reason"],
                 "denied_drift_rad": drift,
+                "signed_gate_rejection_observed": True,
                 **control,
             }
             if case == "chemicals":
@@ -902,15 +1022,24 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             if decision["allowed"]:
                 raise AssertionError(name + " unexpectedly allowed")
             fault_controls[name] = decision
+        safe = plan(world.arm_positions(), world.primary_joint() - 0.2)
+        gate_controls = {
+            "missing_binding": reject_at_gate(safe, "inert", expected="household:missing-binding", binding_override=None),
+            "wrong_revision": reject_at_gate(safe, "inert", expected="household:binding-mismatch",
+                binding_override=lambda value: {**value, "world_revision": value["world_revision"] + 100}),
+            "wrong_item": reject_at_gate(safe, "inert", expected="household:binding-mismatch",
+                binding_override=lambda value: {**value, "item_id": "unobserved-item"}),
+        }
         completed = True
         return {
             "profile": "household_hazards",
             "ok": True,
             "hazard_checks": rows,
             "negative_controls": fault_controls,
+            "mandatory_gate_controls": gate_controls,
             "semantic_input": "trusted_injected_fixtures",
             "geometry_input": "native_gazebo_pose_and_measured_joint_fk",
-            "execution_scope": "trusted_lab_preflight_then_existing_signed_arm_gate",
+            "execution_scope": "root_policy_bound_mandatory_rust_household_gate",
             "continuous_semantic_monitoring": False,
             "fixture_pose_and_base_guard_during_execution": True,
             "geometry_scope": "end_effector_and_attached_item_sphere_only",
@@ -920,7 +1049,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             "push_or_drop_prevention": False,
             "chemical_scope": "fixture_bleach_ammonia_sequence",
             "clock_domain": "gazebo_sim_time+wall_monotonic",
-            "plan_hash_scope": "audit_metadata_local_adapter",
+            "plan_hash_scope": "audit_metadata_exact_signed_waypoints_rederived_at_rust_gate",
             "grasp_physics_validated": False,
         }
     except Exception:
@@ -995,7 +1124,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                             "error": r.get("error"),
                             "decision": r.get("decision", {}).get("verdict"),
                         }
-                        for _, r in world.outcomes[-5:]
+                        for _, r in [row for row in world.outcomes
+                                     if row[1].get("decision") or row[1].get("error")][-5:]
                     ],
                 },
                 indent=2,
@@ -1003,6 +1133,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         )
         raise
     finally:
+        world.semantic_snapshot = None if completed else lambda _: None
         world.hazard_guard = None if completed else lambda: False
         if timer:
             world.destroy_timer(timer)

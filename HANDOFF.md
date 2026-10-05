@@ -20,10 +20,12 @@
 - 사람은 native Gazebo 기하 형상이다. 화면은 관측된 몸통 좌표를 따르고, 정지 판단은 실제 가상 GPU 라이다 표면 측정을 사용한다. 원하는 사람 좌표를 게이트 입력으로 직접 쓰지 않는다.
 - root 소유 컨테이너 방화벽과 상속되는 seccomp/NNP 필터가 비-root 역할의 통신을 로컬 DDS UDP로 제한한다. 실제 Gazebo pose 서비스 및 UDP 수신기 시험은 root 정상 대조군과 함께 확인한다. NET_ADMIN/필터 지원이 없으면 실행을 거부한다.
 - 40/80/100Hz 제안 압력과 센서 끊김·인지 서명 지연을 겹치는 복합 시험을 반복한다. 엔진의 실제 승인/거부, 400ms 이내 0출력, 실제 정지, 회복 뒤 자동 재가동 없음이 필수다. 서명 카운터만으로 수신 성공을 판단하지 않는다.
+- 라이다 관측 불가는 confidence0 서명 world로 즉시 전달하고 root reference 정책의 `perception-unknown` 규칙으로 거부·취소한다. 표적 소실은 해당 world→명명된 Rust revoke→disarm→후속0출력의 인과 증거가 필수다. 기계 관측·서명 경로 소실은 기존200ms world expiry를 유지하며 household failure guard는 unknown world도 막는다. 실제 장애 요청부터0출력까지400ms 제한을 바꾸지 않는다.
+- Gazebo scan/ROS clock 비동기 수신은 최근16개 단조 증가 frame 중 현재시각 이하의 최신 frame을 선택한다. 유효하지 않은 최신 frame을 과거 정상 frame으로 덮지 않고, 원래 source/수신벽시계200ms 제한을 유지한다. 미래 frame만 있거나 만료·eviction되면 unknown이다. 관측 시각·authority를 갱신하는 완충이 아니다.
 - 시뮬레이터 평가용 알파 운영 명령, 공유용 허용 필드 리포트, CI 소스/검증 후보 패키지를 제공한다. 실물 보호나 인증 버전이 아니다.
 - 사용자가 UNO R4 Minima를 주문했다. [LED bench](docs/uno-r4-bench.md)의 서명된 실제 Rust 엔진→직렬 adapter→독립 200ms guard를 준비했다. `./haetae-bench verify`는 같은 guard의 native 프로세스 시험, `compile`은 Arduino용 빌드다. 실물 USB/GPIO/WDT/reset 및 모터 정지는 미검증이다. Apple Silicon의 Intel Arduino 도구는 compile만 Docker로 우회하며 실제 upload는 Rosetta가 필요하다.
 
-- `./haetae-demo hazards`는 별도 root 소유 생활 위험 실험이다. 신뢰된 종류·기기 상태·용기 이력과 측정 관절 FK로 6개 경로를 검사하고, 같은 관절 궤적의 서명된 승인·실제 이동·0.05rad 추적을 대조한다. 기존 침투 방어 시험과 합산하지 않는다. 실물 인지·파지·화학 반응·사람 밀기 방지 검증이 아니다. 세정제는 같은 병 모형의 시험 종류를 바꾸며 화면에 명시한다. 자세한 범위는 [생활 위험 실험](examples/household-hazards/README.md).
+- `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 유효하게 서명된 6개 위험 명령과 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 최종 controller permit, 영속 effect history, 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 아직 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
 
 ## 실행
 

@@ -30,6 +30,7 @@ fn world(t: u64, position: f64, velocity: f64) -> WorldSnapshot {
         },
         humans: vec![],
         confidence: 1.0,
+        semantic: None,
     }
 }
 
@@ -39,6 +40,7 @@ fn proposal(id: u64, t: u64, action: ActionKind) -> Inbound {
         source: Source::Vla,
         timestamp_ms: t,
         action,
+        semantic: None,
     })
 }
 

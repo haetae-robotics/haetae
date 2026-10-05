@@ -3,6 +3,7 @@
 import math
 import time
 import unittest
+from unittest import mock
 from types import SimpleNamespace as N
 from lidar_perception import COUNT, Perception, decode_scan
 from native_person import geometry_poses
@@ -44,8 +45,61 @@ class LidarTest(unittest.TestCase):
         self.assertEqual(p.snapshot(1200, (5, 5))[1], 0)
         self.assertEqual(p.snapshot(999, (5, 5))[1], 0)
         self.assertEqual(p.snapshot(1050, (2.0, 5))[1], 0)
-        p.frame = type(p.frame)(1000, time.monotonic() - 0.201, (), True, "ok")
-        self.assertEqual(p.snapshot(1050, (5, 5))[1], 0)
+        assert p.frame is not None
+        with mock.patch("lidar_perception.time.monotonic", return_value=p.frame.received + 0.201):
+            self.assertEqual(p.snapshot(1050, (5, 5))[1], 0)
+
+    def test_async_future_frame_waits_for_clock_without_replacing_current_observation(self):
+        p = Perception()
+        p.receive(scan(1000))
+        p.receive(scan(1030))
+        _, confidence, info = p.snapshot(1010, (5, 5))
+        self.assertEqual(confidence, 1)
+        self.assertEqual(info["stamp_ms"], 1000)
+        self.assertEqual(info["age_ms"], 10)
+        _, confidence, info = p.snapshot(1030, (5, 5))
+        self.assertEqual(confidence, 1)
+        self.assertEqual(info["stamp_ms"], 1030)
+        bad = scan(1050)
+        bad.ranges = [float("inf")] * COUNT
+        p.receive(bad)
+        # Once eligible, the newest bad observation must never be masked by
+        # an earlier healthy sample in the buffer.
+        _, confidence, info = p.snapshot(1050, (5, 5))
+        self.assertEqual(confidence, 0)
+        self.assertEqual(info["stamp_ms"], 1050)
+        self.assertEqual(info["reason"], "calibration target missing")
+
+    def test_future_or_replayed_frames_cannot_refresh_old_source_or_wall_age(self):
+        p = Perception()
+        p.receive(scan(1000))
+        p.receive(scan(1300))
+        _, confidence, info = p.snapshot(1200, (5, 5))
+        self.assertEqual(confidence, 0)
+        self.assertEqual(info["stamp_ms"], 1000)
+        self.assertEqual(info["age_ms"], 200)
+        p.receive(scan(1000))
+        self.assertEqual(p.frames, 2)
+        assert p.frame is not None
+        with mock.patch("lidar_perception.time.monotonic", return_value=p.frame.received + 0.201):
+            self.assertEqual(p.snapshot(1300, (5, 5))[1], 0)
+        p = Perception()
+        p.receive(scan(1300))
+        self.assertEqual(p.snapshot(1200, (5, 5))[1], 0)
+        p = Perception()
+        with mock.patch("lidar_perception.time.monotonic", return_value=10):
+            p.receive(scan(1000))
+        with mock.patch("lidar_perception.time.monotonic", return_value=10.19):
+            p.receive(scan(1300))
+        with mock.patch("lidar_perception.time.monotonic", return_value=10.201):
+            self.assertEqual(p.snapshot(1100, (5, 5))[1], 0)
+
+    def test_evicted_coverage_stays_unknown_and_history_is_bounded(self):
+        p = Perception()
+        for stamp in range(1000, 1540, 30):
+            p.receive(scan(stamp))
+        self.assertLessEqual(len(p.history), 16)
+        self.assertEqual(p.snapshot(1000, (5, 5))[1], 0)
 
     def test_obstacle_measurement_comes_only_from_ranges(self):
         msg = scan()
@@ -74,6 +128,7 @@ class LidarTest(unittest.TestCase):
         self.assertFalse(decode_scan(msg, time.monotonic()).healthy)
         p = Perception()
         p.receive(scan())
+        assert p.frame is not None
         first = p.frame.received
         p.receive(scan())
         p.receive(scan(999))

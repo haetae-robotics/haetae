@@ -44,6 +44,17 @@ base. A compromised bridge or privileged host can still command the robot.
 
 ## Current implementation limits
 
+- The separate household profile enables a root-policy-bound mandatory
+  semantic check in Rust for every protected arm client. Trusted signed worlds
+  supply fixture facts; Rust derives FK from the exact signed joint plan and
+  pinned policy model. It rejects missing/mismatched references, unsafe paths,
+  unsupported operations and nonzero base motion in its stationary scope.
+  Active motion is rechecked against fresh trusted facts and remaining path.
+  This M1 layer has no controller-side authorization proof: a compromised
+  gateway retains actuator authority. Whole-arm coverage, persistent effect
+  history and physical qualification are not implemented. See
+  [household gate contract](household-gate.md).
+
 - The Rust core, subprocess and signed ROS bridge smoke tests run in CI on
   Jazzy. The kinematic base simulator and mock arm action server are software
   models. The Gazebo Harmonic reference also exercises a differential-drive
@@ -147,8 +158,10 @@ ROS node names within an enclave are not an authentication boundary.
 The Gazebo reference now contains native person geometry and a real simulated
 GPU lidar. Scenario paths move that geometry; only measured occupancy populates
 signed worlds. A known calibration return, complete scan validation, original
-source age and receipt age guard the controlled bay. Invalid/unknown scans do
-not refresh the world; the existing 200 ms world-age stop remains unchanged.
+source age and receipt age guard the controlled bay. Invalid/unknown scans
+produce explicit confidence-zero worlds when mechanical observations are
+fresh, and the root-signed `perception-unknown` rule revokes motion immediately.
+Observation/signing disappearance retains the existing 200 ms world-age stop.
 Moving-base tests cover receiver disconnect and removal of the native
 calibration target, with no automatic motion rearm after sensor recovery.
 
@@ -185,8 +198,21 @@ A timely positive response that crosses the original proposal/world expiry is
 discarded before output. The bridge sends zero and requests arm cancellation
 first, then explicitly rejects the engine's active goal and armed sources. A
 zero, non-executing, disarmed response is mandatory. Sensor recovery alone
-cannot resume motion. The sensor oracle accepts either engine `stale_world` or
-a disarmed rejection with the exact response-boundary world-expiry error.
+cannot resume motion. Mechanically fresh observations with unknown lidar
+coverage are delivered as confidence zero, never as a verified empty scene.
+The root-signed reference policy's `perception-unknown` rule rejects and revokes
+motion below 0.9 confidence. The coverage-loss oracle requires an accepted
+confidence-zero world, its named Rust revocation, a disarmed status and a
+subsequent measured zero command within the original 400 ms wall-clock budget.
+When the observation or signing path disappears, engine `stale_world` or a
+disarmed rejection with the exact response-boundary world-expiry error remains
+valid evidence. Joint/odom source-age checks and the household failure guard
+still suppress publication; sensor recovery alone cannot rearm a source.
+Gazebo scan delivery and the ROS clock are asynchronous. A bounded history of
+16 monotonically accepted frames supplies the newest scan no later than the
+snapshot clock, including an invalid scan. Original source and wall receive
+ages remain below 200 ms; future-only, expired or evicted coverage stays
+unknown. Buffering does not refresh observations or restore motion authority.
 Malformed responses, backwards clock, IPC failures and responses taking 50 ms
 or more still trigger the fatal stop path. No freshness budget is increased.
 

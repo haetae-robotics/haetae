@@ -4,7 +4,7 @@
 //! is not a raw-joint enforcer, perception system, or certified safety function.
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Point3 {
     pub x: f64,
@@ -29,7 +29,7 @@ impl Point3 {
             .sqrt()
     }
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bounds3 {
     pub min: Point3,
@@ -108,7 +108,7 @@ pub enum State {
     Inactive,
     Unknown,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Region {
     pub id: String,

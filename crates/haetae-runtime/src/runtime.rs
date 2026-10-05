@@ -4,7 +4,8 @@ use std::fmt;
 use std::path::PathBuf;
 
 use haetae_core::{
-    ActionKind, ActionProposal, Decision, Gate, Mode, Policy, Verdict, WorldSnapshot,
+    ActionKind, ActionProposal, Decision, Gate, Mode, Policy, SemanticSnapshot, Verdict,
+    WorldSnapshot,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -103,6 +104,9 @@ pub struct Runtime {
     gate: Gate,
     /// Latest trusted world; `None` until the first snapshot arrives.
     world: Option<WorldSnapshot>,
+    /// A missing semantic observation stops protected execution but must not
+    /// erase the revision floor and permit a later rollback.
+    semantic_floor: Option<SemanticSnapshot>,
     sacho: Sacho,
     dedup: Dedup,
     recorder: Option<Recorder>,
@@ -167,9 +171,14 @@ impl Runtime {
                 ));
             }
         }
+        let semantic_floor = initial_world
+            .as_ref()
+            .and_then(|world| world.semantic.clone())
+            .filter(SemanticSnapshot::is_valid);
         Ok(Runtime {
             gate: Gate::with_mode(policy, cfg.start_mode)?,
             world: initial_world,
+            semantic_floor,
             sacho: Sacho::new(cfg.sacho_capacity),
             dedup: Dedup::new(cfg.dedup_capacity),
             recorder: cfg.recorder.map(Recorder::new),
@@ -234,6 +243,9 @@ impl Runtime {
                 Ok(()) => {
                     let stamp_ms = w.stamp_ms;
                     self.record(recv_ms, "world", serde_json::to_value(&w));
+                    if let Some(semantic) = &w.semantic {
+                        self.semantic_floor = Some(semantic.clone());
+                    }
                     self.world = Some(w);
                     (Outcome::WorldUpdated { stamp_ms }, false, false)
                 }
@@ -439,6 +451,24 @@ impl Runtime {
                 "out-of-order world: stamp_ms {} < current {}",
                 w.stamp_ms, current.stamp_ms
             ));
+        }
+        if let (Some(next), Some(previous)) = (w.semantic.as_ref(), self.semantic_floor.as_ref()) {
+            if next.revision < previous.revision
+                || next.task_revision < previous.task_revision
+                || next.observed_ms < previous.observed_ms
+            {
+                return Err(
+                    "out-of-order semantic world: revision, task or observation rollback".into(),
+                );
+            }
+            if next.revision == previous.revision && !next.same_revision_facts(previous) {
+                return Err("semantic world facts changed without advancing revision".into());
+            }
+            if (next.task_id != previous.task_id || next.step_id != previous.step_id)
+                && next.task_revision == previous.task_revision
+            {
+                return Err("semantic task changed without advancing task revision".into());
+            }
         }
         Ok(())
     }

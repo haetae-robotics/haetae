@@ -343,7 +343,7 @@ jobs:
           wait "$live_checker"
           python3 ros/gazebo/run_reference.py bin/haetae --secure-graph --household-hazards \
             --out artifacts/gazebo-reference/household-hazards --live-hold-seconds 0
-          python3 -c 'import json; r=json.load(open("artifacts/gazebo-reference/household-hazards/verification-report.json")); assert r["status"] == "passed" and r["scope"] == "household_hazard_preflight_simulation" and len(r["checks"]) == 9'
+          python3 -c 'import json; r=json.load(open("artifacts/gazebo-reference/household-hazards/verification-report.json")); assert r["status"] == "passed" and r["scope"] == "household_hazard_mandatory_gate_simulation" and len(r["checks"]) == 12'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

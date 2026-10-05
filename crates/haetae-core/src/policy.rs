@@ -4,6 +4,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::Rect;
+use crate::household::HouseholdPolicy;
 use crate::proposal::Source;
 use crate::world::HumanClass;
 
@@ -18,6 +19,10 @@ pub struct Policy {
     pub base: Option<Base>,
     #[serde(default)]
     pub arm: Option<Arm>,
+    /// Root-bound household execution scope. Absence preserves legacy scope;
+    /// presence makes semantic checking mandatory for every non-stop action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub household: Option<HouseholdPolicy>,
     /// Proposals from any other source are denied (except `Stop`). Required:
     /// forgetting it must not mean "allow everyone".
     pub allowed_sources: Vec<Source>,
@@ -244,6 +249,9 @@ impl Policy {
             }
         }
         let f = &self.freshness;
+        if let Some(household) = &self.household {
+            household.validate(self)?;
+        }
         let budgets = [
             f.world_max_age_ms,
             f.proposal_max_age_ms,

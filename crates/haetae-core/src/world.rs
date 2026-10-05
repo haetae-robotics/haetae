@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::geom::Point2;
+use crate::household::SemanticSnapshot;
 
 /// Facts from the trusted safety-perception path. The gate never takes
 /// world facts from a proposal.
@@ -14,6 +15,9 @@ pub struct WorldSnapshot {
     pub humans: Vec<Human>,
     /// Overall confidence of the safety perception, 0.0–1.0.
     pub confidence: f64,
+    /// Trusted safety-observer facts. Never populated from a proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<SemanticSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,6 +85,10 @@ impl WorldSnapshot {
                     .all(|j| j.position.is_finite() && j.velocity.is_finite())
             })
             && (0.0..=1.0).contains(&self.confidence)
+            && self
+                .semantic
+                .as_ref()
+                .is_none_or(SemanticSnapshot::is_valid)
             && self.humans.iter().all(|h| h.pos.is_finite())
     }
 }

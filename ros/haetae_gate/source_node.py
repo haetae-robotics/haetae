@@ -13,7 +13,7 @@ from trajectory_msgs.msg import JointTrajectory
 
 from signing import Signer
 from counter_store import CounterStore
-from proposals import InvalidProposal, base_action, arm_action
+from proposals import InvalidProposal, base_action, arm_action, semantic_binding
 
 
 class SourceSigner(Node):
@@ -49,7 +49,10 @@ class SourceSigner(Node):
             self.create_subscription(TwistStamped, "/vla/cmd_vel",
                                      lambda msg: self.propose(lambda: base_action(msg, 200)), 1)
             self.create_subscription(JointTrajectory, "/vla/arm",
-                                     lambda msg: self.propose(lambda: arm_action(msg, self.joints, self.arm_fixed_ttl_ms)), 1)
+                                     self.propose_arm, 1)
+
+    def propose_arm(self, msg: JointTrajectory):
+        self.propose(lambda: arm_action(msg, self.joints, self.arm_fixed_ttl_ms), msg.header.frame_id)
 
     def send(self, role, payload):
         envelope = self.signer.sign(role, payload)
@@ -58,7 +61,7 @@ class SourceSigner(Node):
         self.store.reserve(self.signer.epoch, self.signer.counters)
         self.pubs[role].publish(String(data=json.dumps(envelope, separators=(",", ":"))))
 
-    def propose(self, parse):
+    def propose(self, parse, semantic_frame=""):
         stamp = self.get_clock().now().nanoseconds // 1_000_000
         # A restarted simulation-time node starts at zero until its /clock
         # reader discovers the publisher. Stops may be accepted by the engine
@@ -67,14 +70,18 @@ class SourceSigner(Node):
             return
         try:
             action = parse()
+            binding = semantic_binding(semantic_frame)
         except InvalidProposal as exc:
             # Malformed source input becomes a signed stop from that source.
             self.get_logger().warning("Rejected proposal: " + str(exc))
             action = {"type": "stop"}
+            binding = None
         self.seq += 1
-        self.send("vla", {"id": self.seq, "source": "vla",
-                          "timestamp_ms": stamp,
-                          "action": action})
+        proposal = {"id": self.seq, "source": "vla", "timestamp_ms": stamp,
+                    "action": action}
+        if binding is not None and action["type"] != "stop":
+            proposal["semantic"] = binding
+        self.send("vla", proposal)
 
 
 def main():

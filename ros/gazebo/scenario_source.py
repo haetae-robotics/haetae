@@ -4,12 +4,15 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_gate"))
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import TwistStamped
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from proposals import semantic_frame
 
 
 def main():
@@ -43,6 +46,8 @@ def main():
                     base.publish(msg)
                 else:
                     msg = JointTrajectory()
+                    if request.get("semantic") is not None:
+                        msg.header.frame_id = semantic_frame(request["semantic"])
                     msg.joint_names = request["joints"]
                     for millis, values in request["points"]:
                         point = JointTrajectoryPoint()

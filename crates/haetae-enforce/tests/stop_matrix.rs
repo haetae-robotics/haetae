@@ -30,6 +30,7 @@ fn world(t: u64) -> WorldSnapshot {
         },
         humans: vec![],
         confidence: 1.0,
+        semantic: None,
     }
 }
 
@@ -43,6 +44,7 @@ fn twist(id: u64, t: u64, linear: f64) -> Inbound {
             angular: 0.0,
             ttl_ms: 200,
         },
+        semantic: None,
     })
 }
 

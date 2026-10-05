@@ -11,6 +11,7 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use auth::Role;
+use haetae_core::household::{self, SemanticSnapshot};
 use haetae_core::{
     ActionKind, ActionProposal, JointWaypoint, Mode, Policy, Source, Twist2, Verdict,
 };
@@ -60,6 +61,10 @@ pub struct Status {
     pub active_expires_ms: Option<u64>,
     pub suppressed: u64,
     pub world_age_ms: Option<u64>,
+    /// Latest context actually accepted by the trusted world channel. These
+    /// are observation acknowledgments, not motion authorization tokens.
+    pub semantic_revision: Option<u64>,
+    pub semantic_task_revision: Option<u64>,
     pub recorder_ok: bool,
     pub state_ok: bool,
     pub arm_cancelling: bool,
@@ -90,6 +95,9 @@ struct Active {
 
 struct ActiveArm {
     proposal: ActionProposal,
+    /// Trusted facts captured when the exact trajectory was admitted. New
+    /// observations can refresh facts, but cannot replace its bound identity.
+    semantic: Option<SemanticSnapshot>,
     started_ms: u64,
     expires_ms: u64,
 }
@@ -236,6 +244,10 @@ impl Enforcer {
                                 arm_execute = Some(points.clone());
                                 self.active_arm = Some(ActiveArm {
                                     proposal: p,
+                                    semantic: self
+                                        .runtime
+                                        .world()
+                                        .and_then(|world| world.semantic.clone()),
                                     started_ms: now_ms,
                                     expires_ms: d.expires_ms.unwrap_or(now_ms),
                                 });
@@ -299,15 +311,20 @@ impl Enforcer {
     }
 
     fn rejudge(&mut self, now_ms: u64, forced: &mut Option<StopReason>) {
-        if self.active_arm.is_some()
+        // Ordinary lease expiry belongs to output(), including cancellation.
+        // Do not turn it into a semantic revocation at the exact TTL boundary.
+        if self
+            .active_arm
+            .as_ref()
+            .is_some_and(|active| now_ms < active.expires_ms)
             && !self.runtime.mode().stop_only()
             && self
                 .runtime
                 .world_age_ms(now_ms)
                 .is_some_and(|age| age <= self.runtime.world_max_age_ms())
         {
-            if let Err(reason) = self.monitor_arm() {
-                self.runtime.revoke_record(reason, now_ms);
+            if let Err(reason) = self.monitor_arm(now_ms) {
+                self.runtime.revoke_record(&reason, now_ms);
                 self.clear_active();
                 self.armed.clear();
                 *forced = Some(StopReason::Revoked);
@@ -361,22 +378,36 @@ impl Enforcer {
         }
     }
 
-    fn monitor_arm(&self) -> Result<(), &'static str> {
+    fn monitor_arm(&self, now_ms: u64) -> Result<(), String> {
         if self.runtime.mode() != Mode::Normal {
-            return Err("arm:mode-changed");
+            return Err("arm:mode-changed".into());
         }
         let active = self.active_arm.as_ref().ok_or("arm:no-active")?;
         let world = self.runtime.world().ok_or("arm:no-world")?;
         let arm = self.runtime.policy().arm.as_ref().ok_or("arm:no-policy")?;
+        if self.runtime.policy().household.is_some() {
+            let original = active
+                .semantic
+                .as_ref()
+                .ok_or("household:missing-admission-snapshot")?;
+            household::recheck_active(
+                self.runtime.policy(),
+                &active.proposal,
+                original,
+                world,
+                active.started_ms,
+                now_ms,
+            )?;
+        }
         if !world.humans.is_empty() || world.confidence < arm.min_confidence {
-            return Err("arm:world-changed");
+            return Err("arm:world-changed".into());
         }
         let measured = world.robot.joints.as_ref().ok_or("arm:no-joints")?;
         let ActionKind::JointTrajectory { points, .. } = &active.proposal.action else {
-            return Err("arm:invalid-action");
+            return Err("arm:invalid-action".into());
         };
         if measured.len() != arm.joints.len() {
-            return Err("arm:joint-count");
+            return Err("arm:joint-count".into());
         }
         if world.stamp_ms < active.started_ms {
             return Ok(());
@@ -404,7 +435,7 @@ impl Enforcer {
                 || sample.velocity.abs() > limit.max_velocity
                 || (sample.position - desired).abs() > arm.max_tracking_error
             {
-                return Err("arm:tracking");
+                return Err("arm:tracking".into());
             }
         }
         Ok(())
@@ -555,6 +586,14 @@ impl Enforcer {
                 .or_else(|| self.active_arm.as_ref().map(|a| a.expires_ms)),
             suppressed: self.suppressed,
             world_age_ms: world_age,
+            semantic_revision: self
+                .runtime
+                .world()
+                .and_then(|world| world.semantic.as_ref().map(|scene| scene.revision)),
+            semantic_task_revision: self
+                .runtime
+                .world()
+                .and_then(|world| world.semantic.as_ref().map(|scene| scene.task_revision)),
             recorder_ok: self.runtime.recorder_fault().is_none(),
             state_ok: self.state_ok,
             arm_cancelling: self.arm_cancelling,

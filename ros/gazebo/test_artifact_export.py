@@ -13,6 +13,7 @@ class ExportTest(unittest.TestCase):
             root, output = Path(directory) / 'run', Path(directory) / 'out'
             root.mkdir()
             row = {"id": "human", "blocked": True, "allowed": True,
+                   "mandatory_semantic_gate": True, "signed_gate_rejection_observed": True,
                    "reason": "human:protected-volume", "denied_drift_rad": .001,
                    "measured_motion_rad": .3, "plan_sha256": "a" * 64,
                    "signed_arm_acceptance_observed": True, "accepted_waypoints_match": True,
@@ -23,7 +24,7 @@ class ExportTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 final_export(root, output)
             summary = json.loads((output / 'verification-report.json').read_text())
-            self.assertEqual(summary['scope'], 'household_hazard_preflight_simulation')
+            self.assertEqual(summary['scope'], 'household_hazard_mandatory_gate_simulation')
             self.assertEqual(summary['status'], 'failed')
             self.assertEqual(summary['checks'][0]['status'], 'passed')
     def test_checkpoint_is_allowlisted_and_refreshes_results(self):
