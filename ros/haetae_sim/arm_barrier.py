@@ -3,7 +3,7 @@
 import math
 
 
-def rearm_ready(states, outcomes, sent_at):
+def rearm_ready(states, outcomes, sent_at, proposal_id=None):
     decisions = [(at, value) for at, value in outcomes if at >= sent_at
                  and ("decision" in value or "rejected" in value)]
     if not states or not decisions:
@@ -13,6 +13,7 @@ def rearm_ready(states, outcomes, sent_at):
     state_at, state = states[-1]
     age = state.get("world_age_ms")
     return (decision.get("verdict") == "yun" and decision.get("action") == {"type": "stop"}
+            and (proposal_id is None or decision.get("proposal_id") == proposal_id)
             and "rejected" not in outcome and state_at > stop_at
             and state.get("mode") == "normal" and "vla" in state.get("armed", [])
             and state.get("active") is None and not state.get("arm_cancelling")
@@ -20,9 +21,9 @@ def rearm_ready(states, outcomes, sent_at):
             and state.get("state_ok") and type(age) is int and 0 <= age < 75)
 
 
-def gazebo_rearm_ready(world, sent_at, now, arm_joints, nonces):
+def gazebo_rearm_ready(world, sent_at, now, arm_joints, nonces, proposal_id):
     """Fresh explicit fixture reset, immediately before a single arm dispatch."""
-    if not rearm_ready(world.states, world.outcomes, sent_at):
+    if not rearm_ready(world.states, world.outcomes, sent_at, proposal_id):
         return False
     if not 0 <= now - world.states[-1][0] < 0.1:
         return False
@@ -51,3 +52,18 @@ def gazebo_rearm_ready(world, sent_at, now, arm_joints, nonces):
     velocities = dict(zip(world.joint.name, world.joint.velocity))
     return all(name in velocities and math.isfinite(velocities[name])
                and abs(velocities[name]) < 0.03 for name in arm_joints)
+
+
+def activated_guards_ready(world, reset_at, now, previous):
+    """Both controller activations must have emitted fresh, rotated challenges."""
+    for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states)):
+        if not samples:
+            return False
+        received, guard = samples[-1]
+        nonce = guard.get("nonce")
+        published = guard.get("published_wall_ns", 0) / 1e9
+        if (not nonce or nonce == previous.get(target) or received < reset_at
+                or published < reset_at or not 0 <= now - received < 0.1
+                or not 0 <= now - published < 0.1):
+            return False
+    return True

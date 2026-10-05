@@ -1,8 +1,11 @@
 import copy
+import ast
+import json
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 
-from arm_barrier import rearm_ready, gazebo_rearm_ready
+from arm_barrier import rearm_ready, gazebo_rearm_ready, activated_guards_ready
 
 
 class ArmBarrierTest(unittest.TestCase):
@@ -10,7 +13,7 @@ class ArmBarrierTest(unittest.TestCase):
         state = {"mode": "normal", "armed": ["vla"], "active": None,
                  "arm_cancelling": False, "arm_controller_ready": True,
                  "recorder_ok": True, "state_ok": True, "world_age_ms": 20}
-        stop = {"decision": {"verdict": "yun", "action": {"type": "stop"}}}
+        stop = {"decision": {"verdict": "yun", "action": {"type": "stop"}, "proposal_id": 7}}
         self.assertTrue(rearm_ready([(3, state)], [(2, stop)], 1))
         self.assertFalse(rearm_ready([(2, state)], [(2, stop)], 1))
         self.assertFalse(rearm_ready([(3, state)], [(2, stop)], 2.1))
@@ -30,7 +33,7 @@ class ArmBarrierTest(unittest.TestCase):
         state = {"mode": "normal", "armed": ["vla"], "active": None,
                  "arm_cancelling": False, "arm_controller_ready": True,
                  "recorder_ok": True, "state_ok": True, "world_age_ms": 20}
-        stop = {"decision": {"verdict": "yun", "action": {"type": "stop"}}}
+        stop = {"decision": {"verdict": "yun", "action": {"type": "stop"}, "proposal_id": 7}}
         guard = {"holding": False, "published_wall_ns": 9_960_000_000,
                  "lease_received_wall_ns": 9_940_000_000, "nonce": "current",
                  "active_digest": "0" * 64, "goal_sequence": 0}
@@ -41,12 +44,15 @@ class ArmBarrierTest(unittest.TestCase):
 
     def ready(self, world, sent=9.93):
         return gazebo_rearm_ready(world, sent, 10., ["j1", "j2", "j3", "j4"],
-                                  {"arm": "current", "base": "current"})
+                                  {"arm": "current", "base": "current"}, 7)
 
     def test_gazebo_reset_needs_current_stop_state_and_both_controller_reports(self):
         world = self.fixture()
         self.assertTrue(self.ready(world))
         self.assertFalse(self.ready(world, sent=9.96))
+        changed = self.fixture()
+        changed.outcomes[-1][1]["decision"]["proposal_id"] = 6
+        self.assertFalse(self.ready(changed))
         for field in ("guard_states", "base_guard_states"):
             for changes in ({"holding": True}, {"nonce": "old"},
                             {"published_wall_ns": 9_890_000_000},
@@ -91,3 +97,53 @@ class ArmBarrierTest(unittest.TestCase):
         self.assertFalse(self.ready(world))
         world.joint = None
         self.assertFalse(self.ready(world))
+
+    def test_activation_requires_post_reset_publication_and_rotated_nonce(self):
+        world = self.fixture()
+        previous = {"arm": "old", "base": "old"}
+        self.assertTrue(activated_guards_ready(world, 9.93, 10., previous))
+        for field in ("guard_states", "base_guard_states"):
+            for delta in ({"nonce": "old"}, {"published_wall_ns": 9_920_000_000}):
+                changed = copy.deepcopy(world)
+                getattr(changed, field)[-1][1].update(delta)
+                self.assertFalse(activated_guards_ready(changed, 9.93, 10., previous))
+
+    def test_actual_preparation_bounds_off_only_requests_and_uses_exact_final_id(self):
+        tree = ast.parse((Path(__file__).parents[1] / 'gazebo/run_reference.py').read_text())
+        method = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == 'prepare_arm_fault')
+        for misses, counter_delta, requests in ((0, 1, 1), (1, 1, 2), (2, 1, 2), (1, 2, 1)):
+            with self.subTest(misses=misses, counter_delta=counter_delta):
+                world = self.fixture()
+                emitted, sent, observed_ids = [], [], []
+                counter = [7]
+                def propose(value):
+                    sent.append(value)
+                    counter[0] += counter_delta
+                world.propose_base = propose
+                world._emit = lambda *args, **values: emitted.append(values)
+                remaining = [misses]
+                def wait(predicate, timeout, processes, description):
+                    self.assertLessEqual(timeout, 5)
+                    if remaining[0]:
+                        remaining[0] -= 1
+                        raise TimeoutError(description)
+                    self.assertTrue(predicate())
+                def ready(*args):
+                    observed_ids.append(args[-1])
+                    return args[-1] == counter[0]
+                scope = dict(time=SimpleNamespace(monotonic=lambda: 10.), json=json,
+                             ARM_JOINTS=['j1', 'j2', 'j3', 'j4'], wait_for=wait,
+                             gazebo_rearm_ready=ready)
+                exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-preparation', 'exec'), scope)
+                roles = SimpleNamespace(counter=lambda role: counter[0])
+                if misses < 2 and counter_delta == 1:
+                    result = scope['prepare_arm_fault'](world, {}, roles)
+                    self.assertEqual(result['accepted_proposal_id'], 7 + requests)
+                    self.assertEqual(observed_ids, [7 + requests])
+                    self.assertEqual(len(emitted), 1)
+                else:
+                    with self.assertRaises(TimeoutError):
+                        scope['prepare_arm_fault'](world, {}, roles)
+                    self.assertFalse(emitted)
+                self.assertEqual(sent, [0.] * requests)

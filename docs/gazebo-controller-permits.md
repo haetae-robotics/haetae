@@ -131,11 +131,14 @@ This fixed fixture profile requires initial joint1 within 0.1 rad of zero. An
 unexpected initial posture fails before any repositioning or setup reset; the
 initializer cannot silently move an arm into its supported starting posture.
 
-Each isolated arm kill/stall/delay fixture emits one explicit stop and waits for
-its latest explicit
-Rust-accepted stop, a newer fresh idle/armed state, current unlocked wheel/arm
-controller reports bound to the current activation nonces and measured
-wheel/all-four-joint stop immediately before dispatch. A fixed 300 ms
+Each isolated arm kill/stall/delay fixture waits for newly published, rotated
+wheel/arm activation challenges. It allows at most two sequential OFF-only
+preparation requests within five seconds, to tolerate volatile DDS discovery
+loss. The exact final proposal ID must match the Rust-accepted stop; it also
+requires a newer fresh idle/armed state, unlocked wheel/arm controller reports
+bound to the new nonces and measured wheel/all-four-joint stop immediately
+before dispatch. There is no repeating request producer or trailing stop after
+the final accepted ID from the ordered signed VLA writer. A fixed 300 ms
 preparation sleep can hide a lapse beyond the 200 ms permit lifetime.
 Preparation emits no further stops or resets once the single arm goal is sent;
 failure after dispatch cannot use this barrier to recover or retry motion.
