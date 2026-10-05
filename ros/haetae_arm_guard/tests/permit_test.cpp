@@ -70,6 +70,14 @@ int main()
   check(!arm.accept(token(arm.nonce(), 1, "reset"), "reset", idle_digest, 1000000000, 2000000000, true),
     "cross-controller target rejected");
   check(!admit(std::string(513, 'x'), "reset", true), "bounded parser");
+  const auto total_before = guard.rejected(), motion_before = guard.rejected_motion();
+  check(!guard.accept("invalid", "stop", idle_digest, 1000000000, 2000000000, false, true),
+    "invalid revocation still rejects and locks");
+  check(guard.rejected() == total_before + 1 && guard.rejected_motion() == motion_before,
+    "stop rejection counted separately from positive authority");
+  check(!guard.fresh(1000000000, 2000000000), "invalid stop cannot unlock");
+  check(!admit("invalid", "reset", true), "invalid reset still rejects");
+  check(guard.rejected_motion() == motion_before + 1, "reset rejection is motion authority rejection");
   bool invalid = false;
   try {integer("9223372036854775808");} catch (const std::exception &) {invalid = true;}
   check(invalid, "integer overflow rejected");

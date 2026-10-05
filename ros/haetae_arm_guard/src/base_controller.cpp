@@ -38,7 +38,7 @@ public:
             received_velocity_msg_.set(*msg);
           } else {
             RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
-              "Base permit rejected: %s", permit_.reason().c_str());
+              "Base %s rejected: %s", kind, permit_.reason().c_str());
           }
         } catch (const std::exception &) {permit_.reject();}
       });

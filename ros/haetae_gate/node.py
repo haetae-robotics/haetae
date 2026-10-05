@@ -308,6 +308,11 @@ class HaetaeGate(Node):
     def _permit(self, target, kind, digest):
         if kind == "stop":
             raise ValueError("revocation requires the dedicated stop path")
+        sim_age = self._now() * 1_000_000 - self.permit_sim_ns
+        wall_age = time.monotonic_ns() - self.permit_wall_ns
+        if (min(sim_age, wall_age) < 0 or max(sim_age, wall_age) >= 50_000_000
+                or max(sim_age, wall_age) >= self.permit_remaining_ns):
+            raise ExpiredActuation("original controller authority expired before signing")
         return self.permits.sign(target, kind, digest, self.permit_sim_ns,
                                  self.permit_remaining_ns, self.permit_wall_ns)
 

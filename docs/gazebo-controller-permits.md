@@ -99,6 +99,12 @@ create motion authority. Goals, commands, leases and especially resets retain
 the original Rust request clocks and remaining world/proposal budget; a delayed
 response or cancel callback cannot refresh that positive authority.
 
+Telemetry keeps the total rejection counter, including invalid stop packets,
+and a separate motion/reset/lease rejection counter. Normal arm completion
+checks the latter: a rejected locking-only stop still locks and cannot be
+interpreted as a denied positive action. Hostile probes keep requiring total
+rejection plus fresh holding/drift evidence. Log messages name the ingress kind.
+
 ## Verification
 
 ```bash

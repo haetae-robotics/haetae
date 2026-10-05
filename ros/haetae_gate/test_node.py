@@ -65,8 +65,12 @@ class NodeBoundaryTest(unittest.TestCase):
         self.assertEqual(signed[-1], ("arm", "stop", "0" * 64, 1_250_000_000,
                                       200_000_000, 250_000_000))
         for kind in ("command", "goal", "lease", "reset"):
+            with self.assertRaises(ExpiredActuation):
+                g._permit("arm", kind, "a" * 64)
+            clock.value = .02
             g._permit("arm", kind, "a" * 64)
             self.assertEqual(signed[-1][3:], (1_000_000_000, 100_000_000, 0))
+            clock.value = .25
         with self.assertRaises(ValueError):
             g._permit("arm", "stop", "0" * 64)
 

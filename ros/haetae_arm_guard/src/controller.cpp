@@ -65,6 +65,7 @@ class LeaseTrajectoryController : public joint_trajectory_controller::JointTraje
           ",\"goal_sequence\":" + std::to_string(admitted_goal_sequence_) +
           ",\"accepted\":" + std::to_string(permit_.accepted()) +
           ",\"rejected\":" + std::to_string(permit_.rejected()) +
+          ",\"rejected_motion\":" + std::to_string(permit_.rejected_motion()) +
           ",\"lease_sent_ms\":" + std::to_string(lease.sent_ms) +
           ",\"lease_received_wall_ns\":" + std::to_string(lease.received_ns) + "}";
         guard_state_->publish(msg);
@@ -100,9 +101,10 @@ public:
           }
           const auto grant = permit_.grant();
           lease_.writeFromNonRT(Lease{grant.sim / 1000000, static_cast<int64_t>(grant.wall)});
+          if (reset || stop) {publish_guard_state();}
         } else {
           RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
-            "Controller lease rejected: %s", permit_.reason().c_str());
+            "Controller %s rejected: %s", reset ? "reset" : stop ? "stop" : "lease", permit_.reason().c_str());
         }
       });
     // Replace both inherited ingress paths; stale/closed goals never enter the

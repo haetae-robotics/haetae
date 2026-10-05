@@ -794,7 +794,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         )
         if time.monotonic() - started_wall > 0.05:
             raise RuntimeError("hazard dispatch preparation exceeded 50 ms")
-        rejected_before = world.guard_states[-1][1]["rejected"]
+        rejected_before = world.guard_states[-1][1]["rejected_motion"]
         world.propose_arm_plan(points, semantic=binding)
         (root / "hazard-preflight.json").write_text(json.dumps(preflight, indent=2))
         goal = points[-1][1][0]
@@ -828,8 +828,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         wait_for(lambda: world.guard_states and
                  world.guard_states[-1][1].get("published_wall_ns", 0) >= completed_wall + 120_000_000,
                  2, processes, "fresh controller telemetry after normal completion")
-        if world.guard_states[-1][1]["rejected"] != rejected_before:
-            raise AssertionError("normal arm completion triggered a permit rejection")
+        if world.guard_states[-1][1]["rejected_motion"] != rejected_before:
+            raise AssertionError("normal arm completion triggered a motion permit rejection")
         if not healthy():
             raise AssertionError("hazard scene changed during execution")
         motion_guard["active"] = False

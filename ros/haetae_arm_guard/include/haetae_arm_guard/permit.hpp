@@ -100,7 +100,7 @@ class PermitGuard
   Grant grant_;
   bool locked_ = true;
   uint64_t generation_ = 0;
-  uint64_t accepted_ = 0, rejected_ = 0;
+  uint64_t accepted_ = 0, rejected_ = 0, rejected_motion_ = 0;
   std::string reason_ = "startup";
   bool live_unlocked(int64_t sim, int64_t wall)
   {
@@ -157,7 +157,11 @@ public:
       if (stop) {locked_ = true; ++generation_; grant_ = {};}
       else {if (reset) {++generation_;} locked_ = false; grant_ = next;}
       return true;
-    } catch (const std::exception & e) {locked_ = true; ++generation_; ++rejected_; reason_ = e.what(); return false;}
+    } catch (const std::exception & e) {
+      locked_ = true; ++generation_; ++rejected_;
+      if (!stop) {++rejected_motion_;}
+      reason_ = e.what(); return false;
+    }
   }
   bool fresh(int64_t sim, int64_t wall)
   {
@@ -169,13 +173,14 @@ public:
   }
   void reject()
   {
-    std::lock_guard<std::mutex> lock(mutex_); locked_ = true; ++generation_; ++rejected_;
+    std::lock_guard<std::mutex> lock(mutex_); locked_ = true; ++generation_; ++rejected_; ++rejected_motion_;
   }
   std::string nonce() {std::lock_guard<std::mutex> lock(mutex_); return nonce_;}
   uint64_t generation() {std::lock_guard<std::mutex> lock(mutex_); return generation_;}
   Grant grant() {std::lock_guard<std::mutex> lock(mutex_); return grant_;}
   uint64_t accepted() {std::lock_guard<std::mutex> lock(mutex_); return accepted_;}
   uint64_t rejected() {std::lock_guard<std::mutex> lock(mutex_); return rejected_;}
+  uint64_t rejected_motion() {std::lock_guard<std::mutex> lock(mutex_); return rejected_motion_;}
   std::string reason() {std::lock_guard<std::mutex> lock(mutex_); return reason_;}
 };
 }  // namespace haetae_arm_guard

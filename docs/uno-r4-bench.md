@@ -93,7 +93,7 @@ HELLO/ARM/RUN을 만들 수 있고 재부팅 전후 전체 transcript 재전송�
 모터 드라이버의 독립 enable 차단을 설계한다. 이 bench 통과는 실물 침투 방어,
 모터 정지, 안전 인증의 통과가 아니다.
 [통신 규약](uno-r4-protocol.md)과 [보호용 공개 조건](security-release.md)을 참고한다.
-# Software runner scheduling loss
+## Software runner scheduling loss
 
 The board-free bench records a sustained allow run separately from measured
 `host-scheduling-loss`. A non-real-time host can miss the independent 200ms
