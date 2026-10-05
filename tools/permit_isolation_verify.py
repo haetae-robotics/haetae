@@ -57,12 +57,16 @@ def main(binary=None):
     report["gate_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
     report["source_revision"] = subprocess.check_output(["git", "-c", "safe.directory=" + str(ROOT),
                                                        "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    # All private source fixture state is in tmpfs in CI/qualification.
+    # Private fixture state uses tmpfs. Public executables use /tmp because
+    # container /dev/shm commonly has noexec; never relax its mount options.
     base = "/dev/shm" if Path("/dev/shm").is_dir() else None
-    with tempfile.TemporaryDirectory(prefix="haetae-permit-isolation-", dir=base) as tmp:
+    with tempfile.TemporaryDirectory(prefix="haetae-permit-runtime-", dir="/tmp") as runtime, \
+         tempfile.TemporaryDirectory(prefix="haetae-permit-isolation-", dir=base) as tmp:
         tmp = Path(tmp)
         tmp.chmod(0o755)
-        entry, staged_binary = stage_public_runtime(ROOT, binary, tmp / "public-runtime")
+        runtime = Path(runtime)
+        runtime.chmod(0o755)
+        entry, staged_binary = stage_public_runtime(ROOT, binary, runtime / "public-runtime")
         private = tmp / "private"
         config = provision(private)
         for child in private.iterdir():
