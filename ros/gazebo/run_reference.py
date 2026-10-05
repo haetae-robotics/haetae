@@ -365,7 +365,7 @@ def exercise_sensor_fault(world, processes, case, stop_report, roles=None):
     world.states.clear()
     world.outcomes.clear()
     wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and
-             world.base_guard_states and not world.base_guard_states[-1][1].get("holding", True) and
+             world.controllers_unlocked() and
              sum(1 for _, row in world.outcomes if row.get("decision", {}).get("verdict") == "yun"
                  and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
              8, processes, "sensor fixture explicit rearm", action=lambda: world.propose_base(0.0))

@@ -59,16 +59,30 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         envelope = source.sign(role, payload)
         return bridge.request({"k": "signed", "t": now(), "data": json.dumps(envelope)})
     def joints_snapshot():
-        if time.monotonic()-world.joint_received >= .2 or time.monotonic()-world.odom_received >= .2:
-            raise AssertionError("stale measured controller probe world")
+        # Provisioning a fresh Rust fixture is synchronous. Wait for actual
+        # fresh feedback afterwards; never relabel an old observation as fresh.
+        wait_for(lambda: time.monotonic()-world.joint_received < .05 and
+                 time.monotonic()-world.odom_received < .05,
+                 2, processes, "fresh measured controller probe world")
         return [{"name":j,"position":world.joint.position[list(world.joint.name).index(j)],
                  "velocity":world.joint.velocity[list(world.joint.name).index(j)]} for j in ARM_JOINTS]
+    def measured_stamp():
+        return min(m.header.stamp.sec * 1000 + m.header.stamp.nanosec // 1_000_000
+                   for m in (world.odom, world.joint))
+    def budget(step, sim):
+        status = step["status"]
+        remaining = min(200, 200 - status["world_age_ms"])
+        if status.get("active_expires_ms") is not None:
+            remaining = min(remaining, status["active_expires_ms"] - sim // 1_000_000)
+        if remaining <= 0:
+            raise AssertionError("controller probe Rust authority expired")
+        return remaining * 1_000_000
     def approve(action):
         nonlocal proposal_id
-        stamp = now()
-        feed("world", {"stamp_ms": stamp, "robot": {"pose": {"x": world.pose()[0], "y": world.pose()[1]},
+        measured = joints_snapshot()
+        feed("world", {"stamp_ms": measured_stamp(), "robot": {"pose": {"x": world.pose()[0], "y": world.pose()[1]},
             "yaw": world.heading(), "twist": {"linear": world.speed(), "angular": 0.0},
-            "joints": joints_snapshot()}, "humans": [], "confidence": 1.0})
+            "joints": measured}, "humans": [], "confidence": 1.0})
         proposal_id += 1
         begin = time.monotonic_ns()
         stamp = now()
@@ -87,7 +101,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(sim, 1_000_000_000)
         msg.twist.linear.x = float(step["cmd"]["linear"])
         return {"base": {"stamp": sim, "linear": msg.twist.linear.x, "angular": 0.0,
-            "permit": token("base", kind, base_digest(msg), sim, wall)}}
+            "permit": token("base", kind, base_digest(msg), sim, wall, budget(step, sim))}}
     def arm_packet():
         positions = world.arm_positions()
         end = [positions[0] + (-.3 if positions[0] > .2 else .3), *positions[1:]]
@@ -105,7 +119,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         digest = arm_digest(trajectory)
         return {"arm": {"joints": ARM_JOINTS, "stamp": sim,
             "points": [{"positions": list(p.positions), "time": p.time_from_start.sec*1_000_000_000+p.time_from_start.nanosec}
-                       for p in trajectory.points], "permit": token("arm", "goal", digest, sim, wall)}}, digest
+                       for p in trajectory.points], "permit": token("arm", "goal", digest, sim, wall, budget(step, sim))}}, digest
     def new_issuer():
         nonlocal bridge, source, fixture_id, proposal_id
         if bridge is not None:
@@ -136,11 +150,11 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         wait_for(lambda: time.monotonic() >= until, 2, processes, "fresh activation telemetry")
         for target in ("base", "arm"):
             signer.observe(target, guard(target)); signer.sequence[target] = 0
-        sim, wall, _ = approve({"type": "stop"})
+        sim, wall, step = approve({"type": "stop"})
         msg = TwistStamped(); msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(sim, 1_000_000_000)
         send({"base": {"stamp": sim, "linear": 0.0, "angular": 0.0,
-                       "permit": token("base", "reset", base_digest(msg), sim, wall)},
-              "heartbeat": token("arm", "reset", IDLE, sim, wall)})
+                       "permit": token("base", "reset", base_digest(msg), sim, wall, budget(step, sim))},
+              "heartbeat": token("arm", "reset", IDLE, sim, wall, budget(step, sim))})
         wait_for(lambda: not guard("base").get("holding", True) and not guard("arm").get("holding", True),
             2, processes, "explicit signed controller reset")
     def stopped():
@@ -167,16 +181,16 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                  1, processes, "trusted controller admits signed arm goal")
         def renew():
             # Feed an actual current measured world and tick the same Rust goal.
-            feed("world", {"stamp_ms": now(), "robot": {"pose": {"x":world.pose()[0],"y":world.pose()[1]},
+            measured = joints_snapshot()
+            feed("world", {"stamp_ms": measured_stamp(), "robot": {"pose": {"x":world.pose()[0],"y":world.pose()[1]},
                 "yaw":world.heading(),"twist":{"linear":world.speed(),"angular":0.0},
-                "joints":joints_snapshot()},"humans":[],"confidence":1.0})
+                "joints":measured},"humans":[],"confidence":1.0})
             sim, wall = now()*1_000_000, time.monotonic_ns()
             step = bridge.request({"k":"tick","t":now()})
             require_fresh_actuation(step,(time.monotonic_ns()-wall)/1e6,now(),200,50)
             if step.get("status",{}).get("active") is None:
                 raise AssertionError("arm renewal lost Rust authority")
-            send({"heartbeat":token("arm","lease",digest,sim,wall,
-                min(200_000_000, (step["status"]["active_expires_ms"]*1_000_000-sim)))})
+            send({"heartbeat":token("arm","lease",digest,sim,wall,budget(step, sim))})
         wait_for(lambda: abs(world.primary_joint()-initial[0]) > .08, 3, processes,
                  "signed arm physically moves", action=renew)
         results["arm_positive"]={"ok":True,"moved_rad":abs(world.primary_joint()-initial[0])}
