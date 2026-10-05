@@ -19,6 +19,10 @@ robot action passes through a single policy gate that returns one of three verdi
 Workspace and keep-out zone violations are denied (`bul`), never clamped.
 Haetae does no force or torque limiting.
 
+For the UNO R4 Minima, the separate [controller permit LED reference](docs/controller-permits.md)
+verifies authenticated action permits inside the MCU. It is an LED bench,
+not a real robot protection release.
+
 ## What Haetae is and is not
 
 Haetae is a **non-safety-rated supervisory layer**. It judges untrusted AI

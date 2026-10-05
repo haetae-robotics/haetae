@@ -23,7 +23,7 @@
 - 라이다 관측 불가는 confidence0 서명 world로 즉시 전달하고 root reference 정책의 `perception-unknown` 규칙으로 거부·취소한다. 표적 소실은 해당 world→명명된 Rust revoke→disarm→후속0출력의 인과 증거가 필수다. 기계 관측·서명 경로 소실은 기존200ms world expiry를 유지하며 household failure guard는 unknown world도 막는다. 실제 장애 요청부터0출력까지400ms 제한을 바꾸지 않는다.
 - Gazebo scan/ROS clock 비동기 수신은 최근16개 단조 증가 frame 중 현재시각 이하의 최신 frame을 선택한다. 유효하지 않은 최신 frame을 과거 정상 frame으로 덮지 않고, 원래 source/수신벽시계200ms 제한을 유지한다. 미래 frame만 있거나 만료·eviction되면 unknown이다. 관측 시각·authority를 갱신하는 완충이 아니다.
 - 시뮬레이터 평가용 알파 운영 명령, 공유용 허용 필드 리포트, CI 소스/검증 후보 패키지를 제공한다. 실물 보호나 인증 버전이 아니다.
-- 사용자가 UNO R4 Minima를 주문했다. [LED bench](docs/uno-r4-bench.md)의 서명된 실제 Rust 엔진→직렬 adapter→독립 200ms guard를 준비했다. `./haetae-bench verify`는 같은 guard의 native 프로세스 시험, `compile`은 Arduino용 빌드다. 실물 USB/GPIO/WDT/reset 및 모터 정지는 미검증이다. Apple Silicon의 Intel Arduino 도구는 compile만 Docker로 우회하며 실제 upload는 Rosetta가 필요하다.
+- 공식 UNO R4 Minima를 USB만 연결했고 사용자 승인으로 Rosetta를 설치했다. main `1b8a904`의 H1 LED 펌웨어를 업로드해 USB 실물 6개 시험을 통과했다. 갱신 없는 독립 잠금 USB 관측은204.2ms이며 호스트 중지/복구 뒤 자동 재가동이 없었다. USB 소프트웨어 상태 증거이고 GPIO·WDT reset·모터 정지·실물 인지는 미검증이다. H1은 USB writer를 신뢰한다. 후속 [H2 controller permits](docs/controller-permits.md)는 서명된 OFF-only 연결과 매 LED 명령 인증을 보드에서 검사하고 별도 승인 서비스를 제공한다. 실제 ROS arm/base M3·실물 모터 보호와 동일시하지 않는다.
 
 - `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 유효하게 서명된 6개 위험 명령과 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 최종 controller permit, 영속 effect history, 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 아직 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
 
