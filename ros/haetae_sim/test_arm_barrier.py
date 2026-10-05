@@ -147,3 +147,22 @@ class ArmBarrierTest(unittest.TestCase):
                         scope['prepare_arm_fault'](world, {}, roles)
                     self.assertFalse(emitted)
                 self.assertEqual(sent, [0.] * requests)
+
+    def test_nonsecure_preparation_does_not_retry_without_durable_counter(self):
+        tree = ast.parse((Path(__file__).parents[1] / 'gazebo/run_reference.py').read_text())
+        method = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == 'prepare_arm_fault')
+        world = self.fixture()
+        requests = []
+        world.propose_base = requests.append
+        world._emit = lambda *args, **kwargs: self.fail('failed preparation cannot emit success')
+        def wait(predicate, timeout, processes, description):
+            self.assertEqual(timeout, 5)
+            raise TimeoutError(description)
+        scope = dict(time=SimpleNamespace(monotonic=lambda: 10.), json=json,
+                     ARM_JOINTS=['j1', 'j2', 'j3', 'j4'], wait_for=wait,
+                     gazebo_rearm_ready=lambda *args: False)
+        exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-nonsecure-preparation', 'exec'), scope)
+        with self.assertRaises(TimeoutError):
+            scope['prepare_arm_fault'](world, {}, None)
+        self.assertEqual(requests, [0.])

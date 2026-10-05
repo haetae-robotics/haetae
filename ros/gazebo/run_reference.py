@@ -477,7 +477,7 @@ def prepare_arm_fault(world, processes, roles=None):
               for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))}
     deadline = time.monotonic() + 5
     attempts = []
-    for attempt in range(2):
+    for attempt in range(2 if roles else 1):
         # In the isolated profile each parsed proposal increments both this
         # durable VLA reservation and proposal_id once, before DDS publication.
         # No other proposal producer runs during this stopped fixture setup.
@@ -493,7 +493,7 @@ def prepare_arm_fault(world, processes, roles=None):
             # request. Exact final ID and same signed writer order drain the
             # first request before any positive goal; no retry follows dispatch.
             wait_for(lambda: gazebo_rearm_ready(world, sent, time.monotonic(), ARM_JOINTS,
-                      nonces, proposal_id), min(1 if attempt == 0 else 5, deadline - time.monotonic()),
+                      nonces, proposal_id), min(1 if roles and attempt == 0 else 5, deadline - time.monotonic()),
                      processes, "fresh explicit arm fault fixture reset")
             world._emit("arm_fault_preparation", attempts=attempts,
                         accepted_proposal_id=proposal_id, expected_nonces=nonces)

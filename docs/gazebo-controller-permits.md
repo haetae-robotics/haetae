@@ -138,7 +138,8 @@ loss. The exact final proposal ID must match the Rust-accepted stop; it also
 requires a newer fresh idle/armed state, unlocked wheel/arm controller reports
 bound to the new nonces and measured wheel/all-four-joint stop immediately
 before dispatch. There is no repeating request producer or trailing stop after
-the final accepted ID from the ordered signed VLA writer. A fixed 300 ms
+the final accepted ID from the ordered signed VLA writer. The non-secure path
+without the durable VLA counter allows only one preparation request. A fixed 300 ms
 preparation sleep can hide a lapse beyond the 200 ms permit lifetime.
 Preparation emits no further stops or resets once the single arm goal is sent;
 failure after dispatch cannot use this barrier to recover or retry motion.
