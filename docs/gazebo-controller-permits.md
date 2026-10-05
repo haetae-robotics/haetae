@@ -61,10 +61,13 @@ expiry are unchanged. A past JTC start time would otherwise compress the initial
 segment after relay latency and could exceed the measured velocity policy.
 
 Each target has a strictly increasing sequence shared by its ingress routes.
-Trusted controller telemetry of the exact admitted digest suppresses arm renewal
+Trusted controller telemetry of the exact admitted digest and goal permit
+sequence suppresses arm renewal
 until admission; the relay's outer action acknowledgement is insufficient.
 Successful completion retains that digest until an explicit stop/reset, so idle
-renewal cannot cause a spurious binding rejection.
+renewal cannot cause a spurious binding rejection. An explicit reset clears the
+owner's retained digest/goal identity too. Identical consecutive trajectories
+have separate admitted goal identities, so old telemetry cannot renew a new goal.
 Renewals bind the active trajectory digest, so an authenticated generic heartbeat
 cannot authorize a different arm action. Admission is **under 50 ms** in both
 ROS simulation time and same-host monotonic time. Expiry is anchored at issuance,

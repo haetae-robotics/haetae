@@ -191,6 +191,7 @@ class HaetaeGate(Node):
         if self.permits:
             self.permits.active_arm = arm_digest(goal.trajectory)
             goal.trajectory.header.frame_id = self._permit("arm", "goal", self.permits.active_arm)
+            self.permits.goal_sequence = self.permits.sequence["arm"]
         self.cancel_requested = False
         self.arm_goal_deadline = time.monotonic() + 0.25
         self.arm_goal_future = self.arm_client.send_goal_async(goal)
@@ -246,6 +247,7 @@ class HaetaeGate(Node):
         if self.permits and "arm" in self.permits.challenges:
             self.heartbeat_pub.publish(String(data=self._permit("arm", "stop", IDLE)))
             self.permits.active_arm = IDLE
+            self.permits.goal_sequence = 0
         if self.arm_goal is None and self.arm_goal_future is None:
             return
         self.cancel_requested = True
@@ -309,13 +311,19 @@ class HaetaeGate(Node):
         if self.permits:
             if "arm" not in self.permits.challenges:
                 return
-            if not self.permit_reset and self.permits.admitted_arm != self.permits.active_arm:
+            if not self.permit_reset and (
+                    self.permits.admitted_arm != self.permits.active_arm or
+                    self.permits.admitted_goal_sequence != self.permits.goal_sequence):
                 # The relay's outer action acknowledgement is not controller
                 # admission. Trusted controller telemetry gates renewal across
                 # the separate DDS goal and heartbeat routes.
                 return
-            self.heartbeat_pub.publish(String(data=self._permit("arm",
-                "reset" if self.permit_reset else "lease", IDLE if self.permit_reset else self.permits.active_arm)))
+            token = self._permit("arm", "reset" if self.permit_reset else "lease",
+                                 IDLE if self.permit_reset else self.permits.active_arm)
+            if self.permit_reset:
+                self.permits.active_arm = IDLE
+                self.permits.goal_sequence = 0
+            self.heartbeat_pub.publish(String(data=token))
         else:
             self.heartbeat_pub.publish(UInt64(data=started_ros_ms))
 

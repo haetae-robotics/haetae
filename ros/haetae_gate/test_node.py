@@ -58,18 +58,32 @@ class NodeBoundaryTest(unittest.TestCase):
         g.arm_goal_future = None  # The untrusted relay already acknowledged.
         digest = "a" * 64
         g.permits = SimpleNamespace(challenges={"arm": "b" * 32},
-                                    active_arm=digest, admitted_arm="0" * 64)
+                                    active_arm=digest, admitted_arm="0" * 64,
+                                    goal_sequence=3, admitted_goal_sequence=0)
         g.permit_reset = False
         g._permit = lambda target, kind, payload: kind + ":" + payload
         g._heartbeat(1000)
         self.assertFalse(g.heartbeats)
         g.permits.admitted_arm = digest
         g._heartbeat(1000)
+        self.assertFalse(g.heartbeats)  # Identical previous goal is insufficient.
+        g.permits.admitted_goal_sequence = 3
+        g._heartbeat(1000)
         self.assertEqual(g.heartbeats, ["lease:" + digest])
         g.permit_reset = True
         g.permits.admitted_arm = "c" * 64
         g._heartbeat(1000)
         self.assertEqual(g.heartbeats[-1], "reset:" + "0" * 64)
+        self.assertEqual(g.permits.active_arm, "0" * 64)
+        self.assertEqual(g.permits.goal_sequence, 0)
+        g.permit_reset = False
+        count = len(g.heartbeats)
+        g._heartbeat(1000)
+        self.assertEqual(len(g.heartbeats), count)  # Old digest/sequence telemetry.
+        g.permits.admitted_arm = "0" * 64
+        g.permits.admitted_goal_sequence = 0
+        g._heartbeat(1000)
+        self.assertEqual(g.heartbeats[-1], "lease:" + "0" * 64)
 
     def test_success_retains_admitted_digest_until_explicit_stop(self):
         g = self.gate
