@@ -34,10 +34,13 @@ def world_expiry_stop_observed(states, outcomes, since):
     """Accept either engine-age revocation or a timely response-boundary reject."""
     if any(t >= since and row.get("stop") == "stale_world" for t, row in states):
         return "stale_world"
-    if (any(t >= since and row.get("stop") == "denied" and not row.get("armed")
-            for t, row in states) and any(t >= since and row.get("rejected", {}).get("error") ==
-                "stale actuation response: world expired" for t, row in outcomes)):
-        return "world_expired_at_response"
+    if any(t >= since and row.get("stop") == "denied" and not row.get("armed")
+           for t, row in states):
+        for error, reason in (
+                ("stale actuation response: world expired", "world_expired_at_response"),
+                ("trusted world did not advance within dual-clock freshness", "world_expired_at_owner")):
+            if any(t >= since and row.get("rejected", {}).get("error") == error for t, row in outcomes):
+                return reason
     return None
 
 

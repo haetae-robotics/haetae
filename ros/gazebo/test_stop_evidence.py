@@ -98,6 +98,19 @@ class SensorStopTest(unittest.TestCase):
                          {"stop_reason": "stale_world", "zero_at": 10.05})
         self.assertIsNone(self.check([], states=states, zeros=[], require_perception=False))
 
+    def test_dual_clock_world_expiry_needs_engine_disarm_and_named_rejection(self):
+        states = [(10.05, {"stop": "denied", "armed": []})]
+        outcomes = [(10.06, {"rejected": {"error":
+            "trusted world did not advance within dual-clock freshness"}})]
+        self.assertEqual(self.check([], states=states, outcomes=outcomes, require_perception=False),
+                         {"stop_reason": "world_expired_at_owner", "zero_at": 10.05})
+        # Coverage loss still needs the signed unknown-perception revocation.
+        self.assertIsNone(self.check([], states=states, outcomes=outcomes))
+        self.assertIsNone(self.check([], states=states, outcomes=[], require_perception=False))
+        self.assertIsNone(self.check([], states=states, outcomes=outcomes, zeros=[], require_perception=False))
+        self.assertIsNone(self.check([], states=[(10.05, {"stop": "denied", "armed": ["vla"]})],
+                                     outcomes=outcomes, require_perception=False))
+
 
 if __name__ == "__main__":
     unittest.main()
