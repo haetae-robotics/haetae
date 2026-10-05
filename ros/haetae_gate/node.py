@@ -59,6 +59,8 @@ class HaetaeGate(Node):
         if self.signed_inputs_only and any(json.loads(param(key)) != value for key, value in (
                 ("keys_json", {}), ("inputs_json", []), ("arm_inputs_json", []))):
             raise ValueError("signed-only gateway must have no source signing keys or raw inputs")
+        if param("controller_key_path") and not param("heartbeat_topic"):
+            raise ValueError("controller permits require an arm heartbeat topic")
         self.signer = None if self.signed_inputs_only else Signer(param("trust_path"), param("state_path"), json.loads(param("keys_json")))
         argv = [param("haetae_bin"), "enforce", "--stdio", "--policy", param("policy_path"),
                 "--state", param("state_path"), "--sillok", param("sillok_path"),
@@ -208,6 +210,13 @@ class HaetaeGate(Node):
                     self.arm_goal.cancel_goal_async()
                 return
             if not self.arm_goal.accepted:
+                if self.permits and self.cancel_requested:
+                    # A signed stop can overtake the in-flight goal. Its
+                    # rejection confirms no admission, not a failed cancel.
+                    self.arm_goal = None
+                    self.arm_cancel_deadline = None
+                    self.cancel_requested = False
+                    return
                 raise BridgeFailure("arm goal rejected")
             self.arm_result_future = self.arm_goal.get_result_async()
             self.arm_result_future.add_done_callback(self._on_arm_result)

@@ -208,6 +208,27 @@ class NodeBoundaryTest(unittest.TestCase):
         self.assertEqual(cancelled, [True])
         self.assertFalse(g.heartbeats)
 
+    def test_signed_stop_can_overtake_pending_goal_without_restoring_authority(self):
+        g = self.gate
+        g.permits = SimpleNamespace(challenges={"arm": "b" * 32}, active_arm="a" * 64,
+                                    goal_sequence=1, sign=lambda *args: "signed-stop")
+        g._cancel_arm()
+        g._on_arm_goal(SimpleNamespace(result=lambda: SimpleNamespace(accepted=False)))
+        self.assertFalse(g.aborts)
+        self.assertIsNone(g.arm_goal)
+        self.assertIsNone(g.arm_goal_future)
+        self.assertIsNone(g.arm_goal_deadline)
+        self.assertIsNone(g.arm_cancel_deadline)
+        self.assertFalse(g.cancel_requested)
+        self.assertEqual(g.permits.active_arm, "0" * 64)
+        self.assertEqual(g.permits.goal_sequence, 0)
+        self.assertEqual(g.heartbeats, ["signed-stop"])
+        for permit, cancelling in ((None, True), (g.permits, False)):
+            g.aborts.clear()
+            g.permits, g.cancel_requested = permit, cancelling
+            g._on_arm_goal(SimpleNamespace(result=lambda: SimpleNamespace(accepted=False)))
+            self.assertEqual(g.aborts, ["arm goal rejected"])
+
     def test_publish_failure_cannot_renew_lease_and_healthy_control_can(self):
         g = self.gate
         g.arm_goal_future = None
