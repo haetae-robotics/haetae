@@ -147,7 +147,13 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         results["base_expiry"]={"ok":True,"old_goal_did_not_resume":True}
         reset()
         initial = world.arm_positions()
+        accepted = guard("arm").get("accepted", 0)
         packet, digest = arm_packet(); send(packet)
+        # Renewal uses a later sequence on a different DDS route. Wait for
+        # controller admission of the goal before any renewal can overtake it.
+        wait_for(lambda: guard("arm").get("accepted", 0) > accepted and
+                 not guard("arm").get("holding", True),
+                 1, processes, "trusted controller admits signed arm goal")
         def renew():
             # Feed an actual current measured world and tick the same Rust goal.
             feed("world", {"stamp_ms": now(), "robot": {"pose": {"x":world.pose()[0],"y":world.pose()[1]},
