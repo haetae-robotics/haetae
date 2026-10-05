@@ -6,7 +6,8 @@ import unittest
 from unittest import mock
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
-from controller_permits import (DOMAIN, PermitSigner, IDLE, base_digest, arm_digest, explicit_rearm)
+from controller_permits import (DOMAIN, PermitSigner, AcceptedWorldClock, IDLE,
+                               base_digest, arm_digest, explicit_rearm)
 
 
 def stamp(value=1_000_000_000):
@@ -24,6 +25,27 @@ def arm():
 
 
 class ControllerPermitTest(unittest.TestCase):
+    def test_wall_tick_cannot_extend_frozen_or_rejected_world(self):
+        clock = AcceptedWorldClock()
+        self.assertEqual(clock.remaining(1_000_000_000, 2_000_000_000, 200_000_000), 0)
+        step = {"outcome": {"world_updated": {"stamp_ms": 1000}}}
+        clock.observe(step, 2_000_000_000)
+        self.assertEqual(clock.remaining(1_050_000_000, 2_080_000_000, 200_000_000), 120_000_000)
+        clock.observe(step, 2_150_000_000)  # same ROS stamp, new wall receipt
+        clock.observe({"outcome": {"rejected": {"error": "signature"}}}, 2_170_000_000)
+        clock.observe({"outcome": {"world_updated": {"stamp_ms": 999}}}, 2_180_000_000)
+        self.assertEqual(clock.remaining(1_050_000_000, 2_200_000_000, 200_000_000), 0)
+        self.assertEqual(clock.remaining(999_000_000, 2_050_000_000, 200_000_000), 0)
+        self.assertEqual(clock.remaining(1_000_000_000, 1_999_000_000, 200_000_000), 0)
+
+    def test_accepted_world_original_request_clock_bounds_slow_simulation(self):
+        clock = AcceptedWorldClock()
+        clock.observe({"outcome": {"world_updated": {"stamp_ms": 1000}}}, 2_000_000_000)
+        self.assertEqual(clock.remaining(1_010_000_000, 2_190_000_000, 200_000_000), 10_000_000)
+        clock.observe({"outcome": {"world_updated": {"stamp_ms": 1010}}}, 2_180_000_000)
+        self.assertEqual(clock.remaining(1_020_000_000, 2_190_000_000, 200_000_000), 190_000_000)
+        self.assertEqual(clock.remaining(1_210_000_000, 2_190_000_000, 200_000_000), 0)
+
     def test_base_payload_binds_all_actuating_fields_and_clock(self):
         msg=base(); original=base_digest(msg)
         self.assertEqual(original,'258d4f3f62b83e2c144be7d2fc926faf92000525bdc1a305f9b674eea4c93fdb')

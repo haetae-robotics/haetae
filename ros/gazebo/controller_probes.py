@@ -187,16 +187,19 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                  not guard("arm").get("holding", True),
                  1, processes, "trusted controller admits signed arm goal")
         def renew():
-            # Feed an actual current measured world and tick the same Rust goal.
+            # The world response already rechecks the same Rust goal. A second
+            # audited tick adds IPC/commit delay without adding authorization.
             measured = joints_snapshot()
-            feed("world", {"stamp_ms": measured_stamp(), "robot": {"pose": {"x":world.pose()[0],"y":world.pose()[1]},
+            sim, wall = now()*1_000_000, time.monotonic_ns()
+            step = feed("world", {"stamp_ms": measured_stamp(), "robot": {"pose": {"x":world.pose()[0],"y":world.pose()[1]},
                 "yaw":world.heading(),"twist":{"linear":world.speed(),"angular":0.0},
                 "joints":measured},"humans":[],"confidence":1.0})
-            sim, wall = now()*1_000_000, time.monotonic_ns()
-            step = bridge.request({"k":"tick","t":now()})
-            require_fresh_actuation(step,(time.monotonic_ns()-wall)/1e6,now(),200,50)
+            elapsed = max((time.monotonic_ns()-wall)/1e6, now()-sim//1_000_000)
+            require_fresh_actuation(step,elapsed,now(),200,50)
+            if elapsed >= 50:
+                raise AssertionError("arm renewal enforcement exceeded original admission budget")
             if step.get("status",{}).get("active") is None:
-                raise AssertionError("arm renewal lost Rust authority")
+                raise AssertionError("arm renewal lost Rust authority: " + json.dumps(step))
             send({"heartbeat":token("arm","lease",digest,sim,wall,budget(step, sim))})
         wait_for(lambda: abs(world.primary_joint()-initial[0]) > .08, 3, processes,
                  "signed arm physically moves", action=renew)

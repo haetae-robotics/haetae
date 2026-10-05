@@ -16,6 +16,7 @@ from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Twist, TwistStamped
 from rclpy.action import ActionClient
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String, UInt64
@@ -25,7 +26,8 @@ from bridge import (Bridge, BridgeFailure, StaleActuation, ExpiredActuation,
                     require_fresh_actuation, lease_renewable, reject_expired_actuation)
 from signing import Signer
 from proposals import InvalidProposal, base_action, arm_action
-from controller_permits import PermitSigner, IDLE, base_digest, arm_digest, explicit_rearm
+from controller_permits import (PermitSigner, AcceptedWorldClock, IDLE,
+                               base_digest, arm_digest, explicit_rearm)
 
 
 class HaetaeGate(Node):
@@ -65,6 +67,7 @@ class HaetaeGate(Node):
         self.bridge = Bridge(argv, int(param("response_timeout_ms")))
         self.output_stamped = param("output_stamped")
         self.permits = PermitSigner(Path(param("controller_key_path"))) if param("controller_key_path") else None
+        self.permit_world = AcceptedWorldClock()
         self.permit_reset = False
         self.permit_stop = True
         self.permit_remaining_ns = 200_000_000
@@ -128,7 +131,10 @@ class HaetaeGate(Node):
         hz = float(param("tick_hz"))
         if hz <= 0 or hz > 100:
             raise ValueError("tick_hz must be in (0,100]")
-        self.create_timer(1.0 / hz, self._tick)
+        # Lease expiry uses wall time even when Gazebo runs below real time.
+        # AcceptedWorldClock independently bounds frozen/missing observations.
+        self.create_timer(1.0 / hz, self._tick,
+                          clock=Clock(clock_type=ClockType.STEADY_TIME) if self.permits else None)
 
     def _now(self):
         return self.get_clock().now().nanoseconds // 1_000_000
@@ -334,11 +340,16 @@ class HaetaeGate(Node):
                 step, elapsed_ms, now_ros_ms,
                 self.world_max_age_ms, self.max_actuation_response_ms)
             if self.permits:
+                self.permit_world.observe(step, self.permit_wall_ns)
                 status = step.get("status") or {}
                 remaining_ms = min(200, self.world_max_age_ms - (status.get("world_age_ms") or 0))
                 if status.get("active_expires_ms") is not None:
                     remaining_ms = min(remaining_ms, status["active_expires_ms"] - started_ros_ms)
-                self.permit_remaining_ns = max(1, remaining_ms) * 1_000_000
+                remaining_ns = min(remaining_ms * 1_000_000, self.permit_world.remaining(
+                    self.permit_sim_ns, self.permit_wall_ns, self.world_max_age_ms * 1_000_000))
+                if remaining_ns <= 0:
+                    raise ExpiredActuation("trusted world did not advance within dual-clock freshness")
+                self.permit_remaining_ns = remaining_ns
             self._publish(step)
             if (self.heartbeat_pub and not self.cancel_requested and not self.failed
                     and (not self.permits or self.arm_goal_future is None)

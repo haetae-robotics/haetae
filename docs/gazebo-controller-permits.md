@@ -69,6 +69,14 @@ never receipt, at most **200 ms** and further bounded by Rust proposal/world
 authority. The two processes require the same monotonic clock domain; this
 protocol is not suitable for a separate physical controller as written.
 
+Permit-mode enforcement ticks use a steady clock, so a slow Gazebo clock does
+not stretch the renewal interval beyond the wall deadline. Each permit is also
+bounded by the original request wall time of the latest strictly advancing
+`world_updated` stamp that Rust accepted, and by that observation's ROS age.
+Repeated stamps, rejected inputs and timer ticks cannot refresh this world
+deadline. A frozen world therefore expires and disarms the owner even while
+wall-clock ticks continue; recovery still requires an accepted explicit stop.
+
 Invalid, replayed, delayed, expired or incorrectly targeted permits lock motion.
 The wheel update forces zero without acceleration smoothing when authority is
 lost. The arm holds measured positions, aborts/discards the old trajectory and

@@ -15,6 +15,32 @@ IDLE = "0" * 64
 MAX_LEASE_NS = 200_000_000
 
 
+class AcceptedWorldClock:
+    """Wall deadline for a strictly advancing, Rust-accepted observation.
+
+    A wall-driven permit tick cannot extend the life of a frozen ROS world.
+    The wall anchor is the original request start, not response/signing time.
+    """
+    def __init__(self):
+        self.stamp_ns = None
+        self.wall_ns = None
+
+    def observe(self, step, request_wall_ns):
+        updated = (step.get("outcome") or {}).get("world_updated") or {}
+        stamp = updated.get("stamp_ms")
+        if type(stamp) is int and stamp >= 0:
+            stamp *= 1_000_000
+            if self.stamp_ns is None or stamp > self.stamp_ns:
+                self.stamp_ns, self.wall_ns = stamp, request_wall_ns
+
+    def remaining(self, sim_ns, wall_ns, maximum_ns):
+        if (self.stamp_ns is None or self.wall_ns is None or
+                sim_ns < self.stamp_ns or wall_ns < self.wall_ns):
+            return 0
+        return max(0, min(maximum_ns - (sim_ns - self.stamp_ns),
+                          maximum_ns - (wall_ns - self.wall_ns)))
+
+
 def stamp_ns(stamp):
     if not 0 <= stamp.sec < 2**31 or not 0 <= stamp.nanosec < 1_000_000_000:
         raise ValueError("invalid ROS timestamp")
