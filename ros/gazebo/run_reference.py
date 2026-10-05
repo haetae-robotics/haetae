@@ -39,7 +39,7 @@ from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
 from artifact_export import export_artifacts, final_export
-from public_report import report as public_report
+from public_report import report as public_report, failed_household_result
 from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
 from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy, resolve_meshes  # noqa: E402
@@ -95,6 +95,7 @@ class GazeboWorld(Node):
         self.guard_states = []
         self.attack_world_received = 0
         self.world_count = 0
+        self.hazard_guard = None
         self.world_pub = self.create_publisher(String,
             "/haetae_input/world" if isolated else "/haetae_gate/world", 1)
         self.vla_pub = None if isolated else self.create_publisher(TwistStamped, "/vla/cmd_vel", 1)
@@ -255,7 +256,7 @@ class GazeboWorld(Node):
             nearest = min(humans, key=lambda h: math.hypot(h["pos"]["x"]-x, h["pos"]["y"]-y))
             self.person_reports.append({"wall": time.monotonic(), "stamp_ms": stamp,
                                         "robot": (x, y), "human": (nearest["pos"]["x"], nearest["pos"]["y"])})
-        if confidence:
+        if confidence and (self.hazard_guard is None or self.hazard_guard()):
             self.world_pub.publish(String(data=json.dumps(payload)))
             self.world_count += 1
         # Unknown coverage is visible in telemetry, but cannot refresh the
@@ -278,15 +279,17 @@ class GazeboWorld(Node):
 
     def propose_arm(self, target):
         start = self.arm_positions()
-        end = [target, *start[1:]]
+        self.propose_arm_plan(((0, start), (800, [target, *start[1:]]), (1000, [target, *start[1:]])))
+
+    def propose_arm_plan(self, points):
         if self.isolated:
             self.proposal_pipe.write(json.dumps({"joints": list(ARM_JOINTS),
-                "points": [(0, start), (800, end), (1000, end)]}).encode() + b"\n")
+                "points": points}).encode() + b"\n")
             self.proposal_pipe.flush()
             return
         msg = JointTrajectory()
         msg.joint_names = list(ARM_JOINTS)
-        for millis, value in ((0, start), (800, end), (1000, end)):
+        for millis, value in points:
             p = JointTrajectoryPoint()
             p.positions = value
             p.time_from_start.sec, p.time_from_start.nanosec = divmod(millis, 1000)
@@ -508,7 +511,7 @@ def exercise_arm_fault(world, processes, case):
 
 def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         gazebo_gui=False, manual_start=False, attack_probes=False,
-        secure_graph=False, step_through=False, arm_fault=None, compound_repeat=0, output=None):
+        secure_graph=False, step_through=False, arm_fault=None, compound_repeat=0, output=None, household_hazards=False):
     root.mkdir(parents=True, exist_ok=True)
     fixture(root, binary, arm=True, arm_policy=arm_policy(), person_distance=PERSON_DISTANCE_M)
     params_path = root / "params.yaml"
@@ -518,6 +521,9 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     params_path.write_text(json.dumps(params))
     studio = ElementTree.parse(HERE / "studio.sdf")
     add_native_scene(studio.getroot().find("world"))
+    if household_hazards:
+        from hazard_lab import add_fixtures
+        add_fixtures(studio.getroot().find("world"))
     studio_path = root / "sensor-studio.sdf"
     studio.write(studio_path, encoding="UTF-8", xml_declaration=True)
     controllers = HERE / "controllers.yaml"
@@ -525,6 +531,11 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     model.write_text(resolve_meshes(command(["xacro", str(HERE / "rosbot_xl.urdf.xacro"),
                               "controllers_file:=" + str(controllers),
                               "vendor_dir:=" + str(HERE / "vendor")], root)))
+    if household_hazards:
+        # A different initial test posture; preserve all manufacturer geometry,
+        # inertia, axes, mounting transforms and physical/controller limits.
+        from hazard_lab import lab_posture
+        model.write_text(lab_posture(model.read_text()))
     description_params = root / "robot_description.yaml"
     description_params.write_text(json.dumps({"robot_state_publisher": {"ros__parameters": {
         "robot_description": model.read_text(), "use_sim_time": True}}}))
@@ -675,7 +686,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             (root / "transport-isolation.json").write_text(json.dumps(transport_evidence, indent=2))
             for role in ("world", "vla"):
                 _, log = start([sys.executable, str(REPO / "ros/haetae_gate/source_node.py"),
-                                "--ros-args", "--params-file", str(roles.source_params(role))],
+                                "--ros-args", "--params-file", str(roles.source_params(role, arm_fixed_ttl_ms=1000 if household_hazards and role == "vla" else 0))],
                                root, "source_" + role, processes, role_env(role), UIDS[role])
                 logs.append(log)
             driver, log = start([sys.executable, str(HERE / "scenario_source.py")],
@@ -701,7 +712,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             before = roles.counter("vla")
             stop(processes.pop("source_vla"))
             _, log = start([sys.executable, str(REPO / "ros/haetae_gate/source_node.py"),
-                            "--ros-args", "--params-file", str(roles.source_params("vla"))],
+                            "--ros-args", "--params-file", str(roles.source_params("vla", arm_fixed_ttl_ms=1000 if household_hazards else 0))],
                            root, "source_vla", processes, role_env("vla"), UIDS["vla"])
             logs.append(log)
             wait_for(lambda: roles.counter("vla") > before,
@@ -735,6 +746,20 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                 world.marker("3D 화면 준비 · 시작 버튼을 누르세요")
                 wait_for(lambda: live.start_requested.is_set(), 3600, processes,
                          "browser start command")
+        if household_hazards:
+            from hazard_lab import run_lab
+            result = run_lab(world,binary,model.read_text(),root,processes,wait_for,review_scene)
+            result["source_revision"] = os.environ.get("HAETAE_REVISION", "unknown")
+            (root / "result.json").write_text(json.dumps(result,ensure_ascii=False,indent=2))
+            (root / "verification-report.json").write_text(json.dumps(public_report(result,
+                os.environ.get("HAETAE_REVISION","unknown"),live.session_id if live else root.name),ensure_ascii=False,indent=2))
+            export_artifacts(root,output)
+            if live:
+                live.publish({"kind":"result","result":result})
+                if live_hold_seconds: time.sleep(live_hold_seconds)
+            print(json.dumps(result))
+            return
+        if live:
             world.marker("AI 바퀴 이동 명령")
         start_x = world.pose()[0]
         visible_motion = 0.35 if live else 0.03
@@ -1072,7 +1097,12 @@ def main():
                         help="isolated moving-arm controller failure test")
     parser.add_argument("--compound-repeat", type=int, default=0,
                         help="repeat bounded compound sensor/delay/proposal-burst faults (1..30, secured graph)")
+    parser.add_argument("--household-hazards", action="store_true", help="run the trusted household hazard lab profile")
     args = parser.parse_args()
+    if args.household_hazards and not args.secure_graph:
+        parser.error("--household-hazards requires --secure-graph")
+    if args.household_hazards and (args.arm_fault or args.compound_repeat or args.attack_probes):
+        parser.error("--household-hazards is a separate profile; do not combine legacy fault/attack scenarios")
     if not 0 <= args.compound_repeat <= 30 or (args.compound_repeat and not args.secure_graph):
         parser.error("--compound-repeat requires --secure-graph and a value in 0..30")
     if args.wait_for_viewer and args.live_port is None:
@@ -1088,13 +1118,13 @@ def main():
     if args.step_through and args.live_port is None:
         parser.error("--step-through requires --live-port")
     binary = str(Path(args.binary).resolve())
-    live = LiveHub() if args.live_port is not None else None
+    live = LiveHub(args.household_hazards) if args.live_port is not None else None
     server = start_server(live, args.live_port, args.live_bind,
                           gazebo_gui=args.gazebo_gui,
                           manual_start=args.manual_start,
                           attack_probes=args.attack_probes,
                           secured_gazebo=args.secure_graph,
-                          step_through=args.step_through) if live else None
+                          step_through=args.step_through, household_hazards=args.household_hazards) if live else None
     if server:
         print(f"Live view: http://127.0.0.1:{args.live_port}/", flush=True)
     shared = Path("/dev/shm")
@@ -1106,17 +1136,17 @@ def main():
                 run(Path(directory), binary, live, args.wait_for_viewer,
                     args.live_hold_seconds if live else 0, args.gazebo_gui,
                     args.manual_start, args.attack_probes, args.secure_graph,
-                    args.step_through, args.arm_fault, args.compound_repeat, args.out)
+                    args.step_through, args.arm_fault, args.compound_repeat, args.out, args.household_hazards)
             except RunInterrupted:
                 if not (Path(directory) / "result.json").exists():
-                    (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(
+                    (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(failed_household_result(directory) if args.household_hazards else None,
                         revision=os.environ.get("HAETAE_REVISION", "unknown"),
                         run_id=live.session_id if live else Path(directory).name, failed=True), ensure_ascii=False, indent=2))
                     (Path(directory) / "error.json").write_text(json.dumps({
                         "error_type": "RunInterrupted", "error": "operator requested shutdown"}) + "\n")
                 raise
             except Exception as exc:
-                (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(
+                (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(failed_household_result(directory) if args.household_hazards else None,
                     revision=os.environ.get("HAETAE_REVISION", "unknown"),
                     run_id=live.session_id if live else Path(directory).name, failed=True), ensure_ascii=False, indent=2))
                 (Path(directory) / "error.json").write_text(json.dumps({
@@ -1126,7 +1156,8 @@ def main():
                     live.fail({"kind": "error", "label": "시뮬레이션이 중단됐습니다",
                                "detail": "장면 완료 조건을 제시간에 확인하지 못했습니다."
                                if isinstance(exc, TimeoutError) else "시뮬레이터 실행 중 오류가 발생했습니다.",
-                               "error_type": type(exc).__name__})
+                               "error_type": type(exc).__name__},
+                              failed_household_result(directory) if args.household_hazards else None)
                 raise
             finally:
                 final_export(directory, args.out, prior_failure=sys.exc_info()[0] is not None)

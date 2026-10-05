@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-10-04
+- Last refreshed: 2026-10-05
 - Primary product surfaces: live Gazebo reference at `sim/gazebo-live.html` and the scripted demo at `sim/index.html`.
 - Evidence reviewed: `sim/DESIGN.md`, `sim/index.html`, `sim/gazebo-live.html`, `sim/gazebo-scene.js`, `sim/person-rig.js`, `ros/gazebo/scene_layout.py`, `ros/gazebo/rosbot_xl.urdf.xacro`, the Gazebo runbook, and Claude's source-based consultation in `.omx/artifacts/claude-design-20260930/` (not a rendered visual review).
 - Scope: This file guides the live Gazebo reference. `sim/DESIGN.md` remains the detailed contract for the separate scripted demo.
@@ -98,3 +98,11 @@
 - One primary start/next action stays in the bottom transport. Report view/download are secondary inspector links enabled only after a terminal result or failure.
 - A report separates passed, failed and unrun cases; partial checks never imply full success. Label this as simulator evaluation alpha, with unsigned local evidence and no physical protection/certification claim.
 - Native transport closure is scoped to sandboxed non-root container roles; root/host/gateway actuation trust stays visible in the disclosure/report.
+
+## Household hazard lab
+- Entry: `./haetae-demo hazards` selects a separate Gazebo evaluation profile.
+- Six scenes cover human exclusion, heat, live electricity, water, incompatible container contents, and fall keepouts. Each scene pairs a rejected plan with an allowed control.
+- Reuse the manufacturer robot, large studio canvas, verdict inspector, Gazebo original view, and explicit next-step checkpoints. Keep props in place while the result is read.
+- Native Gazebo geometry and measured joints drive the reconstructed view. Proposed paths are labelled overlays; denied plans do not animate the robot.
+- Label device/material/contents states as trusted injected fixtures, and attachment/transfer as kinematic test presentation. No camera recognition, fluid chemistry, validated grasp or human contact claim.
+- Report this profile separately from signed-role transport/independent-stop qualification. Never report unrun legacy checks as passed.

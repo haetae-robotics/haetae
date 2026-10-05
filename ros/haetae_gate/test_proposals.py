@@ -20,6 +20,12 @@ class ProposalTests(unittest.TestCase):
                   time_from_start=S(sec=0,nanosec=100000000))
         msg = S(joint_names=['joint1'],points=[point])
         self.assertEqual(arm_action(msg,['joint1'])['ttl_ms'],100)
+        self.assertEqual(arm_action(msg,['joint1'],1000)['ttl_ms'],1000)
+        for fixed in (True, -1, 2000):
+            with self.assertRaises(InvalidProposal): arm_action(msg,['joint1'],fixed)
+        point.time_from_start.sec=2
+        with self.assertRaises(InvalidProposal): arm_action(msg,['joint1'],1000)
+        point.time_from_start.sec=0
         point.velocities=[1]
         with self.assertRaises(InvalidProposal): arm_action(msg,['joint1'])
         point.velocities=[]

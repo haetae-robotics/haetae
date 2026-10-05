@@ -9,7 +9,7 @@ const { validTelemetry } = await import('data:text/javascript,' + encodeURICompo
 const source = readFileSync(new URL('./gazebo-live.js', import.meta.url), 'utf8')
   .replace(/^import .*;\n/gm, '');
 
-function viewer() {
+function viewer(rigFactory = () => ({ update() {}, setBlocked() {},setHazardScene() {} })) {
   const elements = new Map();
   const requests = [];
   let stream;
@@ -29,10 +29,10 @@ function viewer() {
     return elements.get(id);
   };
   vm.runInNewContext(source, {
-    document: { getElementById: get, createElement: element, createTextNode: (text) => text },
+    document: { querySelector: get, getElementById: get, createElement: element, createTextNode: (text) => text },
     window: { location: { hostname: '127.0.0.1' } },
     validTelemetry,
-    createGazeboScene: () => ({ update() {}, setBlocked() {} }),
+    createGazeboScene: rigFactory,
     Date: { now: () => now },
     setInterval(callback) { tick = callback; },
     EventSource: class { constructor() { stream = this; } close() {} },
@@ -56,6 +56,17 @@ function viewer() {
     advance: () => finishAdvance({ ok: true })
   };
 }
+
+test('reference controls remain available when WebGL or robot assets fail', async () => {
+  for (const rig of [() => {throw new Error('WebGL unavailable');},
+    () => ({ready: Promise.reject(new Error('model unavailable'))})]) {
+    const page = viewer(rig);
+    await page.config({household_hazards: false, gazebo_gui: false});
+    page.emit({kind: 'phase', label: '3D 화면 준비 · 시작 버튼을 누르세요'});
+    assert.equal(page.get('start-simulation').disabled, false);
+    assert.match(page.get('start-simulation').textContent, /시뮬레이션 시작/);
+  }
+});
 
 test('refresh restores a waiting scene even when configuration arrives later', async () => {
   const page = viewer();
@@ -166,4 +177,17 @@ test('invalid telemetry leaves last good measurements intact and finite recovery
   assert.match(page.get('connection').textContent, /측정값 오류/);
   page.emit({...row, speed: .2});
   assert.match(page.get('speed').textContent, /0.200/);
+});
+
+
+test('household profile keeps all six stages without legacy attack probes', async () => {
+  const page=viewer(); await page.config({household_hazards:true,attack_probes:false});
+  page.emit({kind:'hazard_scene',stage:4,title:'배터리와 물',case:'water',contents:[]});
+  assert.equal(page.get('stage-label').textContent,'4 / 6 · 물');
+  assert.equal(page.get('hazard-fixtures').hidden,false);
+  page.emit({kind:'hazard_decision',allowed:false,label:'배터리 차단'});
+  assert.equal(page.get('verdict').textContent,'차단 · 계획 미전달');
+  page.emit({kind:'checkpoint',waiting:true,token:'water',label:'물 · 차단',detail:'정지',next_label:'정상 동작 대조'});
+  assert.equal(page.get('start-simulation').disabled,false);
+  assert.match(page.get('start-simulation').textContent,/정상 동작 대조/);
 });

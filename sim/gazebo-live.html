@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="./gazebo-live.css">
 </head>
 <body>
+  <noscript><p role="alert">이 화면은 JavaScript가 필요합니다. 브라우저에서 이 페이지의 JavaScript 실행을 허용한 뒤 새로고침해 주세요.</p></noscript>
   <header class="topbar">
     <a class="brand" href="./" aria-label="해태 라이브 처음 화면">
       <img class="brand-logo" src="./brand/haetae/logo-light.svg" width="109" height="36" alt="haetae">
@@ -61,6 +62,7 @@
           </div>
           <details class="scope"><summary>검증 범위</summary><p id="attack-scope">적용 범위를 확인하고 있습니다.</p></details>
         </section>
+        <section class="scope" id="hazard-fixtures" hidden aria-label="시험 정보"><h3>시험 데이터</h3><p id="hazard-context">기기 상태·물체 종류는 주입된 시험 정보입니다.</p><p id="hazard-contents"></p><p>점선: 실행 전 검사 경로<br>청록 물체: 측정 관절을 따라가는 부착물<br>색상 표적: Gazebo의 위험 공간</p></section>
         <section class="report-panel" aria-labelledby="report-title"><h3 id="report-title">검증 리포트</h3><p id="report-status">시험이 끝나면 결과와 측정값을 저장할 수 있습니다.</p><div><a id="report-view" href="/report" target="_blank" rel="noopener" hidden>결과 보기 ↗</a><a id="report-download" href="/report.json" hidden>JSON 저장 ↓</a></div></section>
         <section class="event-section"><div class="section-label"><h3>이벤트</h3><span>RECENT</span></div><ol class="events" id="events" aria-label="최근 사건"></ol></section>
         <details class="technical"><summary>상세 측정값</summary><dl><dt>마지막 바퀴 명령</dt><dd id="command">—</dd><dt>사람 형상 거리</dt><dd id="human">—</dd><dt>라이다 측정 거리</dt><dd id="sensor-distance">—</dd><dt>라이다 상태</dt><dd id="sensor-health">—</dd><dt>측정 시점 차이</dt><dd id="sensor-age">—</dd></dl></details>
@@ -81,6 +83,23 @@
     </div>
   </footer>
   <script type="importmap">{"imports":{"three":"./vendor/three/three.module.js","three/addons/":"./vendor/three/"}}</script>
-  <script type="module" src="./gazebo-live.js"></script>
+  <script>
+    document.documentElement.dataset.scriptBoot = 'ready';
+    document.documentElement.dataset.moduleState = 'loading';
+    import('./gazebo-live.js').then(() => {
+      document.documentElement.dataset.moduleState = 'ready';
+    }).catch(error => {
+      document.documentElement.dataset.moduleState = 'failed';
+      console.error('HAETAE viewer initialization failed', error);
+      document.getElementById('phase').textContent = '화면 로드 실패';
+      document.getElementById('detail').textContent = '페이지를 새로고침하거나 다른 브라우저에서 열어 주세요.';
+    });
+    setTimeout(() => {
+      if (document.documentElement.dataset.moduleState !== 'failed' && document.getElementById('connection').dataset.state === 'connecting') {
+        document.getElementById('phase').textContent = '화면 연결 지연';
+        document.getElementById('detail').textContent = '화면 준비를 완료하지 못했습니다. 페이지를 새로고침해 주세요.';
+      }
+    }, 15000);
+  </script>
 </body>
 </html>

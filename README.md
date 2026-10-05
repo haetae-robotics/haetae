@@ -126,6 +126,11 @@ collision safety.
 
 > Status: **simulator evaluation alpha; core 0.0.x**. Not a certified safety device or a protective physical-robot deployment.
 
+A separate [household hazard lab](examples/household-hazards/README.md) starts with
+`./haetae-demo hazards`: six end-effector fixture hazards and measured normal
+controls, with explicit injected semantics and scope limits. This lab adds
+trusted-adapter preflight checks; it is not physical safety qualification.
+
 [Simple launch, verification and report guide](docs/simulator-alpha.md): `./haetae-demo doctor`, `start`, `status`, `stop`, `restart`, `verify`, `report`. Successful CI runs provide an unsigned source/evidence candidate with SHA256 checksums.
 
 ## UNO R4 LED bench preparation

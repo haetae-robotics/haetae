@@ -4,6 +4,7 @@ import json
 import gzip
 import threading
 import unittest
+from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -11,6 +12,33 @@ from live_stream import LiveHub, start_server
 
 
 class LiveStreamTest(unittest.TestCase):
+    def test_post_success_failure_keeps_profile_and_measured_checks(self):
+        hub = LiveHub(household_hazards=True)
+        passed = {"status": "passed", "scope": "household_hazard_preflight_simulation",
+                  "checks": [{"id": "heat", "status": "passed",
+                              "measurements": {"measured_motion_rad": .3}}]}
+        with mock.patch("live_stream.report", return_value=passed):
+            hub.publish({"kind": "result", "result": {"profile": "household_hazards"}})
+        before = hub.public_report()
+        hub.fail({"kind": "error", "label": "final export rejected"})
+        after = hub.public_report()
+        self.assertEqual(after, {**before, "status": "failed"})
+        self.assertEqual(after["scope"], "household_hazard_preflight_simulation")
+
+    def test_household_failure_keeps_partial_evidence_after_outer_failure(self):
+        hub = LiveHub(household_hazards=True)
+        row = {"id": "human", "blocked": True, "allowed": True,
+               "reason": "human:protected-volume", "denied_drift_rad": .001,
+               "measured_motion_rad": .3, "plan_sha256": "a" * 64,
+               "signed_arm_acceptance_observed": True, "accepted_waypoints_match": True,
+               "max_joint_tracking_error_rad": .01, "tracking_samples": 20}
+        hub.fail({"kind": "error"}, {"profile": "household_hazards", "ok": False,
+                 "hazard_checks": [row, {"id": "heat", "blocked": False}]})
+        hub.fail({"kind": "error", "label": "outer cleanup error"})
+        summary = hub.public_report()
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual([r["status"] for r in summary["checks"][:3]], ["passed", "failed", "not_run"])
+
     def setUp(self):
         self.hub = LiveHub()
         self.server = start_server(self.hub, 0)
@@ -34,6 +62,7 @@ class LiveStreamTest(unittest.TestCase):
         with urlopen(self.base + "/assets/haetae-rig.json", timeout=3) as response:
             self.assertEqual(json.load(response)["coordinates"], "ROS z-up")
         with urlopen(self.base + "/assets/rosbot-xl.json", timeout=3) as response:
+            self.assertEqual(response.version, 11)
             self.assertEqual(response.headers["Content-Encoding"], "gzip")
             model = json.loads(gzip.decompress(response.read()))
             self.assertEqual(model["model"], "ROSbot XL + OpenMANIPULATOR-X")
@@ -45,7 +74,7 @@ class LiveStreamTest(unittest.TestCase):
                                                   "manual_start": False,
                                                   "attack_probes": False,
                                                   "secured_gazebo": False,
-                                                  "step_through": False})
+                                                  "step_through": False,"household_hazards":False})
         with self.assertRaises(HTTPError) as failure:
             urlopen(self.base + "/../run_reference.py", timeout=3)
         self.assertEqual(failure.exception.code, 404)
@@ -90,7 +119,7 @@ class LiveStreamTest(unittest.TestCase):
                                                       "manual_start": True,
                                                       "attack_probes": True,
                                                       "secured_gazebo": True,
-                                                      "step_through": True})
+                                                      "step_through": True,"household_hazards":False})
             with self.assertRaises(HTTPError) as failure:
                 urlopen(Request(base + "/start", data=b"",
                                 headers={"Origin": "https://untrusted.example"}), timeout=3)

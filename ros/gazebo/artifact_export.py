@@ -3,10 +3,10 @@ from pathlib import Path
 import json
 import sys
 from safe_evidence import checkpoint_evidence, read_evidence_text, write_checkpoint
-from public_report import report
+from public_report import report, failed_household_result
 
 PUBLIC_FILES = (
-    'result.json', 'error.json', 'verification-report.json', 'transport-isolation.json',
+    'result.json', 'error.json', 'hazard-progress.json', 'hazard-diagnostics.json', 'verification-report.json', 'transport-isolation.json',
     'compound-faults.json', 'attack-result.json', 'principal-isolation.json',
     'role-permissions.json', 'source-restart.json', 'sensor-faults.json', 'sensor-person.json',
     'source_world.log', 'source_vla.log', 'scenario_vla.log', 'setup.log', 'gazebo.log',
@@ -51,7 +51,16 @@ def final_export(root, output, prior_failure=False):
                 except (OSError, ValueError):
                     previous = {}
                 previous = previous if isinstance(previous, dict) else {}
-                failed = report(revision=previous.get('source_revision'),
+                try:
+                    result = json.loads(read_evidence_text(output, 'result.json'))
+                except (OSError, ValueError):
+                    result = {}
+                result = result if isinstance(result, dict) else {}
+                household = (previous.get('scope') == 'household_hazard_preflight_simulation'
+                             or result.get('profile') == 'household_hazards')
+                partial = (result if result.get('profile') == 'household_hazards' else
+                           failed_household_result(output)) if household else None
+                failed = report(partial, revision=previous.get('source_revision'),
                                 run_id=previous.get('run_id'), failed=True)
                 write_checkpoint(output / 'verification-report.json',
                                  json.dumps(failed, ensure_ascii=False).encode())

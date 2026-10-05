@@ -16,12 +16,17 @@ async function showReport() {
 const canvas = $('visual');
 let sceneView = null;
 let renderError = '';
+let robotModelReady = false;
+let hazardAssetsReady = false;
+let originalAvailable = false;
 try {
   sceneView = createGazeboScene(canvas);
-  sceneView.ready?.catch(() => {
+  if (!sceneView.ready) robotModelReady = true;
+  sceneView.ready?.then(() => {robotModelReady = true; renderRunControl();}).catch(() => {
     renderError = '로봇 모델을 불러오지 못했습니다';
     $('scene-label').textContent = renderError;
     $('scene-note').textContent = '페이지를 새로고침하거나 Gazebo 원본을 확인해 주세요.';
+    renderRunControl();
   });
 }
 catch { renderError = '이 브라우저에서 3D 렌더링을 시작하지 못했습니다'; $('scene-label').textContent = renderError; }
@@ -39,6 +44,7 @@ let currentCheckpoint = null;
 let stepThrough = false;
 let manualStart = false;
 let stage = 0;
+let householdHazards = false;
 let stageOrder = [1, 2, 3, 4, 5, 6];
 const stageNames = ['준비', '사람 접근', '명령 제한', '팔 동작 취소', '접근 권한', '연결 종료', '명령 재전송'];
 function showStage(number) {
@@ -89,10 +95,11 @@ const phaseCopy = {
 function renderRunControl() {
   const button = $('start-simulation');
   button.hidden = !manualStart && !stepThrough;
-  button.disabled = failed || complete || !streamConnected || (!currentCheckpoint && (!ready || started));
+  const visualPending = householdHazards && !renderError && (!robotModelReady || !hazardAssetsReady) && !(originalAvailable && canvas.hidden);
+  button.disabled = failed || complete || !streamConnected || visualPending || (!currentCheckpoint && (!ready || started));
   button.textContent = failed ? '시뮬레이션 중단' : complete ? '시뮬레이션 완료' : currentCheckpoint ?
     '다음 단계 → ' + currentCheckpoint.next_label : started ? '장면 진행 중…' :
-      ready ? '▶ 시뮬레이션 시작' : '로봇 준비 중…';
+      ready && !visualPending ? '▶ 시뮬레이션 시작' : '로봇 준비 중…';
   $('scene-hold').hidden = failed || !currentCheckpoint;
 }
 
@@ -140,6 +147,7 @@ function chooseViewer(mode) {
   $('scene-label').textContent = original
     ? '실제 Gazebo 시뮬레이터 창'
     : renderError || 'Gazebo 측정값 · 3D 재구성';
+  renderRunControl();
   $('scene-note').textContent = original
     ? '실제 Gazebo 창입니다. 로봇과 사람 형상이 같은 물리 공간에서 움직입니다.'
     : 'Gazebo 위치·관절과 사람 형상을 재구성합니다. 청록 점은 라이다 측정입니다. 드래그로 회전 · 스크롤로 확대';
@@ -173,9 +181,26 @@ $('start-simulation').addEventListener('click', async () => {
 fetch('/viewer-config', { cache: 'no-store' })
   .then((response) => response.json())
   .then((config) => {
+    householdHazards = Boolean(config.household_hazards);
+    if (householdHazards) {
+      if (!sceneView?.loadHazards) hazardAssetsReady = true;
+      else sceneView.loadHazards().then(() => {hazardAssetsReady = true; renderRunControl();}).catch(() => {
+        renderError = '시험 물체를 불러오지 못했습니다';
+        $('scene-label').textContent = renderError;
+        $('scene-note').textContent = '텍스트 판정은 볼 수 있습니다. 3D 장면은 새로고침하거나 Gazebo 원본을 확인해 주세요.';
+        renderRunControl();
+      });
+      const names = ['준비', '사람 공간', '열원', '전기 기기', '물', '세정제 혼합', '추락 공간'];
+      stageNames.splice(0, stageNames.length, ...names);
+      for (let i=1;i<=6;i++) $('stage-'+i).lastChild.textContent = ' '+names[i];
+      document.querySelector('h1').textContent = '생활 위험 검증';
+      document.querySelector('.workspace-intro').textContent = '위험 경로는 차단하고, 정상 경로는 허용하는지 한 장면씩 확인하세요.';
+      document.querySelector('.honesty').textContent = 'Gazebo 실제 관절·물체 좌표를 표시합니다. 물체 종류, 전원·열원 상태, 용기 내용물은 신뢰된 시험 데이터입니다. 부착과 내용물 이전은 시험 연출이며 실제 파지·인지·화학 반응·사람 밀기 방지를 입증하지 않습니다. 기존 침투 방어 검증은 별도 모드입니다.';
+      $('hazard-fixtures').hidden = false;
+    }
     stepThrough = Boolean(config.step_through);
     manualStart = Boolean(config.manual_start);
-    stageOrder = config.attack_probes ? config.secured_gazebo ? [1, 2, 3, 4, 5, 6] :
+    stageOrder = householdHazards ? [1,2,3,4,5,6] : config.attack_probes ? config.secured_gazebo ? [1, 2, 3, 4, 5, 6] :
       [1, 2, 3, 5, 4, 6] : [1, 2, 3, 5];
     showStage(stage);
     $('attack-lab').hidden = !config.attack_probes;
@@ -194,6 +219,7 @@ fetch('/viewer-config', { cache: 'no-store' })
       $('step-two').textContent = '연결되면 자동 시작';
       $('start-help').textContent = '브라우저가 연결되면 자동으로 시작합니다.';
     }
+    originalAvailable = Boolean(config.gazebo_gui);
     if (!config.gazebo_gui) return;
     $('viewer-tabs').hidden = false;
     $('gazebo-gui').src = 'http://' + window.location.hostname +
@@ -221,7 +247,23 @@ stream.onmessage = (event) => {
   let row;
   try { row = JSON.parse(event.data); } catch { return; }
   if (failed) return;
-  if (row.kind === 'telemetry') {
+  if (row.kind === 'hazard_scene') {
+    sceneView?.setHazardScene(row);
+    showStage(row.stage);
+    $('hazard-context').textContent = row.title+' · 기기/물체 상태: 시험 입력';
+    $('hazard-contents').textContent = row.case === 'chemicals' ?
+      '용기 이력: '+(row.contents?.length ? '표백 성분 이동 완료 → 성분 유지' : '빈 용기') +
+      ' · 동일 병 모형의 시험 종류: '+(row.item_kind === 'ammonia' ? '암모니아 성분' : '표백 성분')+' (주입 데이터)' : '';
+  } else if (row.kind === 'hazard_decision') {
+    const blocked = row.allowed === false;
+    verdict(blocked ? 'block' : 'done', blocked ? '차단 · 계획 미전달' : '허용 · 측정 이동 확인');
+    sceneView?.setBlocked(blocked);
+    sceneAlert(blocked ? '위험 경로 → 명령 전달 차단' : '정상 경로 대조', blocked ? 'command' : 'measured');
+    $('phase').textContent = row.label;
+    $('detail').textContent = blocked ? 'Rust 3D 검사에서 위험 공간과의 접촉을 거부했습니다. 팔 관절 정지 상태를 측정했습니다.' :
+      '같은 위험 공간을 유지하면서 다른 경로를 검사합니다. 팔 움직임은 Gazebo 측정값입니다.';
+    addEvent(row.label,row.sim_ms);
+  } else if (row.kind === 'telemetry') {
     if (!validTelemetry(row)) {
       badge('waiting', '측정값 오류 · 마지막 정상 장면 유지');
       return;
@@ -370,14 +412,14 @@ stream.onmessage = (event) => {
     const passed = row.report_status === 'passed';
     badge(passed ? 'complete' : 'offline', passed ? '실험 완료' : '실험 결과 확인');
     $('phase').textContent = passed ? '실시간 실험 완료' : '실험이 끝났습니다';
-    $('detail').textContent = passed ?
+    $('detail').textContent = householdHazards ? '6개 위험 경로 차단과 정상 경로 이동, 정보 누락·지연 거부 결과는 리포트에서 확인하세요.' : passed ?
       Object.keys(row.result.attack_probes || {}).length ?
         'Gazebo 정지 동작과 공격 검증이 완료됐습니다. 아래 적용 범위를 확인해 주세요.' :
         '바퀴 정지, 팔 거부·취소, 게이트 종료 후 데드맨 정지가 검증됐습니다.' :
       '결과 파일에서 세부 검증 상태를 확인해 주세요.';
     addEvent(passed ? '검증 결과 통과' : '검증 결과 확인 필요', row.sim_ms);
     verdict(passed ? 'done' : 'waiting', passed ? '검증 통과' : '결과 확인 필요');
-    $('next-step').textContent = '다시 보려면 터미널에서 ./haetae-demo restart 를 실행하세요.';
+    $('next-step').textContent = householdHazards ? '다시 보려면 ./haetae-demo hazards 를 실행하세요.' : '다시 보려면 터미널에서 ./haetae-demo restart 를 실행하세요.';
     stream.close();
   }
 };

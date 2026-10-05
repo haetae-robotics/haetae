@@ -35,6 +35,11 @@ for pid in "$xvfb_pid" "$x11vnc_pid" "$websockify_pid"; do
   fi
 done
 
+if [[ ${HAETAE_DEMO_PROFILE:-reference} == household ]]; then
+  exec python3 ros/gazebo/run_reference.py bin/haetae --household-hazards \
+    --live-port 8765 --live-bind 0.0.0.0 --gazebo-gui --wait-for-viewer \
+    --manual-start --step-through --secure-graph --live-hold-seconds 3600 --out /out
+fi
 exec python3 ros/gazebo/run_reference.py bin/haetae \
   --live-port 8765 --live-bind 0.0.0.0 --gazebo-gui \
   --wait-for-viewer --manual-start --step-through --attack-probes --secure-graph --compound-repeat 6 \
