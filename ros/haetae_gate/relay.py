@@ -6,7 +6,7 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import TwistStamped
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -77,7 +77,10 @@ class Relay(Node):
 def main():
     rclpy.init()
     node = Relay()
-    executor = MultiThreadedExecutor(num_threads=2)
+    # Action execution awaits rclpy futures rather than blocking. The
+    # reentrant action group lets cancellation/client responses interleave
+    # on this spin thread without worker-pool dispatch handoffs.
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
         executor.spin()
