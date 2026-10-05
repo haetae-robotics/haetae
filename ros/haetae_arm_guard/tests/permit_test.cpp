@@ -44,6 +44,7 @@ int main()
   auto command = token(nonce, 3, "command");
   check(admit(command, "command"), "fresh exact command");
   check(!admit(command, "command"), "replay rejected and locks");
+  check(guard.grant().seq == 0, "rejection clears stale grant across separate reads");
   check(!admit(token(nonce, 4, "command"), "command"), "fresh command cannot rearm a latch");
   check(admit(token(nonce, 5, "reset"), "reset", true), "fresh reset after rejection");
   auto altered = token(nonce, 6, "command"); altered.back() = altered.back() == '0' ? '1' : '0';
@@ -55,6 +56,7 @@ int main()
   check(!admit(token(nonce, 11, "reset", 1000000000, 2000000001), "reset", true), "future wall timestamp");
   check(admit(token(nonce, 12, "reset"), "reset", true), "reset for wall expiry");
   check(!guard.fresh(1000000000, 2200000000), "paused simulation still expires");
+  check(guard.grant().seq == 0, "expiry clears stale grant");
   check(!admit(token(nonce, 13, "command", 1000000000, 2200000000), "command", false, 1000000000, 2200000000),
     "recovery cannot revive movement");
   check(admit(token(nonce, 14, "reset"), "reset", true), "reset for sim expiry");

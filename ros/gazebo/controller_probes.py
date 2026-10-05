@@ -28,8 +28,17 @@ from role_isolation import fresh_fixture, UIDS
 
 def exercise(world, root, binary, roles, processes, start, stop, command, wait_for, env):
     """Never invoked unless the ordinary authorization process is already gone."""
-    if "gate" in processes or abs(world.speed()) >= .03:
-        raise AssertionError("permit probes require measured stop and no live authorizer")
+    if "gate" in processes:
+        raise AssertionError("permit probes require no live authorizer")
+    def stopped():
+        joint = world.joint
+        age = time.monotonic()
+        return (joint is not None and 0 <= age-world.joint_received < .1
+                and 0 <= age-world.odom_received < .1 and abs(world.speed()) < .03
+                and all(j in joint.name and joint.name.index(j) < len(joint.velocity)
+                        and math.isfinite(joint.velocity[joint.name.index(j)])
+                        and abs(joint.velocity[joint.name.index(j)]) < .03 for j in ARM_JOINTS))
+    wait_for(stopped, 2, processes, "fresh measured wheel and arm stop before relay replacement")
     relay = processes.pop("relay")
     stop(relay, force=True)
     attacker, log = start([sys.executable, str(REPO / "ros/gazebo/controller_attack.py")],
@@ -139,6 +148,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         proposal_id = 0
     def reset():
         nonlocal reset_id
+        wait_for(stopped, 2, processes, "fresh measured wheel and arm stop before maintenance reset")
         new_issuer()
         previous = {target: guard(target).get("nonce") for target in ("base", "arm")}
         reset_id += 1
@@ -161,8 +171,6 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
               "heartbeat": token("arm", "reset", IDLE, sim, wall, budget(step, sim))})
         wait_for(lambda: not guard("base").get("holding", True) and not guard("arm").get("holding", True),
             2, processes, "explicit signed controller reset")
-    def stopped():
-        return abs(world.speed()) < .03 and all(abs(world.joint.velocity[list(world.joint.name).index(j)]) < .03 for j in ARM_JOINTS)
     try:
         resetter, reset_log = start([sys.executable, str(REPO / "ros/gazebo/controller_reset.py"), "--stdio"],
             root, "controller_reset", processes, env, input_pipe=True)

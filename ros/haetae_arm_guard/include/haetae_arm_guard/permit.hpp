@@ -107,7 +107,7 @@ class PermitGuard
   {
     if (!locked_ && (sim < 0 || wall < 0 || static_cast<uint64_t>(sim) < grant_.sim ||
       static_cast<uint64_t>(wall) < grant_.wall || static_cast<uint64_t>(sim) >= grant_.sim_end ||
-      static_cast<uint64_t>(wall) >= grant_.wall_end)) {locked_ = true; ++generation_;}
+      static_cast<uint64_t>(wall) >= grant_.wall_end)) {locked_ = true; grant_ = {}; ++generation_;}
     return !locked_;
   }
 public:
@@ -165,7 +165,7 @@ public:
       else {if (reset) {++generation_;} locked_ = false; grant_ = next;}
       return true;
     } catch (const std::exception & e) {
-      locked_ = true; ++generation_; ++rejected_;
+      locked_ = true; grant_ = {}; ++generation_; ++rejected_;
       if (!stop) {++rejected_motion_;}
       reason_ = e.what(); return false;
     }
@@ -176,11 +176,11 @@ public:
   }
   void stop()
   {
-    std::lock_guard<std::mutex> lock(mutex_); locked_ = true; ++generation_;
+    std::lock_guard<std::mutex> lock(mutex_); locked_ = true; grant_ = {}; ++generation_;
   }
   void reject()
   {
-    std::lock_guard<std::mutex> lock(mutex_); locked_ = true; ++generation_; ++rejected_; ++rejected_motion_;
+    std::lock_guard<std::mutex> lock(mutex_); locked_ = true; grant_ = {}; ++generation_; ++rejected_; ++rejected_motion_;
   }
   std::string nonce() {std::lock_guard<std::mutex> lock(mutex_); return nonce_;}
   uint64_t generation() {std::lock_guard<std::mutex> lock(mutex_); return generation_;}

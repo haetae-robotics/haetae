@@ -90,6 +90,10 @@ requires a new explicit zero/stop that the Rust owner accepted before rearming.
 Fresh traffic or renewal alone cannot unlock either controller. Stop packets
 cannot authorize motion. The reference uses mutexes and OpenSSL; physical stop
 timing, scheduling bounds and worst-case processing costs are unqualified.
+An update that already sampled a valid grant can finish its current control
+cycle when rejection races with the write. Locking clears stored grants and
+the following update holds/zeros; this is not an instantaneous callback stop
+or an atomic hardware cutoff. The runtime tests measure the resulting stop.
 
 Locally generated `arm-stop` and exact zero `base-stop` revocations use the
 current clocks of that new locking operation, including during asynchronous
