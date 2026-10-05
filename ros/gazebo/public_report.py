@@ -51,7 +51,7 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
               all(mapping(principals.get(uid)).get(flag) is True for flag in flags) and
               all(mapping(mapping(principals.get(uid)).get("denied")).get(kind) is True
                   for kind in ("tcp", "unix", "ipv6", "packet"))
-              for uid in ("2001", "2002", "2003", "2004", "65534")))
+              for uid in ("2001", "2002", "2003", "2004", "2005", "65534")))
     attacks = mapping(result.get("attack_probes"))
     for name, title in (("direct", "ROS 바퀴 직접 명령 차단"), ("world", "ROS 사람 정보 위조 차단"),
                         ("replay", "명령 재전송 거부 · 별도 실행기"), ("signature", "서명 변조 거부 · 별도 실행기")):
@@ -86,6 +86,24 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
     check("base_deadman", "게이트 종료 뒤 측정된 바퀴 정지", "gate_kill_to_base_stop_wall_ms" in result,
           within(result.get("gate_kill_to_base_stop_wall_ms"), 3000),
           {"stopped_observation_wall_ms": result.get("gate_kill_to_base_stop_wall_ms")})
+    permits = mapping(result.get("controller_permits"))
+    permit_checks = mapping(permits.get("checks"))
+    expected = {"base_positive", "arm_positive", "base_expiry", "arm_expiry"} | {
+        target + "_" + case for target in ("base", "arm")
+        for case in ("unsigned", "altered", "signature", "replay", "delay", "target")}
+    check("controller_permits", "바퀴·팔 제어기의 동작별 허가 검사 · 침해된 전달자 계정", bool(permits),
+          permits.get("ok") is True and permits.get("attacker_uid") == 2005 and
+          permits.get("scope") == "gazebo_exact_action_permits_with_compromised_relay_uid" and
+          set(permit_checks) == expected and all(mapping(row).get("ok") is True for row in permit_checks.values()) and
+          (number(mapping(permit_checks.get("base_positive")).get("moved_m")) or 0) > .03 and
+          (number(mapping(permit_checks.get("arm_positive")).get("moved_rad")) or 0) > .08 and
+          all(mapping(permit_checks.get(target + "_expiry")).get("old_goal_did_not_resume") is True
+              for target in ("base", "arm")) and
+          all(mapping(permit_checks.get(target + "_" + case)).get("controller_rejection_observed") is True and
+              mapping(permit_checks.get(target + "_" + case)).get("recovery_did_not_rearm") is True and
+              within(mapping(permit_checks.get(target + "_" + case)).get("drift"), .02)
+              for target in ("base", "arm") for case in ("unsigned", "altered", "signature", "replay", "delay", "target")),
+          {"checks": len(permit_checks)})
     status = ("failed" if failed or (result and result.get("ok") is not True) or
               any(row["status"] == "failed" for row in checks) else
               "passed" if all(row["status"] == "passed" for row in checks) else "incomplete" if completed else "pending")
@@ -93,7 +111,7 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
             "source_revision": revision if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision) else "unknown",
             "run_id": run_id if isinstance(run_id, str) and re.fullmatch(r"[a-z0-9_-]{1,64}", run_id) else "unknown",
             "notice": "시뮬레이터 평가용 알파입니다. 실물 로봇의 침해 방지·안전 인증을 입증하지 않습니다.",
-            "trust": "신뢰된 root·호스트·시뮬레이터·인지 입력·컨트롤러와 게이트의 정당한 제어 권한은 보호 범위 밖입니다.",
+            "trust": "root·호스트·시뮬레이터·인지 입력·컨트롤러·승인 서비스는 신뢰합니다. 중간 전달자 계정의 명령 변조는 별도로 시험합니다.",
             "evidence": "이 리포트는 로컬 실행의 서명되지 않은 요약입니다. 원본 로그와 CI 증거는 별도로 확인하세요.",
             "checks": checks}
 
@@ -169,7 +187,7 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
     return {"schema_version":1,"scope":"household_hazard_mandatory_gate_simulation","status":"failed" if failed or result.get("ok") is not True or any(row["status"]=="failed" for row in checks) else "passed" if passed else "incomplete",
             "source_revision":revision if isinstance(revision,str) and re.fullmatch(r"[a-f0-9]{40}",revision) else "unknown",
             "run_id":run_id if isinstance(run_id,str) and re.fullmatch(r"[a-z0-9_-]{1,64}",run_id) else "unknown","checks":checks,
-            "notice":"중앙 Rust 게이트의 필수 생활 위험 검사 실험입니다. 최종 제어기 승인 검증·실물 보호·인지·파지·화학 반응·사람 밀기 방지는 미검증입니다.",
+            "notice":"중앙 Rust 게이트의 필수 생활 위험 검사 실험입니다. 가상 팔 제어기는 동작별 허가를 검사합니다. 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 미검증입니다.",
             "trust":"root 소유 시험 어댑터와 주입된 물체·기기 상태를 신뢰합니다. 좌표와 관절은 Gazebo 측정입니다.",
             "evidence":"서명되지 않은 로컬 요약입니다. 기존 침투 방어·독립 정지 시험은 이 프로필에서 통과로 집계하지 않습니다."}
 

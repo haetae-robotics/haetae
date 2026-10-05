@@ -22,6 +22,11 @@ def main():
         # An authorized diagnostic route proves DDS matching without adding
         # a second live actuator writer and correctly tripping the Hold latch.
         allowed = node.create_publisher(String, "/haetae_gate/state", 1)
+    elif role == "relay":
+        forbidden = ["/haetae_gate/signed/world", "/haetae_gate/signed/fault", "/haetae_gate/signed/vla",
+                     "/haetae_authorized/cmd_vel", "/haetae_authorized/heartbeat",
+                     "/diff_drive_base_controller/guard_state", "/joint_trajectory_controller/guard_state"]
+        allowed = node.create_publisher(String, "/haetae_gate/heartbeat", 1)
     elif role in ("vla", "proposal"):
         forbidden = ["/haetae_input/world", "/haetae_input/fault", "/haetae_gate/signed/world",
                      "/haetae_gate/signed/fault", "/haetae_gate/heartbeat",
@@ -45,7 +50,7 @@ def main():
             denied[topic] = False
         except Exception:
             denied[topic] = True
-    if role != "gate":
+    if role not in ("gate", "relay"):
         try:
             ActionClient(node, FollowJointTrajectory, "/joint_trajectory_controller/follow_joint_trajectory")
             denied["arm_action"] = False

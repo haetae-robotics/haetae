@@ -27,6 +27,7 @@ class NodeBoundaryTest(unittest.TestCase):
         g = self.gate = Gate.__new__(Gate)
         g.failed = False
         g.signer = None
+        g.permits = None
         g.arm_goal = None
         g.arm_goal_future = object()
         g.arm_goal_deadline = None

@@ -1,4 +1,9 @@
 <library path="haetae_arm_guard">
+  <class name="haetae_arm_guard/PermitDiffDriveController"
+    type="haetae_arm_guard::PermitDiffDriveController"
+    base_class_type="controller_interface::ChainableControllerInterface">
+    <description>Exact signed twist and independent expiry at wheel command output.</description>
+  </class>
   <class name="haetae_arm_guard/LeaseTrajectoryController"
     type="haetae_arm_guard::LeaseTrajectoryController"
     base_class_type="controller_interface::ControllerInterface">

@@ -7,6 +7,27 @@ from public_report import report, render_report
 
 
 class PublicReportTest(unittest.TestCase):
+    def test_permit_summary_needs_motion_and_every_negative_controller_observation(self):
+        cases={target+'_'+case:{'ok':True,'controller_rejection_observed':True,
+                               'recovery_did_not_rearm':True,'drift':0.}
+               for target in ('base','arm') for case in ('unsigned','altered','signature','replay','delay','target')}
+        cases.update({'base_positive':{'ok':True,'moved_m':.04},'arm_positive':{'ok':True,'moved_rad':.1},
+                      'base_expiry':{'ok':True,'old_goal_did_not_resume':True},
+                      'arm_expiry':{'ok':True,'old_goal_did_not_resume':True}})
+        value={'controller_permits':{'ok':True,'scope':'gazebo_exact_action_permits_with_compromised_relay_uid',
+                                    'attacker_uid':2005,'checks':cases}}
+        def check():
+            return next(row for row in report(value)['checks'] if row['id']=='controller_permits')['status']
+        self.assertEqual(check(),'passed')
+        cases['base_positive'].pop('moved_m')
+        self.assertEqual(check(),'failed')
+        cases['base_positive']['moved_m']=.04
+        cases['arm_altered']['controller_rejection_observed']=False
+        self.assertEqual(check(),'failed')
+        cases['arm_altered']['controller_rejection_observed']=True
+        cases.pop('arm_signature')
+        self.assertEqual(check(),'failed')
+
     def test_absent_partial_or_forged_summary_is_never_a_pass(self):
         self.assertEqual(report()["status"], "pending")
         for result in ({}, {"ok": True}, {"ok": True, "status": "passed"}, [], {"ok": 1}):

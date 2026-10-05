@@ -15,8 +15,8 @@
 ## 현재 구현
 
 - Rust 강제 실행기와 서명된 역할 입력, ROS2 Jazzy/SROS2 권한, Gazebo Harmonic ROSbot XL + OpenMANIPULATOR-X.
-- 팔 제어기에 독립적인 250ms 시뮬레이션/벽시계 임대가 있다. kill·stall·delay 뒤 실제 관절 위치를 유지하고 오래된 동작을 버린다.
-- 게이트/인지 서명/VLA 서명/제안의 UID2001..2004, 개인 키 저장소와 DDS 권한을 분리한다. root 제공자·인지 입력·컨트롤러·호스트 및 게이트의 정당한 제어 권한은 신뢰한다.
+- 가상 바퀴·팔 제어기는 원래 발급 시각에서 최대200ms인 독립 시뮬레이션/벽시계 허가를 검사한다. kill·stall·delay 뒤 실제 관절 위치를 유지하고 오래된 동작을 버린다.
+- 승인 서비스/인지 서명/VLA 서명/제안/전달자의 UID2001..2005, 개인 키 저장소와 DDS 권한을 분리한다. root 제공자·인지 입력·컨트롤러·호스트 및 승인 서비스는 신뢰한다. 전달자는 승인 키와 Rust pipe를 갖지 않는다.
 - 사람은 native Gazebo 기하 형상이다. 화면은 관측된 몸통 좌표를 따르고, 정지 판단은 실제 가상 GPU 라이다 표면 측정을 사용한다. 원하는 사람 좌표를 게이트 입력으로 직접 쓰지 않는다.
 - root 소유 컨테이너 방화벽과 상속되는 seccomp/NNP 필터가 비-root 역할의 통신을 로컬 DDS UDP로 제한한다. 실제 Gazebo pose 서비스 및 UDP 수신기 시험은 root 정상 대조군과 함께 확인한다. NET_ADMIN/필터 지원이 없으면 실행을 거부한다.
 - 40/80/100Hz 제안 압력과 센서 끊김·인지 서명 지연을 겹치는 복합 시험을 반복한다. 엔진의 실제 승인/거부, 400ms 이내 0출력, 실제 정지, 회복 뒤 자동 재가동 없음이 필수다. 서명 카운터만으로 수신 성공을 판단하지 않는다.
@@ -25,9 +25,9 @@
 - 시뮬레이터 평가용 알파 운영 명령, 공유용 허용 필드 리포트, CI 소스/검증 후보 패키지를 제공한다. 실물 보호나 인증 버전이 아니다.
 - 공식 UNO R4 Minima를 USB만 연결했고 사용자 승인으로 Rosetta를 설치했다. main `1b8a904`의 H1 LED 펌웨어를 업로드해 USB 실물 6개 시험을 통과했다. 갱신 없는 독립 잠금 USB 관측은204.2ms이며 호스트 중지/복구 뒤 자동 재가동이 없었다. USB 소프트웨어 상태 증거이고 GPIO·WDT reset·모터 정지·실물 인지는 미검증이다. H1은 USB writer를 신뢰한다. 후속 [H2 controller permits](docs/controller-permits.md)는 서명된 OFF-only 연결과 매 LED 명령 인증을 보드에서 검사하고 별도 승인 서비스를 제공한다. 실제 ROS arm/base M3·실물 모터 보호와 동일시하지 않는다.
 
-- `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 유효하게 서명된 6개 위험 명령과 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 최종 controller permit, 영속 effect history, 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 아직 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
+- `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 유효하게 서명된 6개 위험 명령과 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 영속 effect history, 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 아직 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
 
-- H2 UNO R4 Minima의 인증 허가·런타임 USB 경로 차단은 USB 실물 13개 시험, native 17개 시험과 Linux 역할 격리 시험을 통과했다. 최종 커밋별 리뷰·CI·머지 상태는 [PR19](https://github.com/haetae-robotics/haetae/pull/19)와 [H2 문서](docs/controller-permits.md)의 좁은 범위를 따른다. 보드에는 H2 강화 프로필을 올렸으며 이후 재업로드는 물리 RESET 진입이 필요하다. 개인 키·생성 헤더·장치 이미지는 로컬에만 있고 공개하지 않는다. GPIO·WDT reset·전원 차단·모터·실물 인지·secure boot 및 ROS arm/base M3는 미검증이다.
+- H2 UNO R4 Minima의 인증 허가·런타임 USB 경로 차단은 USB 실물 13개 시험, native 17개 시험과 Linux 역할 격리 시험을 통과했다. 최종 커밋별 리뷰·CI·머지 상태는 [PR19](https://github.com/haetae-robotics/haetae/pull/19)와 [H2 문서](docs/controller-permits.md)의 좁은 범위를 따른다. 보드에는 H2 강화 프로필을 올렸으며 이후 재업로드는 물리 RESET 진입이 필요하다. 개인 키·생성 헤더·장치 이미지는 로컬에만 있고 공개하지 않는다. GPIO·WDT reset·전원 차단·모터·실물 인지·secure boot는 미검증이다. 별도 [M3 Gazebo 허가](docs/gazebo-controller-permits.md)는 실제 가상 바퀴·팔의 최종 제어기에서 동작별 서명과 임대를 검사한다. 실물 MCU/모터 보호 결과가 아니다.
 
 ## 실행
 

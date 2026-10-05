@@ -13,7 +13,7 @@ class GazeboSecurityPolicyTest(unittest.TestCase):
         root = ElementTree.parse(POLICY).getroot()
         enclaves = {row.attrib["path"]: row for row in root.findall("./enclaves/enclave")}
         self.assertEqual(set(enclaves), {"/haetae/sim", "/haetae/world",
-                                          "/haetae/gate", "/haetae/vla", "/haetae/vla_signer"})
+                                          "/haetae/gate", "/haetae/vla", "/haetae/vla_signer", "/haetae/relay"})
         vla = enclaves["/haetae/vla"]
         self.assertEqual([(row.attrib["ns"], row.attrib["node"])
                           for row in vla.findall("./profiles/profile")],

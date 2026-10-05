@@ -7,6 +7,7 @@ only from this node's SROS2 enclave, and independently stop when it dies.
 
 import json
 import os
+from pathlib import Path
 import sys
 import time
 
@@ -24,6 +25,7 @@ from bridge import (Bridge, BridgeFailure, StaleActuation, ExpiredActuation,
                     require_fresh_actuation, lease_renewable, reject_expired_actuation)
 from signing import Signer
 from proposals import InvalidProposal, base_action, arm_action
+from controller_permits import PermitSigner, IDLE, base_digest, arm_digest, explicit_rearm
 
 
 class HaetaeGate(Node):
@@ -37,6 +39,7 @@ class HaetaeGate(Node):
             "response_timeout_ms": 500, "max_actuation_response_ms": 50,
             "tick_hz": 20.0, "output_stamped": True,
             "heartbeat_topic": "", "signed_inputs_only": False,
+            "controller_key_path": "",
         }
         for key, value in defaults.items():
             self.declare_parameter(key, value)
@@ -61,11 +64,26 @@ class HaetaeGate(Node):
                 "--root-pubkey", param("root_pubkey")]
         self.bridge = Bridge(argv, int(param("response_timeout_ms")))
         self.output_stamped = param("output_stamped")
+        self.permits = PermitSigner(Path(param("controller_key_path"))) if param("controller_key_path") else None
+        self.permit_reset = False
+        self.permit_stop = True
+        self.permit_remaining_ns = 200_000_000
+        self.permit_sim_ns = 0
+        self.permit_wall_ns = 0
+        if self.permits:
+            if not self.output_stamped:
+                raise ValueError("controller permits require stamped output")
+            for target, topic in (("base", "/diff_drive_base_controller/guard_state"),
+                                  ("arm", "/joint_trajectory_controller/guard_state")):
+                self.create_subscription(String, topic,
+                    lambda msg, target=target: self.permits.observe(target, json.loads(msg.data)),
+                    QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL))
         if not isinstance(self.output_stamped, bool):
             raise ValueError("output_stamped must be a bool")
         self.command_pub = self.create_publisher(
             TwistStamped if self.output_stamped else Twist, "/cmd_vel", 1)
-        self.heartbeat_pub = (self.create_publisher(UInt64, param("heartbeat_topic"),
+        self.heartbeat_pub = (self.create_publisher(String if self.permits else UInt64, param("heartbeat_topic"),
                              QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
                               if param("heartbeat_topic") else None)
         self.state_pub = self.create_publisher(String, "~/state", QoSProfile(
@@ -121,6 +139,10 @@ class HaetaeGate(Node):
                                     "data": json.dumps(signed, separators=(",", ":"))})
 
     def _publish(self, step):
+        if self.permits:
+            self.permit_reset = explicit_rearm(step)
+            status = step.get("status") or {}
+            self.permit_stop = not status.get("armed") or status.get("mode") not in ("normal", "caution")
         self._publish_command(float(step["cmd"]["linear"]), float(step["cmd"]["angular"]))
         if step.get("arm"):
             arm = step["arm"]
@@ -132,7 +154,8 @@ class HaetaeGate(Node):
                 raise BridgeFailure("invalid arm output")
         if step.get("status") is not None:
             self.state_pub.publish(String(data=json.dumps({**step["status"],
-                "arm_controller_ready": self.arm_client.server_is_ready() if self.arm_joints else True})))
+                "arm_controller_ready": ((not self.permits or len(self.permits.challenges) == 2)
+                    and self.arm_client.server_is_ready()) if self.arm_joints else True})))
         if step.get("outcome") is not None:
             self.outcome_pub.publish(String(data=json.dumps(step["outcome"])))
             if "decision" in step["outcome"]:
@@ -146,6 +169,9 @@ class HaetaeGate(Node):
         goal = FollowJointTrajectory.Goal()
         goal.trajectory.joint_names = self.arm_joints
         goal.trajectory.header.stamp = self.get_clock().now().to_msg()
+        if self.permits:
+            goal.trajectory.header.stamp.sec, goal.trajectory.header.stamp.nanosec = divmod(
+                self.permit_sim_ns, 1_000_000_000)
         for point in points:
             p = JointTrajectoryPoint()
             p.positions = [float(v) for v in point["positions"]]
@@ -153,6 +179,9 @@ class HaetaeGate(Node):
             p.time_from_start.sec, p.time_from_start.nanosec = divmod(millis, 1000)
             p.time_from_start.nanosec *= 1_000_000
             goal.trajectory.points.append(p)
+        if self.permits:
+            self.permits.active_arm = arm_digest(goal.trajectory)
+            goal.trajectory.header.frame_id = self._permit("arm", "goal", self.permits.active_arm)
         self.cancel_requested = False
         self.arm_goal_deadline = time.monotonic() + 0.25
         self.arm_goal_future = self.arm_client.send_goal_async(goal)
@@ -179,7 +208,8 @@ class HaetaeGate(Node):
     def _on_arm_result(self, future):
         try:
             status = future.result().status
-            if self.cancel_requested and status != GoalStatus.STATUS_CANCELED:
+            if self.cancel_requested and status != GoalStatus.STATUS_CANCELED and not (
+                    self.permits and status == GoalStatus.STATUS_ABORTED):
                 raise BridgeFailure("arm did not report a cancelled result")
             if not self.cancel_requested and status != GoalStatus.STATUS_SUCCEEDED:
                 raise BridgeFailure("arm goal did not succeed")
@@ -187,6 +217,8 @@ class HaetaeGate(Node):
             self.arm_result_future = None
             self.arm_cancel_deadline = None
             self.cancel_requested = False
+            if self.permits:
+                self.permits.active_arm = IDLE
         except Exception as exc:
             self._abort(exc)
 
@@ -194,12 +226,15 @@ class HaetaeGate(Node):
         try:
             response = future.result()
             self.arm_cancel_future = None
-            if not response.goals_canceling and self.arm_goal is not None:
+            if not response.goals_canceling and self.arm_goal is not None and not self.permits:
                 raise BridgeFailure("arm controller rejected cancellation")
         except Exception as exc:
             self._abort(exc)
 
     def _cancel_arm(self):
+        if self.permits and "arm" in self.permits.challenges:
+            self.heartbeat_pub.publish(String(data=self._permit("arm", "stop", IDLE)))
+            self.permits.active_arm = IDLE
         if self.arm_goal is None and self.arm_goal_future is None:
             return
         self.cancel_requested = True
@@ -245,9 +280,33 @@ class HaetaeGate(Node):
             twist = command
         twist.linear.x = linear
         twist.angular.z = angular
+        if self.permits:
+            if "base" not in self.permits.challenges:
+                if linear or angular:
+                    raise BridgeFailure("base challenge unavailable")
+                return
+            command.header.stamp.sec, command.header.stamp.nanosec = divmod(self.permit_sim_ns, 1_000_000_000)
+            command.header.frame_id = self._permit("base", "reset" if self.permit_reset else
+                "stop" if linear == 0 and angular == 0 and self.permit_stop else "command", base_digest(command))
         self.command_pub.publish(command)
 
+    def _permit(self, target, kind, digest):
+        return self.permits.sign(target, kind, digest, self.permit_sim_ns,
+                                 self.permit_remaining_ns, self.permit_wall_ns)
+
+    def _heartbeat(self, started_ros_ms):
+        if self.permits:
+            if "arm" not in self.permits.challenges:
+                return
+            self.heartbeat_pub.publish(String(data=self._permit("arm",
+                "reset" if self.permit_reset else "lease", IDLE if self.permit_reset else self.permits.active_arm)))
+        else:
+            self.heartbeat_pub.publish(UInt64(data=started_ros_ms))
+
     def _publish_zero(self):
+        if self.permits:
+            self.permit_reset = False
+            self.permit_stop = True
         self._publish_command(0.0, 0.0)
 
     def _abort_tick(self):
@@ -261,6 +320,9 @@ class HaetaeGate(Node):
         try:
             started = time.monotonic()
             started_ros_ms = self._now()
+            if self.permits:
+                self.permit_sim_ns = started_ros_ms * 1_000_000
+                self.permit_wall_ns = time.monotonic_ns()
             step = callback()
             now_ros_ms = self._now()
             elapsed_ms = (-1 if now_ros_ms < started_ros_ms else max(
@@ -268,12 +330,19 @@ class HaetaeGate(Node):
             require_fresh_actuation(
                 step, elapsed_ms, now_ros_ms,
                 self.world_max_age_ms, self.max_actuation_response_ms)
+            if self.permits:
+                status = step.get("status") or {}
+                remaining_ms = min(200, self.world_max_age_ms - (status.get("world_age_ms") or 0))
+                if status.get("active_expires_ms") is not None:
+                    remaining_ms = min(remaining_ms, status["active_expires_ms"] - started_ros_ms)
+                self.permit_remaining_ns = max(1, remaining_ms) * 1_000_000
             self._publish(step)
             if (self.heartbeat_pub and not self.cancel_requested and not self.failed
+                    and (not self.permits or self.arm_goal_future is None)
                     and lease_renewable(step, elapsed_ms,
                     self.world_max_age_ms, self.max_actuation_response_ms)):
                 # Use the request's clock, never restamp a delayed response.
-                self.heartbeat_pub.publish(UInt64(data=started_ros_ms))
+                self._heartbeat(started_ros_ms)
         except ExpiredActuation as exc:
             # Expiry at the response boundary is a normal loss of authority.
             # Stop before any further IPC; reject clears engine goals/arming.

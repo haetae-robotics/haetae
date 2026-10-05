@@ -29,7 +29,8 @@ does not prove a physical transfer or establish general task safety.
 ## Execution authority inventory
 
 This inventory describes the isolated reference container. Host/root, simulator,
-trusted observer, provisioning and the ROS gateway remain trusted. The SROS2
+trusted observer, provisioning and the Rust owner/permit authorizer remain trusted.
+The separate ROS relay is untrusted in the [M3 Gazebo reference](gazebo-controller-permits.md). The SROS2
 policy is [gazebo.policy.xml](../ros/gazebo/gazebo.policy.xml); controller setup
 is [controllers.yaml](../ros/gazebo/controllers.yaml).
 
@@ -39,15 +40,15 @@ is [controllers.yaml](../ros/gazebo/controllers.yaml).
 | `/haetae_gate/signed/vla` | VLA signer only. A valid signature authenticates an untrusted proposal; it does not approve the action. Missing/changed semantic references still fail. |
 | `/haetae_input/world`, `/haetae_gate/signed/world` | Trusted perception/observer and separate World signer. Household facts enter only inside the typed signed world snapshot. The household lab injects item/device/content facts as test fixtures. |
 | `/haetae_input/fault`, `/haetae_gate/signed/fault` | Separate Fault role key. Faults can raise incident mode. The VLA key cannot authenticate this role or lower the mode. |
-| Rust `enforce --stdio` | Authenticates roles and root-bound policy, checks input/replay counters and mandatory household conditions, then emits zero/cancel or the exact approved trajectory. A durable counter checkpoint precedes positive output. Its transport clock is supplied by the trusted gateway. |
-| `/diff_drive_base_controller/cmd_vel` | Gateway publication authority; VLA roles cannot write directly. Central household policy forbids positive base output. The controller's independent 250 ms command timeout remains; it does not verify a Rust action permit. |
-| `/joint_trajectory_controller/follow_joint_trajectory` | Gateway may call this action. The controller checks goal freshness and its independent lease, while the gateway executes Rust output. It does not yet authenticate a permit for the exact trajectory. |
-| `/joint_trajectory_controller/joint_trajectory` | Controller topic ingress also checks freshness/lease. Untrusted VLA/signer enclaves lack direct publication authority. Trusted simulator/root can change the graph and remains outside the protected attacker scope. |
-| `/haetae_gate/heartbeat` | Gateway publication authority. The controller checks freshness using ROS and steady clocks. The heartbeat is not a cryptographic, action-bound semantic approval. |
+| Rust `enforce --stdio` | The trusted authorizer owns this child, authenticates roles/root policy, enforces mandatory household conditions and signs only its bounded approved output. A durable counter checkpoint precedes positive output. The relay owns neither this pipe nor the permit key. |
+| `/diff_drive_base_controller/cmd_vel` | Relay publication authority, but the controller verifies the exact signed twist, activation nonce, sequence and dual-clock expiry before wheel output. Central household policy still forbids positive base motion. |
+| `/joint_trajectory_controller/follow_joint_trajectory` | Relay may call this action; the final controller verifies an exact signed full-joint trajectory and its independent permit lease. |
+| `/joint_trajectory_controller/joint_trajectory` | Disabled ingress: delivery stops the protected arm. Trusted root/controller graph reconfiguration remains outside the attacker scope. |
+| `/haetae_gate/heartbeat` | Relay forwards signed String permits; renewals bind the active trajectory digest and original expiry. An unsigned or generic heartbeat cannot authorize motion. |
 | `/gripper_hold_controller/joint_trajectory` and its action | Trusted simulator fixture holds the gripper. No model grasp path is exposed. This separate actuator is not protected by household semantic execution permits; actual manipulation remains disabled. |
-| `/controller_manager/*`, controller parameters/configuration | Trusted simulator/root authority provisions and switches controllers. VLA/signer roles lack manager authority. Gateway compromise and privileged graph reconfiguration are not covered by M1. |
+| `/controller_manager/*`, controller parameters/configuration | Trusted simulator/root authority pins verification keys and switches controllers. VLA/signer and relay roles lack manager authority; privileged graph reconfiguration is outside scope. |
 | Gazebo Transport `/world/empty/set_pose_vector`, `/world/empty/pose/info` | Trusted root lab/perception may place and observe fixtures. SROS2 does not secure Gazebo Transport. Separate UIDs, the container network guard and role sandbox restrict nonroot roles to the allowed local DDS network; host/root remain trusted. |
-| UNO USB/GPIO | H1 is a trusted-USB LED bench. Separate [H2 permits](controller-permits.md) authenticate an OFF-only connection and every exact LED action in the MCU. Neither is motor/household ingress; final ROS arm/base permits remain M3 work. |
+| UNO USB/GPIO | H1 is a trusted-USB LED bench. Separate [H2 permits](controller-permits.md) authenticate an OFF-only connection and every exact LED action in the MCU. The [M3 reference](gazebo-controller-permits.md) covers Gazebo arm/base ingress; neither result proves physical motor protection. |
 | Web controls | Start/advance the root-owned fixed lab scenarios. They do not select policy bytes, create signed observer facts or submit arbitrary model motion to the protected gate. |
 
 The relevant isolation implementation is
@@ -55,8 +56,8 @@ The relevant isolation implementation is
 [network_guard.py](../ros/gazebo/network_guard.py) and
 [role_sandbox.py](../ros/gazebo/role_sandbox.py). These are container boundaries,
 not a general host sandbox. Deployment must preserve them and the trusted
-gateway boundary. A compromised gateway still has controller command and
-heartbeat authority: defending that case requires M3.
+authorizer boundary. The M3 relay may drop traffic or force a stop, but it
+cannot sign new motion. Compromise of the Rust owner/authorizer is outside scope.
 
 ## Policy and startup requirements
 
@@ -230,9 +231,10 @@ The following remain unimplemented protection milestones:
 
 - **M2:** stable object identity, verified physical effects, a durable content/
   uncertainty ledger and restart-safe task consumption history.
-- **M3:** an isolated approval identity and an authenticated exact-action permit
-  verified by the final arm/base controller; defense against a compromised ROS
-  gateway or its heartbeat authority.
+- **M3 physical continuation:** the [Gazebo reference](gazebo-controller-permits.md)
+  adds an isolated signer and final arm/base exact-action verification against
+  relay command/renewal misuse. Separate-device clocks, physical controller
+  ingress and qualification remain unimplemented.
 - **M4:** full arm/tool geometry and measured stop envelopes under dynamic
   conditions and load; this increment only retains the bounded lab sphere.
 - **M5:** whole-task preconditions/effects, harmful sequences and verified safe

@@ -93,6 +93,7 @@ class GazeboWorld(Node):
         self.outcomes = []
         self.commands = []
         self.guard_states = []
+        self.base_guard_states = []
         self.attack_world_received = 0
         self.world_count = 0
         self.hazard_guard = None
@@ -107,6 +108,8 @@ class GazeboWorld(Node):
         self.create_subscription(TwistStamped, BASE_CONTROLLER_TOPIC, self._command, 10)
         self.create_subscription(String, "/haetae_gate/state", self._state, 10)
         self.create_subscription(String, "/haetae_gate/outcome", self._outcome, 10)
+        self.create_subscription(String, "/diff_drive_base_controller/guard_state",
+            lambda msg: self.base_guard_states.append((time.monotonic(), json.loads(msg.data))), 10)
         self.create_subscription(String, "/haetae_input/world" if isolated else "/haetae_gate/world", self._observe_world_attack, 10)
         self.create_subscription(String, "/joint_trajectory_controller/guard_state",
                                  lambda msg: self.guard_states.append((time.monotonic(), json.loads(msg.data))), 10)
@@ -357,6 +360,7 @@ def exercise_sensor_fault(world, processes, case, stop_report, roles=None):
     world.states.clear()
     world.outcomes.clear()
     wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and
+             world.base_guard_states and not world.base_guard_states[-1][1].get("holding", True) and
              sum(1 for _, row in world.outcomes if row.get("decision", {}).get("verdict") == "yun"
                  and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
              8, processes, "sensor fixture explicit rearm", action=lambda: world.propose_base(0.0))
@@ -532,10 +536,19 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         secure_graph=False, step_through=False, arm_fault=None, compound_repeat=0, output=None, household_hazards=False):
     root.mkdir(parents=True, exist_ok=True)
     fixture(root, binary, arm=True, arm_policy=arm_policy(), person_distance=PERSON_DISTANCE_M)
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    controller_seed = os.urandom(32)
+    (root / "controller.key").write_text(controller_seed.hex())
+    (root / "controller.key").chmod(0o600)
+    controller_public = Ed25519PrivateKey.from_private_bytes(controller_seed).public_key().public_bytes(
+        Encoding.Raw, PublicFormat.Raw).hex()
     params_path = root / "params.yaml"
     params = json.loads(params_path.read_text())
     params["haetae_gate"]["ros__parameters"].update({"use_sim_time": True,
-        "heartbeat_topic": "/haetae_gate/heartbeat"})
+        "heartbeat_topic": "/haetae_authorized/heartbeat",
+        "arm_action": "/haetae_gateway/follow_joint_trajectory",
+        "controller_key_path": str(root / "controller.key")})
     params_path.write_text(json.dumps(params))
     studio = ElementTree.parse(HERE / "studio.sdf")
     add_native_scene(studio.getroot().find("world"))
@@ -544,7 +557,10 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         add_fixtures(studio.getroot().find("world"))
     studio_path = root / "sensor-studio.sdf"
     studio.write(studio_path, encoding="UTF-8", xml_declaration=True)
-    controllers = HERE / "controllers.yaml"
+    # Root-provisioned public pin; never put the private seed in the URDF or export.
+    controllers = root / "controllers.yaml"
+    controllers.write_text((HERE / "controllers.yaml").read_text().replace(
+        "    type: haetae_arm_guard/", "    permit_public_key: " + controller_public + "\n    type: haetae_arm_guard/"))
     model = root / "reference_bot.urdf"
     model.write_text(resolve_meshes(command(["xacro", str(HERE / "rosbot_xl.urdf.xacro"),
                               "controllers_file:=" + str(controllers),
@@ -721,9 +737,13 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             world.proposal_pipe = driver.stdin
             logs.append(log)
 
+        _, log = start([sys.executable, str(REPO / "ros/haetae_gate/relay.py"),
+                       "--ros-args", "-p", "use_sim_time:=true"],
+                       root, "relay", processes, role_env("relay"), UIDS["relay"] if roles else None)
+        logs.append(log)
         _, log = start([sys.executable, str(REPO / "ros/haetae_gate/node.py"),
                         "--ros-args", "--params-file", str(params_path),
-                        "-r", "/cmd_vel:=" + BASE_CONTROLLER_TOPIC],
+                        "-r", "/cmd_vel:=/haetae_authorized/cmd_vel"],
                        root, "gate", processes, role_env("gate"), UIDS["gate"] if roles else None)
         logs.append(log)
         wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
@@ -975,7 +995,9 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                     person_distance=PERSON_DISTANCE_M)
             fault_params = json.loads((fault_root / "params.yaml").read_text())
             fault_params["haetae_gate"]["ros__parameters"].update({
-                "use_sim_time": True, "heartbeat_topic": "/haetae_gate/heartbeat"})
+                "use_sim_time": True, "heartbeat_topic": "/haetae_authorized/heartbeat",
+                "arm_action": "/haetae_gateway/follow_joint_trajectory",
+                "controller_key_path": str(root / "controller.key")})
             (fault_root / "params.yaml").write_text(json.dumps(fault_params))
             if roles:
                 fault_gate = roles.configure_gate(fault_root)
@@ -984,9 +1006,14 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                 fault_gate = fault_root
                 fault_params_path = fault_root / "params.yaml"
             world.states.clear()
+            # Explicit root test reset, at measured stop. New activation nonces
+            # prevent a restarted authorizer's sequence from reviving old work.
+            for controller in ("diff_drive_base_controller", "joint_trajectory_controller"):
+                for state in ("inactive", "active"):
+                    command([sys.executable, str(HERE / "controller_reset.py"), controller, state], root, env=gazebo_env)
             _, log = start([sys.executable, str(REPO / "ros/haetae_gate/node.py"),
                             "--ros-args", "--params-file", str(fault_params_path),
-                            "-r", "/cmd_vel:=" + BASE_CONTROLLER_TOPIC],
+                            "-r", "/cmd_vel:=/haetae_authorized/cmd_vel"],
                            fault_root, "gate", processes, role_env("gate"), UIDS["gate"] if roles else None)
             logs.append(log)
             wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
@@ -1038,7 +1065,15 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             for name in ("replay", "signature"):
                 world._emit("attack_result", attack=name, **attacks[name])
             (root / "attack-result.json").write_text(json.dumps(attacks, indent=2) + "\n")
+        controller_permits = None
+        if roles and attack_probes:
+            from controller_probes import exercise as exercise_controller_permits
+            if live:
+                world.marker("최종 제어기 허가 검사", detail="승인된 명령을 중간 전달자가 바꾸거나 다시 보내도 바퀴와 팔 제어기가 차단하는지 확인합니다.")
+            controller_permits = exercise_controller_permits(world, root, binary, roles, processes,
+                start, stop, command, wait_for, role_env("sim"))
         result = {"ok": all(row["blocked"] for row in attacks.values()),
+                  "controller_permits": controller_permits,
                   "source_revision": os.environ.get("HAETAE_REVISION", "unknown"),
                   "transport_isolation": transport_evidence,
                   "robot_model": MODEL_NAME,
