@@ -26,6 +26,7 @@ pub fn policy() -> Policy {
 pub fn world() -> WorldSnapshot {
     WorldSnapshot {
         stamp_ms: NOW,
+        semantic: None,
         robot: RobotState {
             pose: Point2::new(1.0, 1.0),
             yaw: None,
@@ -44,6 +45,7 @@ pub fn proposal(id: u64, source: Source, x: f64, y: f64, speed: f64) -> Inbound 
         id,
         source,
         timestamp_ms: NOW,
+        semantic: None,
         action: ActionKind::MoveTo {
             goal: Point2::new(x, y),
             speed,
@@ -68,6 +70,7 @@ pub fn stop(id: u64, source: Source) -> Inbound {
         id,
         source,
         timestamp_ms: NOW,
+        semantic: None,
         action: ActionKind::Stop,
     })
 }

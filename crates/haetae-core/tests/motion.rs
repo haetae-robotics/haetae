@@ -15,6 +15,7 @@ fn gate() -> Gate {
 fn world() -> WorldSnapshot {
     WorldSnapshot {
         stamp_ms: 1000,
+        semantic: None,
         robot: RobotState {
             pose: Point2::new(1.0, 1.0),
             yaw: Some(0.0),
@@ -39,6 +40,7 @@ fn proposal(action: ActionKind) -> ActionProposal {
         id: 1,
         source: Source::Vla,
         timestamp_ms: 1000,
+        semantic: None,
         action,
     }
 }

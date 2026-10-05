@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace as S
-from proposals import base_action, arm_action, InvalidProposal
+from proposals import base_action, arm_action, InvalidProposal, semantic_binding, semantic_frame, SEMANTIC_PREFIX
+import json
 
 
 def twist(x=0, y=0):
@@ -8,6 +9,22 @@ def twist(x=0, y=0):
 
 
 class ProposalTests(unittest.TestCase):
+    def test_semantic_references_never_contain_authoritative_facts(self):
+        binding = {"schema_version": 1, "world_revision": 1, "task_revision": 1,
+                   "task_id": "fixture", "step_id": "motion", "robot_id": "robot",
+                   "model_sha256": "a" * 64, "tool_id": "tool", "item_id": "item"}
+        self.assertEqual(semantic_binding(semantic_frame(binding)), binding)
+        self.assertIsNone(semantic_binding("base_link"))
+        for changed in ({**binding, "world_revision": True}, {**binding, "world_revision": 0},
+                        {**binding, "schema_version": 2}, {**binding, "item": "inert"},
+                        {**binding, "coverage_known": True}, {**binding, "task_id": " "},
+                        {**binding, "model_sha256": "A" * 64}):
+            with self.assertRaises(InvalidProposal):
+                semantic_binding(SEMANTIC_PREFIX + json.dumps(changed))
+        for text in ("[]", '{"task_id":"a","task_id":"b"}', "x" * 2049):
+            with self.assertRaises(InvalidProposal):
+                semantic_binding(SEMANTIC_PREFIX + text)
+
     def test_base_shapes(self):
         self.assertEqual(base_action(twist(), 200), {"type": "stop"})
         self.assertEqual(base_action(twist(.2), 200)["ttl_ms"], 200)

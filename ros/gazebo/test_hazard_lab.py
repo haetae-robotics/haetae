@@ -5,6 +5,9 @@ import tempfile
 from pathlib import Path
 from xml.etree import ElementTree as E
 import unittest
+import ast
+from types import SimpleNamespace
+from unittest import mock
 from hazard_lab import (
     Kinematics,
     fresh_sample,
@@ -16,6 +19,45 @@ from hazard_lab import (
     tracking_start_ms,
 )
 from public_report import report, failed_household_result
+
+
+class WorldPublicationTest(unittest.TestCase):
+    def test_absent_semantics_preserves_observations_but_failure_guard_blocks_them(self):
+        # Exercise the actual ROS callback without requiring ROS on the host.
+        tree = ast.parse(Path(__file__).with_name("run_reference.py").read_text())
+        node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "GazeboWorld")
+        method = next(n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "_publish_world")
+        import threading
+        import time
+        scope = {"time": time, "math": math, "json": json, "ARM_JOINTS": [],
+                 "MODEL_NAME": "fixture", "String": SimpleNamespace}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "run_reference.py", "exec"), scope)
+        stamp = SimpleNamespace(sec=1, nanosec=0)
+        header = SimpleNamespace(stamp=stamp)
+        world = SimpleNamespace(
+            get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=1_000_000_000)),
+            odom=SimpleNamespace(header=header, twist=SimpleNamespace(twist=SimpleNamespace(angular=SimpleNamespace(z=0)))),
+            joint=SimpleNamespace(header=header), odom_received=time.monotonic(), joint_received=time.monotonic(),
+            heading=lambda: 0, measured_joints=lambda: [], pose=lambda: (5, 5), speed=lambda: 0,
+            perception=SimpleNamespace(snapshot=lambda *_: ([], 1, {"healthy": True, "stamp_ms": 1000})),
+            human_lock=threading.Lock(), human_motion=None, human=None, native=None,
+            semantic_snapshot=lambda _: None, semantic_last={"revision": 1},
+            world_pub=mock.Mock(), world_count=0, hazard_guard=None, _emit=mock.Mock(),
+            primary_joint=lambda: 0,
+        )
+        publish = scope["_publish_world"]
+        publish(world)
+        payload = json.loads(world.world_pub.publish.call_args.args[0].data)
+        self.assertIsNone(payload["semantic"])
+        self.assertEqual(payload["stamp_ms"], 1000)
+        self.assertIsNone(world.semantic_last)
+        world.semantic_snapshot = mock.Mock(return_value={"observed_ms": 950})
+        publish(world)
+        world.semantic_snapshot.assert_called_once_with(1000)
+        self.assertEqual(json.loads(world.world_pub.publish.call_args.args[0].data)["semantic"]["observed_ms"], 950)
+        world.hazard_guard = lambda: False
+        publish(world)
+        self.assertEqual(world.world_pub.publish.call_count, 2)
 
 
 class HazardAdapterTest(unittest.TestCase):
@@ -162,13 +204,14 @@ class HazardAdapterTest(unittest.TestCase):
         partial["hazard_checks"] *= 2
         self.assertEqual(report(partial)["checks"][0]["status"], "failed")
         self.assertNotEqual(result["status"], "passed")
-        self.assertEqual(result["scope"], "household_hazard_preflight_simulation")
+        self.assertEqual(result["scope"], "household_hazard_mandatory_gate_simulation")
         self.assertEqual(result["checks"][0]["status"], "failed")
         self.assertEqual(result["checks"][1]["status"], "not_run")
 
     def test_report_requires_bound_tracked_motion_and_chemical_retreat(self):
         motion = {
             "allowed": True,
+            "mandatory_semantic_gate": True,
             "measured_motion_rad": 0.3,
             "plan_sha256": "a" * 64,
             "signed_arm_acceptance_observed": True,
@@ -183,6 +226,7 @@ class HazardAdapterTest(unittest.TestCase):
                     **motion,
                     "id": identifier,
                     "blocked": True,
+                    "signed_gate_rejection_observed": True,
                     "reason": reason,
                     "denied_drift_rad": 0.001,
                 }
@@ -207,12 +251,20 @@ class HazardAdapterTest(unittest.TestCase):
                     ("missing_coverage", "perception:coverage-unknown"),
                 )
             },
+            "mandatory_gate_controls": {
+                key: {"allowed": False, "reason": reason,
+                      "signed_gate_rejection_observed": True, "denied_drift_rad": 0.001}
+                for key, reason in (("missing_binding", "household:missing-binding"),
+                                    ("wrong_revision", "household:binding-mismatch"),
+                                    ("wrong_item", "household:binding-mismatch"))},
         }
         self.assertEqual(report(result)["status"], "passed")
         for field, bad in (
             ("accepted_waypoints_match", False),
             ("max_joint_tracking_error_rad", 0.051),
             ("tracking_samples", 9),
+            ("mandatory_semantic_gate", False),
+            ("signed_gate_rejection_observed", False),
         ):
             changed = copy.deepcopy(result)
             changed["hazard_checks"][0][field] = bad
@@ -235,6 +287,8 @@ class HazardAdapterTest(unittest.TestCase):
                 "id": "human",
                 "blocked": True,
                 "allowed": True,
+                "mandatory_semantic_gate": True,
+                "signed_gate_rejection_observed": True,
                 "reason": "human:protected-volume",
                 "denied_drift_rad": 0.001,
                 "measured_motion_rad": 0.3,

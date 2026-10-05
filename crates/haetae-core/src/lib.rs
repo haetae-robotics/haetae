@@ -9,6 +9,7 @@ mod arm;
 mod gate;
 mod geom;
 pub mod hazard;
+pub mod household;
 mod mode;
 mod policy;
 mod proposal;
@@ -18,6 +19,9 @@ mod world;
 
 pub use gate::{Decision, Gate};
 pub use geom::{Point2, Rect};
+pub use household::{
+    ChainTransform, HouseholdPolicy, JointAxis, SemanticBinding, SemanticSnapshot,
+};
 pub use mode::Mode;
 pub use policy::{
     Arm, Base, Condition, Effect, Envelope, Freshness, HumanWithin, JointLimit, Policy,

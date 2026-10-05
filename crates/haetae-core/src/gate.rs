@@ -139,6 +139,10 @@ impl Gate {
         if age(proposal.timestamp_ms) > fresh.proposal_max_age_ms {
             return deny("stale:proposal");
         }
+        if let Err(check) = crate::household::check_proposal(&self.policy, proposal, world, now_ms)
+        {
+            return deny(&check);
+        }
 
         if let ActionKind::Velocity {
             linear,

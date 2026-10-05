@@ -96,6 +96,8 @@ class GazeboWorld(Node):
         self.attack_world_received = 0
         self.world_count = 0
         self.hazard_guard = None
+        self.semantic_snapshot = None
+        self.semantic_last = None
         self.world_pub = self.create_publisher(String,
             "/haetae_input/world" if isolated else "/haetae_gate/world", 1)
         self.vla_pub = None if isolated else self.create_publisher(TwistStamped, "/vla/cmd_vel", 1)
@@ -252,6 +254,13 @@ class GazeboWorld(Node):
                              "joints": [j for name in ARM_JOINTS for j in joints if j["name"] == name]},
                    "humans": humans,
                    "confidence": confidence}
+        if self.semantic_snapshot is not None:
+            semantic = self.semantic_snapshot(stamp)
+            # Keep measured mechanical observations current during fixture
+            # preparation. Explicitly absent semantics denies protected arm
+            # admission and cancels an active arm at the Rust gate.
+            payload["semantic"] = semantic
+            self.semantic_last = semantic
         if confidence and humans:
             nearest = min(humans, key=lambda h: math.hypot(h["pos"]["x"]-x, h["pos"]["y"]-y))
             self.person_reports.append({"wall": time.monotonic(), "stamp_ms": stamp,
@@ -281,13 +290,16 @@ class GazeboWorld(Node):
         start = self.arm_positions()
         self.propose_arm_plan(((0, start), (800, [target, *start[1:]]), (1000, [target, *start[1:]])))
 
-    def propose_arm_plan(self, points):
+    def propose_arm_plan(self, points, semantic=None):
         if self.isolated:
             self.proposal_pipe.write(json.dumps({"joints": list(ARM_JOINTS),
-                "points": points}).encode() + b"\n")
+                "points": points, "semantic": semantic}).encode() + b"\n")
             self.proposal_pipe.flush()
             return
         msg = JointTrajectory()
+        if semantic is not None:
+            from proposals import semantic_frame
+            msg.header.frame_id = semantic_frame(semantic)
         msg.joint_names = list(ARM_JOINTS)
         for millis, value in points:
             p = JointTrajectoryPoint()
@@ -536,6 +548,13 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         # inertia, axes, mounting transforms and physical/controller limits.
         from hazard_lab import lab_posture
         model.write_text(lab_posture(model.read_text()))
+        from hazard_lab import Kinematics
+        policy_path = root / "policy.json"
+        policy = json.loads(policy_path.read_text())
+        policy["household"] = Kinematics(model.read_text()).household_policy(model.read_text())
+        # Roles() below signs the exact updated policy bytes with fresh root
+        # trust. The lab/UI cannot disable these execution requirements.
+        policy_path.write_text(json.dumps(policy))
     description_params = root / "robot_description.yaml"
     description_params.write_text(json.dumps({"robot_state_publisher": {"ros__parameters": {
         "robot_description": model.read_text(), "use_sim_time": True}}}))

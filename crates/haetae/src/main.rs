@@ -423,6 +423,14 @@ fn enforce_stdio(
 ) -> Result<()> {
     let policy_bytes = fs::read(policy_path)?;
     let policy = Policy::from_json(std::str::from_utf8(&policy_bytes)?)?;
+    if policy.household.is_some()
+        && (trust.is_none() || root_pubkey.is_none() || state.is_none() || recorder.is_none())
+    {
+        return Err(
+            "household protection requires signed trust, pinned root, durable state and recorder"
+                .into(),
+        );
+    }
     let mut verifier = match (trust, root_pubkey) {
         (Some(path), Some(key)) => Some(AuthVerifier::load(path, key, &policy_bytes)?),
         _ => None,
@@ -519,6 +527,7 @@ fn enforce_stdio(
                             let _ = stamp_ms; // untrusted claim, never the receive clock
                             gate.handle(
                                 Inbound::Proposal(ActionProposal {
+                                    semantic: None,
                                     id: seq,
                                     source,
                                     timestamp_ms: t,

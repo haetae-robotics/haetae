@@ -44,6 +44,17 @@ base. A compromised bridge or privileged host can still command the robot.
 
 ## Current implementation limits
 
+- The separate household profile enables a root-policy-bound mandatory
+  semantic check in Rust for every protected arm client. Trusted signed worlds
+  supply fixture facts; Rust derives FK from the exact signed joint plan and
+  pinned policy model. It rejects missing/mismatched references, unsafe paths,
+  unsupported operations and nonzero base motion in its stationary scope.
+  Active motion is rechecked against fresh trusted facts and remaining path.
+  This M1 layer has no controller-side authorization proof: a compromised
+  gateway retains actuator authority. Whole-arm coverage, persistent effect
+  history and physical qualification are not implemented. See
+  [household gate contract](household-gate.md).
+
 - The Rust core, subprocess and signed ROS bridge smoke tests run in CI on
   Jazzy. The kinematic base simulator and mock arm action server are software
   models. The Gazebo Harmonic reference also exercises a differential-drive
