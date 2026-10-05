@@ -29,10 +29,10 @@ function viewer() {
     return elements.get(id);
   };
   vm.runInNewContext(source, {
-    document: { getElementById: get, createElement: element, createTextNode: (text) => text },
+    document: { querySelector: get, getElementById: get, createElement: element, createTextNode: (text) => text },
     window: { location: { hostname: '127.0.0.1' } },
     validTelemetry,
-    createGazeboScene: () => ({ update() {}, setBlocked() {} }),
+    createGazeboScene: () => ({ update() {}, setBlocked() {},setHazardScene() {} }),
     Date: { now: () => now },
     setInterval(callback) { tick = callback; },
     EventSource: class { constructor() { stream = this; } close() {} },
@@ -166,4 +166,17 @@ test('invalid telemetry leaves last good measurements intact and finite recovery
   assert.match(page.get('connection').textContent, /측정값 오류/);
   page.emit({...row, speed: .2});
   assert.match(page.get('speed').textContent, /0.200/);
+});
+
+
+test('household profile keeps all six stages without legacy attack probes', async () => {
+  const page=viewer(); await page.config({household_hazards:true,attack_probes:false});
+  page.emit({kind:'hazard_scene',stage:4,title:'배터리와 물',case:'water',contents:[]});
+  assert.equal(page.get('stage-label').textContent,'4 / 6 · 물');
+  assert.equal(page.get('hazard-fixtures').hidden,false);
+  page.emit({kind:'hazard_decision',allowed:false,label:'배터리 차단'});
+  assert.equal(page.get('verdict').textContent,'차단 · 계획 미전달');
+  page.emit({kind:'checkpoint',waiting:true,token:'water',label:'물 · 차단',detail:'정지',next_label:'정상 동작 대조'});
+  assert.equal(page.get('start-simulation').disabled,false);
+  assert.match(page.get('start-simulation').textContent,/정상 동작 대조/);
 });

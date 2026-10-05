@@ -109,11 +109,13 @@ export function createGazeboScene(canvas) {
   gateRing.rotation.x = -Math.PI / 2;
   gateRing.position.y = 0.005;
   robot.add(gateRing); // Haetae state overlay, not a product status light.
+  canvas.dataset.modelState = "loading";
   const ready = fetch('./assets/rosbot-xl.json', { cache: 'no-store' })
     .then((response) => { if (!response.ok) throw new Error('Robot asset unavailable'); return response.json(); })
     .then((asset) => {
       productRig = createProductRig(THREE, asset);
       rosFrame.add(productRig.root); productRig.update(latestJoints);
+      canvas.dataset.modelState = "loaded";
     });
 
   // Body root follows the native Gazebo torso pose; gait is an illustration.
@@ -165,6 +167,45 @@ export function createGazeboScene(canvas) {
     if (human) person.position.set(Number(human.pos.x) - 5, 0, 5 - Number(human.pos.y));
     return true;
   }
+  const hazardGroup = new THREE.Group(); scene.add(hazardGroup);
+  let hazardFixtures = null;
+  const hazardAssets = fetch('./assets/household-fixtures.json').then(r=>{if (!r.ok) throw new Error('Hazard fixtures unavailable'); return r.json();}).then(v=>{hazardFixtures=v;});
+  let hazardCase = null, hazardItem = null, hazardTarget = null, hazardPath = null, pathKey = '';
+  function setHazardScene(row) {
+    const finitePoint = (p) => p && ['x','y','z'].every(k => Number.isFinite(p[k]) && Math.abs(p[k])<=100);
+    if (!hazardFixtures || !hazardFixtures[row.case] || !finitePoint(row.item) || !finitePoint(row.target) || !Array.isArray(row.path) || !row.path.every(finitePoint)) return;
+    if (hazardCase !== row.case) {
+      for (const child of [...hazardGroup.children]) { child.traverse(c=>{c.geometry?.dispose();c.material?.dispose();}); hazardGroup.remove(child); }
+      hazardCase = row.case; hazardPath = null; pathKey = '';
+      function fixture(role) {
+        const group=new THREE.Group();
+        for (const part of hazardFixtures[row.case][role]) {
+          const geometry=part.shape==='box' ? new THREE.BoxGeometry(...part.size) : part.shape==='sphere' ? new THREE.SphereGeometry(part.radius,20,14) : new THREE.CylinderGeometry(part.radius,part.radius,part.length,24);
+          const mesh=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({color:part.color,roughness:.55}));
+          if (part.shape==='cylinder') mesh.rotation.x=Math.PI/2;
+          mesh.position.set(...part.pos); group.add(mesh);
+        }
+        group.rotation.x=-Math.PI/2; return group;
+      }
+      hazardItem=fixture('item'); hazardTarget=fixture('target');
+      hazardGroup.add(hazardItem,hazardTarget);
+    }
+    const place=(mesh,p)=>mesh.position.set(p.x-5,p.z,5-p.y);
+    place(hazardItem,row.item); place(hazardTarget,row.target);
+    if (Array.isArray(row.item_quaternion) && row.item_quaternion.length===4 && row.item_quaternion.every(Number.isFinite)) {
+      hazardItem.quaternion.setFromAxisAngle(new THREE.Vector3(1,0,0),-Math.PI/2).multiply(new THREE.Quaternion(...row.item_quaternion));
+    }
+    const key=JSON.stringify(row.path);
+    if (key!==pathKey) {
+      if (hazardPath) { hazardGroup.remove(hazardPath); hazardPath.geometry.dispose(); hazardPath.material.dispose(); }
+      pathKey=key;
+      if (row.path.length>1) {
+        const geometry=new THREE.BufferGeometry().setFromPoints(row.path.map(p=>new THREE.Vector3(p.x-5,p.z,5-p.y)));
+        hazardPath=new THREE.Line(geometry,new THREE.LineDashedMaterial({color:0xe1ab60,dashSize:.02,gapSize:.015}));
+        hazardPath.computeLineDistances(); hazardGroup.add(hazardPath);
+      }
+    }
+  }
   function setBlocked(value) {
     gateRing.material.color.setHex(value ? 0xe5484d : 0x568e96);
   }
@@ -199,5 +240,5 @@ export function createGazeboScene(canvas) {
     requestAnimationFrame(frame);
   }
   frame();
-  return { update, setBlocked, resetCamera, ready };
+  return { update, setBlocked, setHazardScene, resetCamera, ready: Promise.all([ready,hazardAssets]) };
 }

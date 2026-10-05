@@ -19,7 +19,8 @@ STATIC = Path(__file__).resolve().parents[2] / "sim"
 
 
 class LiveHub:
-    def __init__(self):
+    def __init__(self, household_hazards=False):
+        self.household_hazards = household_hazards
         self._condition = threading.Condition()
         self._messages = deque(maxlen=512)
         self._milestones = deque(maxlen=64)
@@ -33,6 +34,7 @@ class LiveHub:
         self._failure = None
         self._ready = False
         self._report = None
+        self._hazard_state = None
 
     def fail(self, message):
         with self._condition:
@@ -41,7 +43,8 @@ class LiveHub:
             self.publish(message)
             self._failure = self._messages[-1]
             self._ready = False
-            self._report = report(revision=os.environ.get("HAETAE_REVISION", "unknown"),
+            self._report = report({"profile":"household_hazards"} if self.household_hazards else None,
+                                  revision=os.environ.get("HAETAE_REVISION", "unknown"),
                                   run_id=self.session_id, failed=True)
 
     def publish(self, message):
@@ -54,8 +57,10 @@ class LiveHub:
             if message.get("kind") == "result":
                 self._report = report(message.get("result"), os.environ.get("HAETAE_REVISION", "unknown"), self.session_id)
                 row["report_status"] = self._report["status"]
-            if message.get("kind") in ("phase", "decision", "attack_result", "result"):
+            if message.get("kind") in ("phase", "decision", "attack_result", "hazard_decision", "result"):
                 self._milestones.append(row)
+            if message.get("kind") == "hazard_scene":
+                self._hazard_state = row
             if message.get("kind") == "checkpoint":
                 self._checkpoint_state = row
             self._condition.notify_all()
@@ -91,6 +96,8 @@ class LiveHub:
                          if row["id"] > sequence})
             if self._checkpoint_state and self._checkpoint_state["id"] > sequence:
                 rows[self._checkpoint_state["id"]] = self._checkpoint_state
+            if self._hazard_state and self._hazard_state["id"] > sequence:
+                rows[self._hazard_state["id"]] = self._hazard_state
             if self._failure and self._failure["id"] > sequence:
                 rows[self._failure["id"]] = self._failure
             return [rows[key] for key in sorted(rows)]
@@ -118,7 +125,7 @@ class LiveHub:
 
 def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
                  manual_start=False, attack_probes=False, secured_gazebo=False,
-                 step_through=False):
+                 step_through=False, household_hazards=False):
     gui_port = int(os.environ.get("HAETAE_GUI_PORT", "6080"))
     if not 1 <= gui_port <= 65535:
         raise ValueError("HAETAE_GUI_PORT must be 1..65535")
@@ -181,13 +188,13 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
                                        "manual_start": manual_start,
                                        "attack_probes": attack_probes,
                                        "secured_gazebo": secured_gazebo,
-                                       "step_through": step_through}).encode(), "application/json")
+                                       "step_through": step_through, "household_hazards":household_hazards}).encode(), "application/json")
             elif path == "/assets/rosbot-xl.json":
                 self._send((STATIC / "assets/rosbot-xl.json.gz").read_bytes(),
                            "application/json; charset=utf-8", encoding="gzip")
             elif path in ("/", "/gazebo-live.html", "/gazebo-live.js", "/gazebo-live.css",
                           "/brand/haetae/logo-light.svg", "/brand/haetae/favicon.svg",
-                          "/assets/haetae-rig.json",
+                          "/assets/haetae-rig.json", "/assets/household-fixtures.json",
                           "/gazebo-scene.js", "/telemetry.js", "/product-rig.js", "/person-rig.js", "/vendor/three/three.module.js",
                           "/vendor/three/three.core.js", "/vendor/three/OrbitControls.js",
                           "/gazebo-replay.html", "/gazebo-replay.js",

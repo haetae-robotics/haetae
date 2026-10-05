@@ -6,6 +6,7 @@ name=haetae-demo
 image=haetae-simulator-alpha
 port=${HAETAE_DEMO_PORT:-8765}
 gui_port=${HAETAE_GUI_PORT:-6080}
+profile=reference
 for candidate in "$port" "$gui_port"; do
   case "$candidate" in ''|*[!0-9]*) echo '포트는 1..65535 정수여야 합니다.' >&2; exit 2;; esac
   if [[ ${#candidate} -gt 5 ]] || ((10#$candidate < 1 || 10#$candidate > 65535)); then
@@ -24,7 +25,7 @@ if command -v git >/dev/null 2>&1 && [[ $(git -C "$repo" rev-parse --show-toplev
 fi
 
 usage() {
-  printf '사용법: ./haetae-demo {doctor|start|status|stop|restart|verify|report [파일]|logs}\n'
+  printf '사용법: ./haetae-demo {doctor|start|hazards|status|stop|restart|verify|report [파일]|logs}\n'
   printf 'start: 화면 준비 후 시작 버튼 · verify: 화면 없이 6회 복합 시험 · report: 완료 결과 저장\n'
 }
 daemon() {
@@ -107,7 +108,7 @@ start_demo() {
   build
   docker run -d --name "$name" --init --cap-add=NET_ADMIN --shm-size=256m \
     --label io.haetae.managed=simulator-alpha --label "io.haetae.project=$project" \
-    -e "GZ_PARTITION=haetae_demo_$port" -e "HAETAE_GUI_PORT=$gui_port" -p "127.0.0.1:$port:8765" -p "127.0.0.1:$gui_port:6080" \
+    -e "HAETAE_DEMO_PROFILE=$profile" -e "GZ_PARTITION=haetae_demo_$port" -e "HAETAE_GUI_PORT=$gui_port" -p "127.0.0.1:$port:8765" -p "127.0.0.1:$gui_port:6080" \
     -v "$out:/out" "$image_id" >/dev/null
   printf 'Gazebo와 권한 검증을 준비합니다. 결과 폴더: %s\n' "$out"
   for attempt in {1..240}; do
@@ -126,6 +127,7 @@ start_demo() {
 case ${1:-help} in
   doctor) doctor;;
   start) start_demo;;
+  hazards) profile=household; stop_demo; start_demo;;
   restart) stop_demo; start_demo;;
   stop) stop_demo;;
   status) daemon; if exists "$name"; then require_owner "$name"; docker inspect --format '실행 중: {{.State.Running}} · 시작: {{.State.StartedAt}}' "$name"; if [[ $(docker inspect --format '{{.State.Running}}' "$name") = true ]]; then demo_address; curl -fsS --max-time 2 "$url/health" || true; fi; printf '\n화면: %s/\n' "$url"; else echo '실행 중이지 않습니다. ./haetae-demo start 를 실행하세요.'; fi;;

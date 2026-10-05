@@ -8,6 +8,7 @@
 mod arm;
 mod gate;
 mod geom;
+pub mod hazard;
 mod mode;
 mod policy;
 mod proposal;

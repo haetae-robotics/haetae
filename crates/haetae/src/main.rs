@@ -33,6 +33,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Judge trusted adapter-derived 3D household hazard requests (JSONL).
+    HazardJudge,
     /// Build signed trust and input fixtures for authenticated enforcement.
     Auth {
         #[command(subcommand)]
@@ -176,6 +178,29 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
+        Command::HazardJudge => {
+            // Bounded records; malformed input never produces an allow decision.
+            let stdin = io::stdin();
+            let mut reader = stdin.lock();
+            loop {
+                let mut bytes = Vec::new();
+                let count =
+                    std::io::Read::take(&mut reader, 262145).read_until(b'\n', &mut bytes)?;
+                if count == 0 {
+                    break;
+                }
+                if count > 262144 {
+                    return Err("hazard request exceeds limit".into());
+                }
+                let request: haetae::hazard::HazardRequest = serde_json::from_slice(&bytes)?;
+                println!(
+                    "{}",
+                    serde_json::to_string(&haetae::hazard::judge(&request))?
+                );
+                io::stdout().flush()?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Auth { command } => {
             match command {
                 AuthCommand::PolicyHash { policy } => {

@@ -6,7 +6,7 @@ from safe_evidence import checkpoint_evidence, read_evidence_text, write_checkpo
 from public_report import report
 
 PUBLIC_FILES = (
-    'result.json', 'error.json', 'verification-report.json', 'transport-isolation.json',
+    'result.json', 'error.json', 'hazard-progress.json', 'hazard-diagnostics.json', 'verification-report.json', 'transport-isolation.json',
     'compound-faults.json', 'attack-result.json', 'principal-isolation.json',
     'role-permissions.json', 'source-restart.json', 'sensor-faults.json', 'sensor-person.json',
     'source_world.log', 'source_vla.log', 'scenario_vla.log', 'setup.log', 'gazebo.log',

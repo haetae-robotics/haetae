@@ -45,7 +45,7 @@ class LiveStreamTest(unittest.TestCase):
                                                   "manual_start": False,
                                                   "attack_probes": False,
                                                   "secured_gazebo": False,
-                                                  "step_through": False})
+                                                  "step_through": False,"household_hazards":False})
         with self.assertRaises(HTTPError) as failure:
             urlopen(self.base + "/../run_reference.py", timeout=3)
         self.assertEqual(failure.exception.code, 404)
@@ -90,7 +90,7 @@ class LiveStreamTest(unittest.TestCase):
                                                       "manual_start": True,
                                                       "attack_probes": True,
                                                       "secured_gazebo": True,
-                                                      "step_through": True})
+                                                      "step_through": True,"household_hazards":False})
             with self.assertRaises(HTTPError) as failure:
                 urlopen(Request(base + "/start", data=b"",
                                 headers={"Origin": "https://untrusted.example"}), timeout=3)

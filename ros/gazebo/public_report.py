@@ -19,6 +19,8 @@ def within(value, maximum):
 
 
 def report(result=None, revision="unknown", run_id="unknown", failed=False):
+    if mapping(result).get("profile") == "household_hazards":
+        return household_report(result,revision,run_id,failed)
     completed = result is not None
     result = mapping(result)
     checks = []
@@ -106,3 +108,47 @@ def render_report(value):
             f"<h1>HAETAE 시뮬레이터 검증 리포트</h1><h2>{labels[value['status']]}</h2><p>{escape(value['notice'])}</p>"
             f"<p>{escape(value['trust'])}</p><p>{escape(value['evidence'])}</p><p>소스: <code>{escape(value['source_revision'])}</code><br>실행: {escape(value['run_id'])}</p>"
             f"<table><tr><th>검증</th><th>결과</th><th>측정</th></tr>{rows}</table><p><a href=/report.json>JSON 저장</a> · <a href=/>시뮬레이터로 돌아가기</a></p></html>").encode()
+
+
+def household_report(result, revision="unknown", run_id="unknown", failed=False):
+    def motion_passed(row):
+        return (row.get("allowed") is True
+                and row.get("signed_arm_acceptance_observed") is True
+                and row.get("accepted_waypoints_match") is True
+                and within(row.get("max_joint_tracking_error_rad"), .05)
+                and type(row.get("tracking_samples")) is int and row["tracking_samples"] >= 10
+                and (number(row.get("measured_motion_rad")) or 0) > .1
+                and isinstance(row.get("plan_sha256"), str)
+                and re.fullmatch(r"[a-f0-9]{64}", row["plan_sha256"]) is not None)
+
+    expected = {"human":"human:protected-volume","heat":"heat:hazardous-item",
+                "electricity":"electricity:contact","water":"water:electrical-item",
+                "chemicals":"chemicals:incompatible","fall":"fall:protected-volume"}
+    rows = result.get("hazard_checks", [])
+    rows = rows if isinstance(rows,list) else []
+    checks = []
+    for identifier,reason in expected.items():
+        matches = [mapping(row) for row in rows if mapping(row).get("id") == identifier]
+        row = matches[0] if len(matches)==1 else {}
+        passed = (len(matches)==1 and row.get("blocked") is True and motion_passed(row)
+                  and row.get("reason")==reason and within(row.get("denied_drift_rad"),.02)
+                  )
+        if identifier=="chemicals":
+            first=mapping(row.get("first_transfer"))
+            passed = (passed and row.get("retained_contents")==["bleach"]
+                      and motion_passed(first) and motion_passed(mapping(row.get("retreat"))))
+        checks.append({"id":identifier,"title":row.get("title",identifier),
+                       "status":"not_run" if not matches else "passed" if passed else "failed",
+                       "measurements":{k:v for k in ("denied_drift_rad","measured_motion_rad","max_joint_tracking_error_rad","tracking_samples") if (v:=number(row.get(k))) is not None}})
+    controls=mapping(result.get("negative_controls"))
+    for identifier,reason in {"stale":"perception:stale","unknown_item":"item:unknown","missing_coverage":"perception:coverage-unknown"}.items():
+        row=mapping(controls.get(identifier))
+        checks.append({"id":identifier,"title":identifier,"status":"not_run" if not row else
+                       "passed" if row.get("allowed") is False and row.get("reason")==reason else "failed","measurements":{}})
+    passed = result.get("ok") is True and all(row["status"]=="passed" for row in checks)
+    return {"schema_version":1,"scope":"household_hazard_preflight_simulation","status":"failed" if failed or result.get("ok") is not True or any(row["status"]=="failed" for row in checks) else "passed" if passed else "incomplete",
+            "source_revision":revision if isinstance(revision,str) and re.fullmatch(r"[a-f0-9]{40}",revision) else "unknown",
+            "run_id":run_id if isinstance(run_id,str) and re.fullmatch(r"[a-z0-9_-]{1,64}",run_id) else "unknown","checks":checks,
+            "notice":"생활 위험 실행 전 검사 실험입니다. 실물 보호 성능·인지·파지·화학 반응·사람 밀기 방지를 검증하지 않습니다.",
+            "trust":"root 소유 시험 어댑터와 주입된 물체·기기 상태를 신뢰합니다. 좌표와 관절은 Gazebo 측정입니다.",
+            "evidence":"서명되지 않은 로컬 요약입니다. 기존 침투 방어·독립 정지 시험은 이 프로필에서 통과로 집계하지 않습니다."}
