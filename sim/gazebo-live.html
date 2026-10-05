@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="./gazebo-live.css">
 </head>
 <body>
+  <noscript><p role="alert">이 화면은 JavaScript가 필요합니다. 브라우저에서 이 페이지의 JavaScript 실행을 허용한 뒤 새로고침해 주세요.</p></noscript>
   <header class="topbar">
     <a class="brand" href="./" aria-label="해태 라이브 처음 화면">
       <img class="brand-logo" src="./brand/haetae/logo-light.svg" width="109" height="36" alt="haetae">
@@ -82,6 +83,23 @@
     </div>
   </footer>
   <script type="importmap">{"imports":{"three":"./vendor/three/three.module.js","three/addons/":"./vendor/three/"}}</script>
-  <script type="module" src="./gazebo-live.js"></script>
+  <script>
+    document.documentElement.dataset.scriptBoot = 'ready';
+    document.documentElement.dataset.moduleState = 'loading';
+    import('./gazebo-live.js').then(() => {
+      document.documentElement.dataset.moduleState = 'ready';
+    }).catch(error => {
+      document.documentElement.dataset.moduleState = 'failed';
+      console.error('HAETAE viewer initialization failed', error);
+      document.getElementById('phase').textContent = '화면 로드 실패';
+      document.getElementById('detail').textContent = '페이지를 새로고침하거나 다른 브라우저에서 열어 주세요.';
+    });
+    setTimeout(() => {
+      if (document.documentElement.dataset.moduleState !== 'failed' && document.getElementById('connection').dataset.state === 'connecting') {
+        document.getElementById('phase').textContent = '화면 연결 지연';
+        document.getElementById('detail').textContent = '화면 준비를 완료하지 못했습니다. 페이지를 새로고침해 주세요.';
+      }
+    }, 15000);
+  </script>
 </body>
 </html>

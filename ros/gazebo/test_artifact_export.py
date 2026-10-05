@@ -7,6 +7,25 @@ from artifact_export import export_artifacts, final_export
 
 
 class ExportTest(unittest.TestCase):
+    def test_export_rejection_preserves_household_scope_and_progress(self):
+        from public_report import report
+        with tempfile.TemporaryDirectory() as directory:
+            root, output = Path(directory) / 'run', Path(directory) / 'out'
+            root.mkdir()
+            row = {"id": "human", "blocked": True, "allowed": True,
+                   "reason": "human:protected-volume", "denied_drift_rad": .001,
+                   "measured_motion_rad": .3, "plan_sha256": "a" * 64,
+                   "signed_arm_acceptance_observed": True, "accepted_waypoints_match": True,
+                   "max_joint_tracking_error_rad": .01, "tracking_samples": 20}
+            (root / 'hazard-progress.json').write_text(json.dumps([row]))
+            (root / 'verification-report.json').write_text(json.dumps(report({"profile": "household_hazards"})))
+            (root / 'gate.log').symlink_to(root / 'absent')
+            with self.assertRaises(ValueError):
+                final_export(root, output)
+            summary = json.loads((output / 'verification-report.json').read_text())
+            self.assertEqual(summary['scope'], 'household_hazard_preflight_simulation')
+            self.assertEqual(summary['status'], 'failed')
+            self.assertEqual(summary['checks'][0]['status'], 'passed')
     def test_checkpoint_is_allowlisted_and_refreshes_results(self):
         with tempfile.TemporaryDirectory() as directory:
             root, output = Path(directory) / 'run', Path(directory) / 'out'

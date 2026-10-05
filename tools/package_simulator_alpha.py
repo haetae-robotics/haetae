@@ -21,6 +21,8 @@ from public_report import report  # noqa: E402
 
 
 def package(result_path, out, household_result=None):
+    if household_result is None:
+        raise ValueError("alpha packaging requires both reference and household evidence")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
     tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=REPO, text=True).strip()
     evidence = result_path.read_bytes()
@@ -88,6 +90,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--household-result", type=Path)
+    parser.add_argument("--household-result", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(package(args.result, args.out, args.household_result)))

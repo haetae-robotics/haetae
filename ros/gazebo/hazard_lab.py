@@ -928,7 +928,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         hold_observed = False
         try:
             wait_for(
-                lambda: world.joint_received >= failure_at + 0.3
+                lambda: world.joint is not None and world.joint_received >= failure_at + 0.3
                 and all(
                     abs(v) < 0.03
                     for name, v in zip(world.joint.name, world.joint.velocity)

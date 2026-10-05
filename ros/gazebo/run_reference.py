@@ -1156,7 +1156,8 @@ def main():
                     live.fail({"kind": "error", "label": "시뮬레이션이 중단됐습니다",
                                "detail": "장면 완료 조건을 제시간에 확인하지 못했습니다."
                                if isinstance(exc, TimeoutError) else "시뮬레이터 실행 중 오류가 발생했습니다.",
-                               "error_type": type(exc).__name__})
+                               "error_type": type(exc).__name__},
+                              failed_household_result(directory) if args.household_hazards else None)
                 raise
             finally:
                 final_export(directory, args.out, prior_failure=sys.exc_info()[0] is not None)

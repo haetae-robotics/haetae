@@ -3,7 +3,7 @@ import html
 import json
 import math
 import re
-from pathlib import Path
+from safe_evidence import read_evidence
 
 
 def mapping(value):
@@ -143,7 +143,8 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
                 steps = sequence.get("steps")
                 passed = passed and isinstance(steps, list) and len(steps) == 2 and all(
                     motion_passed(mapping(step)) for step in steps)
-        checks.append({"id":identifier,"title":row.get("title",identifier) + (" · 동일 병 모형의 종류 전환" if identifier == "chemicals" else ""),
+        title = row.get("title") if isinstance(row.get("title"), str) else identifier
+        checks.append({"id":identifier,"title":title + (" · 동일 병 모형의 종류 전환" if identifier == "chemicals" else ""),
                        "status":"not_run" if not matches else "passed" if passed else "failed",
                        "measurements":{k:v for k in ("denied_drift_rad","measured_motion_rad","max_joint_tracking_error_rad","tracking_samples") if (v:=number(row.get(k))) is not None}})
     controls=mapping(result.get("negative_controls"))
@@ -164,8 +165,7 @@ def failed_household_result(root):
     """Preserve bounded completed evidence while the overall run stays failed."""
     def read(name, fallback):
         try:
-            with (Path(root) / name).open() as source:
-                return json.loads(source.read(1024 * 1024))
+            return json.loads(read_evidence(root, name, max_bytes=1024 * 1024).decode("utf-8"))
         except (OSError, ValueError):
             return fallback
     rows = read("hazard-progress.json", [])

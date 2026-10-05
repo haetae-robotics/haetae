@@ -11,6 +11,20 @@ from live_stream import LiveHub, start_server
 
 
 class LiveStreamTest(unittest.TestCase):
+    def test_household_failure_keeps_partial_evidence_after_outer_failure(self):
+        hub = LiveHub(household_hazards=True)
+        row = {"id": "human", "blocked": True, "allowed": True,
+               "reason": "human:protected-volume", "denied_drift_rad": .001,
+               "measured_motion_rad": .3, "plan_sha256": "a" * 64,
+               "signed_arm_acceptance_observed": True, "accepted_waypoints_match": True,
+               "max_joint_tracking_error_rad": .01, "tracking_samples": 20}
+        hub.fail({"kind": "error"}, {"profile": "household_hazards", "ok": False,
+                 "hazard_checks": [row, {"id": "heat", "blocked": False}]})
+        hub.fail({"kind": "error", "label": "outer cleanup error"})
+        summary = hub.public_report()
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual([r["status"] for r in summary["checks"][:3]], ["passed", "failed", "not_run"])
+
     def setUp(self):
         self.hub = LiveHub()
         self.server = start_server(self.hub, 0)
@@ -34,6 +48,7 @@ class LiveStreamTest(unittest.TestCase):
         with urlopen(self.base + "/assets/haetae-rig.json", timeout=3) as response:
             self.assertEqual(json.load(response)["coordinates"], "ROS z-up")
         with urlopen(self.base + "/assets/rosbot-xl.json", timeout=3) as response:
+            self.assertEqual(response.version, 11)
             self.assertEqual(response.headers["Content-Encoding"], "gzip")
             model = json.loads(gzip.decompress(response.read()))
             self.assertEqual(model["model"], "ROSbot XL + OpenMANIPULATOR-X")

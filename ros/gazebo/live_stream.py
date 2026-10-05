@@ -36,16 +36,18 @@ class LiveHub:
         self._report = None
         self._hazard_state = None
 
-    def fail(self, message):
+    def fail(self, message, result=None):
         with self._condition:
             self._checkpoint = None
             self._checkpoint_state = None
             self.publish(message)
             self._failure = self._messages[-1]
             self._ready = False
-            self._report = report({"profile":"household_hazards"} if self.household_hazards else None,
-                                  revision=os.environ.get("HAETAE_REVISION", "unknown"),
-                                  run_id=self.session_id, failed=True)
+            if result is not None or not self._report or self._report.get("status") != "failed":
+                self._report = report(result if result is not None else
+                                      {"profile":"household_hazards"} if self.household_hazards else None,
+                                      revision=os.environ.get("HAETAE_REVISION", "unknown"),
+                                      run_id=self.session_id, failed=True)
 
     def publish(self, message):
         with self._condition:
@@ -130,6 +132,11 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
     if not 1 <= gui_port <= 65535:
         raise ValueError("HAETAE_GUI_PORT must be 1..65535")
     class Handler(BaseHTTPRequestHandler):
+        # Keep the root-owned socket alive until the client consumes the body.
+        # Closing an HTTP/1.0 response can orphan queued TCP packets; the
+        # container's non-root network guard correctly rejects ownerless traffic.
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, _format, *_args):
             pass
 
