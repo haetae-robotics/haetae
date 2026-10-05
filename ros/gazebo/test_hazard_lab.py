@@ -189,6 +189,60 @@ class WorldPublicationTest(unittest.TestCase):
         publish(world)
         self.assertEqual(world.world_pub.publish.call_count, 3)
 
+    def test_advancing_observation_keeps_source_stamp_and_periodic_negative_updates(self):
+        tree = ast.parse(Path(__file__).with_name("run_reference.py").read_text())
+        node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "GazeboWorld")
+        method = next(n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "_publish_world")
+        import threading
+        clock = SimpleNamespace(nanoseconds=1_100_000_000)
+        sensor = {"healthy": True, "stamp_ms": 1040}
+        scope = {"time": SimpleNamespace(monotonic=lambda: 10), "math": math, "json": json,
+                 "ARM_JOINTS": [], "MODEL_NAME": "fixture", "String": SimpleNamespace}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "run_reference.py", "exec"), scope)
+        world = SimpleNamespace(
+            get_clock=lambda: SimpleNamespace(now=lambda: clock),
+            odom=SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=70_000_000)),
+                twist=SimpleNamespace(twist=SimpleNamespace(angular=SimpleNamespace(z=0)))),
+            joint=SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=80_000_000))),
+            odom_received=10, joint_received=10, heading=lambda: 0, measured_joints=lambda: [],
+            pose=lambda: (5, 5), speed=lambda: 0, primary_joint=lambda: 0,
+            perception=SimpleNamespace(snapshot=lambda *_: ([], int(sensor["healthy"]), dict(sensor))),
+            human_lock=threading.Lock(), human_motion=None, human=None, native=None,
+            semantic_snapshot=lambda stamp: {"observed_ms": stamp}, semantic_last=None,
+            world_pub=mock.Mock(), world_count=0, published_world_stamp=None,
+            hazard_guard=None, _emit=mock.Mock())
+        publish = scope["_publish_world"]
+        publish(world, only_advanced=True)
+        payload = json.loads(world.world_pub.publish.call_args.args[0].data)
+        self.assertEqual(payload["stamp_ms"], 1040)  # Oldest source, not current clock/joint.
+        self.assertEqual(payload["semantic"]["observed_ms"], 1040)
+        clock.nanoseconds += 10_000_000
+        publish(world, only_advanced=True)
+        sensor["stamp_ms"] = 1030
+        publish(world, only_advanced=True)
+        self.assertEqual(world.world_pub.publish.call_count, 1)  # No repeated/frozen refresh.
+        sensor["stamp_ms"] = 1050
+        world.hazard_guard = lambda: False
+        publish(world, only_advanced=True)
+        self.assertEqual(world.published_world_stamp, 1040)
+        world.hazard_guard = None
+        publish(world, only_advanced=True)
+        self.assertEqual(world.world_pub.publish.call_count, 2)
+        self.assertEqual(world.published_world_stamp, 1050)
+        # A negative/semantic observation at the same old source stamp still
+        # reaches the root on the periodic path; extra event suppression must
+        # not suppress the existing timer's revocation behavior.
+        world.semantic_snapshot = lambda _: None
+        sensor["healthy"] = False
+        publish(world, only_advanced=True)
+        self.assertEqual(world.world_pub.publish.call_count, 2)
+        publish(world)
+        payload = json.loads(world.world_pub.publish.call_args.args[0].data)
+        self.assertEqual(payload["confidence"], 0)
+        self.assertIsNone(payload["semantic"])
+        self.assertEqual(payload["stamp_ms"], 1080)  # Original joint observation, no restamp.
+        self.assertEqual(world.world_pub.publish.call_count, 3)
+
 
 class HazardAdapterTest(unittest.TestCase):
     def test_fk_uses_mount_and_joint_axis(self):

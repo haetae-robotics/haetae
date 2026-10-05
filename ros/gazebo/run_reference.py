@@ -168,7 +168,7 @@ class GazeboWorld(Node):
             # Do not leave a new fused observation waiting for the next
             # periodic tick. Only advancing healthy samples use this path;
             # the existing timer still delivers health/semantic changes.
-            self._publish_observation(only_advanced=True)
+            self._publish_world(only_advanced=True)
 
     def _command(self, msg):
         now = time.monotonic()
@@ -233,10 +233,7 @@ class GazeboWorld(Node):
         with self.human_lock:
             self.human = self.human_walk = self.human_motion = None
 
-    def _publish_world(self):
-        self._publish_observation()
-
-    def _publish_observation(self, *, only_advanced=False):
+    def _publish_world(self, *, only_advanced=False):
         now = time.monotonic()
         stamp = self.get_clock().now().nanoseconds // 1_000_000
         if (not stamp or self.odom is None or self.joint is None or
