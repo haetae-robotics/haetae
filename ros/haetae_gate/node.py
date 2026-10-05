@@ -311,6 +311,11 @@ class HaetaeGate(Node):
         if self.permits:
             if "arm" not in self.permits.challenges:
                 return
+            if self.permit_stop and not self.permit_reset:
+                # Disarmed Rust state cannot renew a controller lease. A
+                # signed stop/expiry already latches the controller; sending
+                # an idle lease afterwards is a spurious locked rejection.
+                return
             if not self.permit_reset and (
                     self.permits.admitted_arm != self.permits.active_arm or
                     self.permits.admitted_goal_sequence != self.permits.goal_sequence):

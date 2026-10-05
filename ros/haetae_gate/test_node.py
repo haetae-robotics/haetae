@@ -61,6 +61,7 @@ class NodeBoundaryTest(unittest.TestCase):
                                     active_arm=digest, admitted_arm="0" * 64,
                                     goal_sequence=3, admitted_goal_sequence=0)
         g.permit_reset = False
+        g.permit_stop = False
         g._permit = lambda target, kind, payload: kind + ":" + payload
         g._heartbeat(1000)
         self.assertFalse(g.heartbeats)
@@ -84,6 +85,10 @@ class NodeBoundaryTest(unittest.TestCase):
         g.permits.admitted_goal_sequence = 0
         g._heartbeat(1000)
         self.assertEqual(g.heartbeats[-1], "lease:" + "0" * 64)
+        g.permit_stop = True
+        count = len(g.heartbeats)
+        g._heartbeat(1000)
+        self.assertEqual(len(g.heartbeats), count)  # Disarmed owner cannot renew.
 
     def test_success_retains_admitted_digest_until_explicit_stop(self):
         g = self.gate
