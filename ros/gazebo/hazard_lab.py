@@ -948,7 +948,10 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 processes,
                 "parked native hazard fixtures",
             )
-            if abs(world.primary_joint()) > 0.1:
+            initial_joint = world.primary_joint()
+            if index == 1 and (not math.isfinite(initial_joint) or abs(initial_joint) > 0.1):
+                raise RuntimeError("household fixture profile requires initial joint1 within 0.1 rad")
+            if abs(initial_joint) > 0.1:
                 world.marker(
                     "다음 장면 준비",
                     detail="위험 표적을 치운 뒤 팔을 시작 위치로 돌립니다.",

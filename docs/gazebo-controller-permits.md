@@ -127,6 +127,10 @@ Subsequent test rearm still requires ordinary completion or the expected
 rejection verified by that test. This is fixture initialization, not production
 automatic recovery.
 
+This fixed fixture profile requires initial joint1 within 0.1 rad of zero. An
+unexpected initial posture fails before any repositioning or setup reset; the
+initializer cannot silently move an arm into its supported starting posture.
+
 Telemetry keeps the total rejection counter, including invalid stop packets,
 and a separate motion/reset/lease rejection counter. Normal arm completion
 checks the latter: a rejected locking-only stop still locks and cannot be

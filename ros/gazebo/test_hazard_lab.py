@@ -23,6 +23,20 @@ from public_report import report, failed_household_result
 
 
 class WorldPublicationTest(unittest.TestCase):
+    def test_first_fixture_cannot_dispatch_repositioning_before_setup(self):
+        tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
+        check = next(n for n in ast.walk(tree) if isinstance(n, ast.If)
+                     and any(isinstance(child, ast.Constant) and child.value ==
+                             "household fixture profile requires initial joint1 within 0.1 rad"
+                             for child in ast.walk(n)))
+        code = compile(ast.Module(body=[check], type_ignores=[]), "actual-initial-posture-gate", "exec")
+        for joint in (0., .1, -.1):
+            exec(code, {"index": 1, "initial_joint": joint, "math": math})
+        for joint in (.10001, -.10001, float("nan"), float("inf")):
+            with self.assertRaises(RuntimeError):
+                exec(code, {"index": 1, "initial_joint": joint, "math": math})
+        exec(code, {"index": 2, "initial_joint": .2, "math": math})
+
     def setup_world(self):
         semantic = {"observed_ms": 995, "revision": 2, "task_revision": 1,
                     "coverage_known": True, "confidence": 1}
