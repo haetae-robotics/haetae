@@ -36,6 +36,7 @@ class ArmBarrierTest(unittest.TestCase):
         stop = {"decision": {"verdict": "yun", "action": {"type": "stop"}, "proposal_id": 7}}
         guard = {"holding": False, "published_wall_ns": 9_960_000_000,
                  "lease_received_wall_ns": 9_940_000_000, "nonce": "current",
+                 "lease_sent_ms": 9950, "cutoff_ms": 9940,
                  "active_digest": "0" * 64, "goal_sequence": 0}
         return SimpleNamespace(states=[(9.97, state)], outcomes=[(9.95, stop)],
             guard_states=[(9.98, dict(guard))], base_guard_states=[(9.98, dict(guard))],
@@ -82,6 +83,17 @@ class ArmBarrierTest(unittest.TestCase):
             self.assertFalse(self.ready(changed))
         world.states[-1] = (9.89, world.states[-1][1])
         self.assertFalse(self.ready(world))
+
+    def test_backdated_idle_origin_must_advance_beyond_reset_cutoff(self):
+        world = self.fixture()
+        for issued in (None, True, 9940, 9930, -1):
+            world.guard_states[-1][1]["lease_sent_ms"] = issued
+            self.assertFalse(self.ready(world))
+        world.guard_states[-1][1]["lease_sent_ms"] = 9950
+        self.assertTrue(self.ready(world))
+        for cutoff in (None, True, -1, 9950):
+            world.guard_states[-1][1]["cutoff_ms"] = cutoff
+            self.assertFalse(self.ready(world))
 
     def test_arm_only_fixture_accepts_locked_stopped_base_but_not_locked_arm(self):
         world = self.fixture()

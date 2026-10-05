@@ -34,9 +34,12 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         raise AssertionError("permit probes require no live authorizer")
     def stopped():
         joint = world.joint
+        odom = world.odom
         age = time.monotonic()
-        return (joint is not None and 0 <= age-world.joint_received < .1
-                and 0 <= age-world.odom_received < .1 and abs(world.speed()) < .03
+        return (joint is not None and odom is not None and 0 <= age-world.joint_received < .1
+                and 0 <= age-world.odom_received < .1
+                and all(math.isfinite(value) and abs(value) < .03 for value in
+                        (odom.twist.twist.linear.x, odom.twist.twist.angular.z))
                 and all(j in joint.name and joint.name.index(j) < len(joint.velocity)
                         and math.isfinite(joint.velocity[joint.name.index(j)])
                         and abs(joint.velocity[joint.name.index(j)]) < .03 for j in ARM_JOINTS))
@@ -94,7 +97,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         nonlocal proposal_id
         measured = joints_snapshot()
         feed("world", {"stamp_ms": measured_stamp(), "robot": {"pose": {"x": world.pose()[0], "y": world.pose()[1]},
-            "yaw": world.heading(), "twist": {"linear": world.speed(), "angular": 0.0},
+            "yaw": world.heading(), "twist": {"linear": world.speed(), "angular": world.odom.twist.twist.angular.z},
             "joints": measured}, "humans": [], "confidence": 1.0})
         proposal_id += 1
         begin = time.monotonic_ns()

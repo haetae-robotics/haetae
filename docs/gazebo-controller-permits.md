@@ -145,6 +145,10 @@ avoids a fixed preparation sleep, which could hide a lapse beyond the 200 ms
 permit lifetime.
 Preparation emits no further stops or resets once the single arm goal is sent;
 failure after dispatch cannot use this barrier to recover or retry motion.
+The arm's idle lease must have a signed simulation origin strictly newer than
+the controller reset cutoff. This accounts for conservative permit backdating
+before the single goal is sent; it does not relax the controller cutoff or
+retry a rejected goal.
 The arm-only fixture permits a locked wheel controller when its current report
 and measured linear and angular stop are fresh; it grants no wheel motion authority. General
 rearm and scenes requiring wheel motion still require both controllers unlocked.

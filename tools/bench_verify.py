@@ -161,7 +161,8 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     report = {"schema": 1, "kind": "software-bench", "physical_hardware_tested": False,
               "electrical_output_measured": False, "usb_and_watchdog_tested": False,
-              "lease_ms": 200, "native_observation_limit_ms": 300, "passed": False, "cases": []}
+              "lease_ms": 200, "native_observation_limit_ms": 300,
+              "availability_degraded": False, "passed": False, "cases": []}
     report["source_revision"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     report["source_dirty"] = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip())
     source_paths = sorted((ROOT / "hardware").rglob("*.h")) + sorted((ROOT / "hardware").rglob("*.ino"))
@@ -214,6 +215,7 @@ def main():
         for name, test in cases:
             result = test()
             report["cases"].append(result)
+            report["availability_degraded"] |= result.get("availability") == "host-scheduling-loss"
             label = "host-scheduling-loss (fail-closed)" if result.get("availability") == "host-scheduling-loss" else name
             print(f"PASS {label}: {result['stop_reason']} / {result['last_run_to_off_ms']} ms", flush=True)
         report["passed"] = True

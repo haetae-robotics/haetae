@@ -19,7 +19,9 @@ class ProbeEntryStopTest(unittest.TestCase):
         method = next(node for node in exercise.body if isinstance(node, ast.FunctionDef) and node.name == 'stopped')
         names = ['joint1', 'joint2', 'joint3', 'joint4']
         world = SimpleNamespace(joint=SimpleNamespace(name=names[:], velocity=[0.] * 4),
-                                joint_received=9.95, odom_received=9.95, speed=lambda: 0.)
+                                joint_received=9.95, odom_received=9.95,
+                                odom=SimpleNamespace(twist=SimpleNamespace(twist=SimpleNamespace(
+                                    linear=SimpleNamespace(x=0.), angular=SimpleNamespace(z=0.)))))
         scope = dict(world=world, ARM_JOINTS=names, math=math,
                      time=SimpleNamespace(monotonic=lambda: 10.))
         exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-probe-stop', 'exec'), scope)
@@ -36,7 +38,16 @@ class ProbeEntryStopTest(unittest.TestCase):
         self.assertFalse(stopped())
         world.joint_received, world.odom_received = 9.95, 9.89
         self.assertFalse(stopped())
-        world.odom_received, world.speed = 9.95, lambda: .04
+        world.odom_received = 9.95
+        world.odom.twist.twist.linear.x = .04
+        self.assertFalse(stopped())
+        world.odom.twist.twist.linear.x = 0.
+        for angular in (.04, -.04, float('nan'), float('inf')):
+            world.odom.twist.twist.angular.z = angular
+            self.assertFalse(stopped())
+        world.odom.twist.twist.angular.z = 0.
+        self.assertTrue(stopped())
+        world.odom = None
         self.assertFalse(stopped())
         world.joint = None
         self.assertFalse(stopped())

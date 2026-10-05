@@ -47,6 +47,14 @@ def gazebo_rearm_ready(world, sent_at, now, arm_joints, nonces, proposal_id):
     lease = arm.get("lease_received_wall_ns", 0) / 1e9
     if lease < sent_at or not 0 <= now - lease < 0.1:
         return False
+    # Reset discards queued work at the controller update's cutoff. A goal
+    # uses the conservatively backdated signed origin, so wait for an actual
+    # idle lease from the owner issued strictly after that cutoff before
+    # dispatching the single goal. This is not a sleep or a motion retry.
+    issued = arm.get("lease_sent_ms")
+    cutoff = arm.get("cutoff_ms")
+    if type(issued) is not int or type(cutoff) is not int or not 0 <= cutoff < issued:
+        return False
     if (world.joint is None or world.odom is None
             or not 0 <= now - world.joint_received < 0.1
             or not 0 <= now - world.odom_received < 0.1):

@@ -128,9 +128,17 @@ public:
           auto digest = arm_digest(goal->trajectory);
           const bool admitted = permit_.accept(goal->trajectory.header.frame_id, "goal", digest,
             get_node()->now().nanoseconds(), wall_ns());
-          if (!admitted || !current_goal(goal->trajectory)) {
-            if (admitted) {permit_.reject();}
-            RCLCPP_WARN(get_node()->get_logger(), "Controller goal permit rejected: %s", permit_.reason().c_str());
+          if (!admitted) {
+            RCLCPP_WARN(get_node()->get_logger(), "Controller goal permit rejected: %s %s",
+              permit_.reason().c_str(), permit_.diagnostic().c_str());
+            return rclcpp_action::GoalResponse::REJECT;
+          }
+          if (!current_goal(goal->trajectory)) {
+            RCLCPP_WARN(get_node()->get_logger(),
+              "Controller current goal rejected: issued_sim_ns=%llu cutoff_ms=%lld holding=%d",
+              static_cast<unsigned long long>(permit_.grant().sim),
+              static_cast<long long>(cutoff_ms_.load()), holding_.load() ? 1 : 0);
+            permit_.reject();
             return rclcpp_action::GoalResponse::REJECT;
           }
           const auto answer = Base::goal_received_callback(id, goal);

@@ -101,3 +101,5 @@ device lease. That path passes only the fail-closed property: prior measured ON,
 lease OFF within the 200..300ms process observation band, a LOCKED status and
 host gap of at least 200ms, failing host exit, and no subsequent ON/rearm.
 It is not a normal availability success or a physical timing qualification.
+The aggregate report sets `availability_degraded: true` whenever a case has
+this classification, even when its fail-closed checks pass.
