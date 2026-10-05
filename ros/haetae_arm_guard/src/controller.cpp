@@ -44,10 +44,9 @@ class LeaseTrajectoryController : public joint_trajectory_controller::JointTraje
 
   bool current_goal(const Trajectory & trajectory)
   {
-    const auto stamp = rclcpp::Time(trajectory.header.stamp).nanoseconds() / 1000000;
-    const auto now = get_node()->now().nanoseconds() / 1000000;
-    return stamp > 0 && stamp >= cutoff_ms_.load() && stamp <= now + 20 &&
-           now - stamp <= 50 && !holding_.load() && alive_nonrt();
+    return current_goal_stamp(rclcpp::Time(trajectory.header.stamp).nanoseconds(),
+      permit_.grant(), cutoff_ms_.load() * 1000000, get_node()->now().nanoseconds()) &&
+      !holding_.load() && alive_nonrt();
   }
 
 public:
@@ -95,13 +94,15 @@ public:
             !goal->component_path_tolerance.empty() || !goal->component_goal_tolerance.empty() ||
             goal->goal_time_tolerance.sec != 0 || goal->goal_time_tolerance.nanosec != 0 ||
             !goal->multi_dof_trajectory.joint_names.empty() || !goal->multi_dof_trajectory.points.empty() ||
-            !current_goal(goal->trajectory)) {
+            holding_.load() || !alive_nonrt()) {
             RCLCPP_WARN(get_node()->get_logger(), "Controller goal shape/lease rejected");
             permit_.reject(); return rclcpp_action::GoalResponse::REJECT;
           }
           auto digest = arm_digest(goal->trajectory);
-          if (!permit_.accept(goal->trajectory.header.frame_id, "goal", digest,
-            get_node()->now().nanoseconds(), wall_ns())) {
+          const bool admitted = permit_.accept(goal->trajectory.header.frame_id, "goal", digest,
+            get_node()->now().nanoseconds(), wall_ns());
+          if (!admitted || !current_goal(goal->trajectory)) {
+            if (admitted) {permit_.reject();}
             RCLCPP_WARN(get_node()->get_logger(), "Controller goal permit rejected: %s", permit_.reason().c_str());
             return rclcpp_action::GoalResponse::REJECT;
           }

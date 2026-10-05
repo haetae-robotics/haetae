@@ -24,4 +24,7 @@ int main()
     }
   }
   std::cout << "Python/C++ exact payload vectors passed\n";
+  arm.header.stamp.sec = 0;
+  if (haetae_arm_guard::arm_digest(arm) !=
+    "2ffe617c47e93dde70c78ad1f7afbed8981a22b955ede4eb85c85ea4f4e3b64c") {return 1;}
 }

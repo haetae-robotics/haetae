@@ -77,6 +77,14 @@ class ControllerPermitTest(unittest.TestCase):
             with self.assertRaises(ValueError):signer.sign('base','command',IDLE,1,0)
             with self.assertRaises(ValueError):signer.observe('arm',{'nonce':'Z'*32})
 
+    def test_zero_start_stamp_is_bound_in_arm_digest(self):
+        trajectory = arm()
+        original = arm_digest(trajectory)
+        trajectory.header.stamp = stamp(0)
+        self.assertEqual(arm_digest(trajectory),
+            '2ffe617c47e93dde70c78ad1f7afbed8981a22b955ede4eb85c85ea4f4e3b64c')
+        self.assertNotEqual(arm_digest(trajectory), original)
+
     def test_only_explicit_accepted_stop_can_issue_reset(self):
         step={'outcome':{'decision':{'action':{'type':'stop'},'verdict':'yun'}},
               'status':{'armed':['vla'],'active':None,'mode':'normal','arm_cancelling':False}}

@@ -54,6 +54,12 @@ motion are unsupported. Up to 16 points and a one-second arm chunk are accepted;
 a first point at time zero is supported. Python/C++ fixed digest vectors check
 the shared encoding.
 
+Authorized arm goals use a zero ROS trajectory start stamp, bound in the digest,
+so JTC begins at controller admission. Admission/cutoff checks use the signed
+permit issue time for that case. The permit's original dual-clock issuance and
+expiry are unchanged. A past JTC start time would otherwise compress the initial
+segment after relay latency and could exceed the measured velocity policy.
+
 Each target has a strictly increasing sequence shared by its ingress routes.
 Goal acknowledgement suppresses arm renewal until the exact goal is admitted.
 Renewals bind the active trajectory digest, so an authenticated generic heartbeat

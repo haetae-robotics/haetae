@@ -170,8 +170,11 @@ class HaetaeGate(Node):
         goal.trajectory.joint_names = self.arm_joints
         goal.trajectory.header.stamp = self.get_clock().now().to_msg()
         if self.permits:
-            goal.trajectory.header.stamp.sec, goal.trajectory.header.stamp.nanosec = divmod(
-                self.permit_sim_ns, 1_000_000_000)
+            # JTC starts a zero-stamped trajectory at admission. The permit's
+            # signed clocks retain issuance/freshness; delayed transport must
+            # not compress the first segment to catch up to an old start time.
+            goal.trajectory.header.stamp.sec = 0
+            goal.trajectory.header.stamp.nanosec = 0
         for point in points:
             p = JointTrajectoryPoint()
             p.positions = [float(v) for v in point["positions"]]

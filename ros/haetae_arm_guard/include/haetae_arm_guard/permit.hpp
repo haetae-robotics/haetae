@@ -83,6 +83,15 @@ struct Grant
   std::string digest;
 };
 
+inline bool current_goal_stamp(int64_t trajectory_stamp, const Grant & grant,
+  int64_t cutoff, int64_t now)
+{
+  // A zero ROS header means start at JTC admission, not an unbounded permit.
+  const auto stamp = trajectory_stamp == 0 ? static_cast<int64_t>(grant.sim) : trajectory_stamp;
+  if (stamp <= 0 || stamp < cutoff || now < 0) {return false;}
+  return stamp > now ? stamp - now <= 20000000 : now - stamp < 50000000;
+}
+
 class PermitGuard
 {
   std::mutex mutex_;

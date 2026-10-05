@@ -111,13 +111,14 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                        {"time_from_start_ms": 1000, "positions": end}]})
         trajectory = JointTrajectory()
         trajectory.joint_names = list(ARM_JOINTS)
-        trajectory.header.stamp.sec, trajectory.header.stamp.nanosec = divmod(sim, 1_000_000_000)
+        # Start at controller admission; signing clocks remain the original
+        # Rust approval clocks and are not encoded as a past JTC start time.
         for point in step["arm"]["execute"]["points"]:
             p = JointTrajectoryPoint(); p.positions = [float(v) for v in point["positions"]]
             p.time_from_start.sec, p.time_from_start.nanosec = divmod(point["time_from_start_ms"]*1_000_000, 1_000_000_000)
             trajectory.points.append(p)
         digest = arm_digest(trajectory)
-        return {"arm": {"joints": ARM_JOINTS, "stamp": sim,
+        return {"arm": {"joints": ARM_JOINTS, "stamp": 0,
             "points": [{"positions": list(p.positions), "time": p.time_from_start.sec*1_000_000_000+p.time_from_start.nanosec}
                        for p in trajectory.points], "permit": token("arm", "goal", digest, sim, wall, budget(step, sim))}}, digest
     def new_issuer():

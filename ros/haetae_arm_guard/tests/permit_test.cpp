@@ -73,5 +73,10 @@ int main()
   bool invalid = false;
   try {integer("9223372036854775808");} catch (const std::exception &) {invalid = true;}
   check(invalid, "integer overflow rejected");
+  Grant goal_grant; goal_grant.sim = 1000000000;
+  check(current_goal_stamp(0, goal_grant, 1000000000, 1049999999), "zero header binds fresh signed grant");
+  check(!current_goal_stamp(0, goal_grant, 1000000000, 1050000000), "zero header cannot refresh stale grant");
+  check(!current_goal_stamp(0, goal_grant, 1000000001, 1000000000), "zero header cannot bypass stop cutoff");
+  check(!current_goal_stamp(0, Grant{}, 0, 1000000000), "zero header requires signed issue time");
   std::cout << "controller permit adversarial policy checks passed\n";
 }

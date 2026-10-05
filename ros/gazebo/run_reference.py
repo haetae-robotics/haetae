@@ -85,6 +85,7 @@ class GazeboWorld(Node):
         self.joint = None
         self.odom_received = 0.0
         self.joint_received = 0.0
+        self.joint_measurements = deque(maxlen=512)
         self.perception = Perception()
         self.native = None
         self.sensor_info = {}
@@ -157,6 +158,7 @@ class GazeboWorld(Node):
         self.odom_received = time.monotonic()
 
     def _joint(self, msg):
+        self.joint_measurements.append((time.monotonic(), msg))
         if all(name in msg.name for name in ARM_JOINTS):
             self.joint = msg
             self.joint_received = time.monotonic()
@@ -475,8 +477,20 @@ def exercise_arm_fault(world, processes, case):
              5, processes, "independent controller lease opens")
     initial = world.arm_positions()
     world.marker("팔 독립 정지 시험", case=case)
+    dispatched_at = time.monotonic()
     world.propose_arm(initial[0] + (-0.5 if initial[0] > 0.1 else 0.5))
-    wait_for(lambda: abs(world.primary_joint() - initial[0]) > 0.10, 5, processes,
+    peak_velocity = 0.0
+    def moving_control():
+        nonlocal peak_velocity
+        for stamp, sample in list(world.joint_measurements):
+            if stamp >= dispatched_at:
+                for name, value in zip(sample.name, sample.velocity):
+                    if name in ARM_JOINTS:
+                        peak_velocity = max(peak_velocity, abs(value))
+        if peak_velocity > 1.0 + 1e-6:
+            raise AssertionError("arm positive control exceeded measured velocity policy")
+        return abs(world.primary_joint() - initial[0]) > 0.10
+    wait_for(moving_control, 5, processes,
              "arm moving before injected fault")
     wait_for(lambda: world.guard_states and not world.guard_states[-1][1]["holding"] and
         0 <= time.monotonic() - world.guard_states[-1][1].get("lease_received_wall_ns", 0) / 1e9 <= .1,
@@ -521,6 +535,7 @@ def exercise_arm_fault(world, processes, case):
             if max(abs(a-b) for a,b in zip(positions, world.arm_positions())) > 0.02:
                 raise AssertionError("heartbeat recovery revived the expired trajectory")
         return {"ok": True, "case": case, "controller": "independent_arm_lease",
+                "positive_peak_velocity_rad_s": peak_velocity,
                 "joint_names": list(ARM_JOINTS), "held_positions_rad": positions,
                 "post_stop_drift_rad": drift,
                 "pre_fault_lease_age_wall_ms": round((fault_wall - pre_fault_lease["lease_received_wall_ns"] / 1e9) * 1000, 1),
