@@ -109,7 +109,9 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
           set(permit_checks) == expected and all(mapping(row).get("ok") is True for row in permit_checks.values()) and
           (number(mapping(permit_checks.get("base_positive")).get("moved_m")) or 0) > .03 and
           (number(mapping(permit_checks.get("arm_positive")).get("moved_rad")) or 0) > .08 and
-          all(mapping(permit_checks.get(target + "_expiry")).get("old_goal_did_not_resume") is True
+          all(mapping(permit_checks.get(target + "_expiry")).get("old_goal_did_not_resume") is True and
+              mapping(permit_checks.get(target + "_expiry")).get("expiry_hold_observed") is True and
+              within(mapping(permit_checks.get(target + "_expiry")).get("expiry_drift"), .02)
               for target in ("base", "arm")) and
           all(mapping(permit_checks.get(target + "_" + case)).get("controller_rejection_observed") is True and
               mapping(permit_checks.get(target + "_" + case)).get("recovery_did_not_rearm") is True and

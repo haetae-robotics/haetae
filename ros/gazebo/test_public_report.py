@@ -13,8 +13,8 @@ class PublicReportTest(unittest.TestCase):
                                'recovery_rejection_observed':True,'recovery_drift':0.}
                for target in ('base','arm') for case in ('unsigned','altered','signature','replay','delay','target')}
         cases.update({'base_positive':{'ok':True,'moved_m':.04},'arm_positive':{'ok':True,'moved_rad':.1},
-                      'base_expiry':{'ok':True,'old_goal_did_not_resume':True},
-                      'arm_expiry':{'ok':True,'old_goal_did_not_resume':True}})
+                      'base_expiry':{'ok':True,'old_goal_did_not_resume':True,'expiry_hold_observed':True,'expiry_drift':0.},
+                      'arm_expiry':{'ok':True,'old_goal_did_not_resume':True,'expiry_hold_observed':True,'expiry_drift':0.}})
         value={'controller_permits':{'ok':True,'scope':'gazebo_exact_action_permits_with_compromised_relay_uid',
                                     'attacker_uid':2005,'checks':cases,
                                     'relay_boundaries': {

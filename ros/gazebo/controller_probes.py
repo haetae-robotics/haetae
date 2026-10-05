@@ -177,7 +177,15 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                  action=lambda: send(base_packet()))
         results["base_positive"] = {"ok": True, "moved_m": abs(world.pose()[0]-before[0])}
         wait_for(stopped, 3, processes, "base independent expiry")
-        results["base_expiry"]={"ok":True,"old_goal_did_not_resume":True}
+        held_pose, expiry_wall = world.pose(), time.monotonic_ns()
+        wait_for(lambda: guard("base").get("holding") is True and
+                 guard("base").get("published_wall_ns", 0) >= expiry_wall + 300_000_000,
+                 2, processes, "fresh base expiry hold observation")
+        expiry_drift = math.dist(world.pose(), held_pose)
+        if expiry_drift > .02:
+            raise AssertionError("expired base drift")
+        results["base_expiry"]={"ok":True,"old_goal_did_not_resume":True,
+                               "expiry_hold_observed": True, "expiry_drift": expiry_drift}
         reset()
         initial = world.arm_positions()
         accepted = guard("arm").get("accepted", 0)
@@ -207,11 +215,17 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         results["arm_positive"]={"ok":True,"moved_rad":abs(world.primary_joint()-initial[0])}
         wait_for(stopped,3,processes,"arm independent expiry")
         held = world.arm_positions()
+        expiry_wall = time.monotonic_ns()
         until=time.monotonic()+.3
         wait_for(lambda:time.monotonic()>=until,2,processes,"arm expiry settling")
         if max(abs(a-b) for a,b in zip(held,world.arm_positions()))>.02:
             raise AssertionError("expired arm drift")
-        results["arm_expiry"]={"ok":True,"old_goal_did_not_resume":True}
+        wait_for(lambda: guard("arm").get("holding") is True and
+                 guard("arm").get("published_wall_ns", 0) >= expiry_wall + 300_000_000,
+                 2, processes, "fresh arm expiry hold observation")
+        results["arm_expiry"]={"ok":True,"old_goal_did_not_resume":True,
+                              "expiry_hold_observed": True,
+                              "expiry_drift": max(abs(a-b) for a,b in zip(held,world.arm_positions()))}
         for target in ("base","arm"):
             for case in ("unsigned","altered","signature","replay","delay","target"):
                 reset()

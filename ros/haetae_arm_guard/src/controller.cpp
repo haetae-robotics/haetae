@@ -51,6 +51,25 @@ class LeaseTrajectoryController : public joint_trajectory_controller::JointTraje
       !holding_.load() && alive_nonrt();
   }
 
+  void publish_guard_state()
+  {
+    if (!guard_state_) {return;}
+        const auto lease = *lease_.readFromNonRT();
+        std_msgs::msg::String msg;
+        msg.data = std::string("{\"holding\":") + (holding_.load() ? "true" : "false") +
+          ",\"stamp_ms\":" + std::to_string(updated_ms_.load()) +
+          ",\"cutoff_ms\":" + std::to_string(cutoff_ms_.load()) + "}";
+        msg.data.pop_back();
+        msg.data += ",\"nonce\":\"" + permit_.nonce() + "\",\"stop_wall_ns\":" + std::to_string(stop_wall_ns_.load()) +
+          ",\"active_digest\":\"" + admitted_digest_ + "\",\"published_wall_ns\":" + std::to_string(wall_ns()) +
+          ",\"goal_sequence\":" + std::to_string(admitted_goal_sequence_) +
+          ",\"accepted\":" + std::to_string(permit_.accepted()) +
+          ",\"rejected\":" + std::to_string(permit_.rejected()) +
+          ",\"lease_sent_ms\":" + std::to_string(lease.sent_ms) +
+          ",\"lease_received_wall_ns\":" + std::to_string(lease.received_ns) + "}";
+        guard_state_->publish(msg);
+  }
+
 public:
   Return on_configure(const rclcpp_lifecycle::State & state) override
   {
@@ -138,6 +157,9 @@ public:
         Base::goal_accepted_callback(goal);
         admitted_digest_ = active_digest_;
         admitted_goal_sequence_ = pending_goal_sequence_;
+        // Publish immediately: first renewal must not wait for a periodic
+        // telemetry tick on top of action/DDS admission latency.
+        publish_guard_state();
       });
     joint_command_subscriber_.reset();
     joint_command_subscriber_ = get_node()->create_subscription<Trajectory>(
@@ -148,20 +170,7 @@ public:
     guard_state_ = get_node()->create_publisher<std_msgs::msg::String>(
       "~/guard_state", rclcpp::QoS(1).transient_local());
     state_timer_ = get_node()->create_wall_timer(std::chrono::milliseconds(50), [this]() {
-        const auto lease = *lease_.readFromNonRT();
-        std_msgs::msg::String msg;
-        msg.data = std::string("{\"holding\":") + (holding_.load() ? "true" : "false") +
-          ",\"stamp_ms\":" + std::to_string(updated_ms_.load()) +
-          ",\"cutoff_ms\":" + std::to_string(cutoff_ms_.load()) + "}";
-        msg.data.pop_back();
-        msg.data += ",\"nonce\":\"" + permit_.nonce() + "\",\"stop_wall_ns\":" + std::to_string(stop_wall_ns_.load()) +
-          ",\"active_digest\":\"" + admitted_digest_ + "\",\"published_wall_ns\":" + std::to_string(wall_ns()) +
-          ",\"goal_sequence\":" + std::to_string(admitted_goal_sequence_) +
-          ",\"accepted\":" + std::to_string(permit_.accepted()) +
-          ",\"rejected\":" + std::to_string(permit_.rejected()) +
-          ",\"lease_sent_ms\":" + std::to_string(lease.sent_ms) +
-          ",\"lease_received_wall_ns\":" + std::to_string(lease.received_ns) + "}";
-        guard_state_->publish(msg);
+        publish_guard_state();
       });
     return Return::SUCCESS;
   }
