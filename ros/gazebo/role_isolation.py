@@ -59,6 +59,7 @@ class Roles:
         self.keystore = keystore
         self.binary = binary
         self.arm_joints = list(arm_joints)
+        self._source_ttls = {}
         self.root_public, self.log_public = fresh_fixture(root)
         root.chmod(0o711)
         self.directories = {}
@@ -114,9 +115,10 @@ class Roles:
         if type(arm_fixed_ttl_ms) is not int or arm_fixed_ttl_ms not in (0, 1000):
             raise ValueError("unsupported fixed arm lease")
         directory = self.directories[role]
-        if (directory / "params.yaml").exists():
-            existing = json.loads((directory / "params.yaml").read_text())["haetae_source_signer"]["ros__parameters"]
-            if existing.get("arm_fixed_ttl_ms", 0) != arm_fixed_ttl_ms:
+        # The file is role-owned after provisioning. Root compares only its
+        # own configuration record and never parses role-mutable bytes.
+        if role in self._source_ttls:
+            if self._source_ttls[role] != arm_fixed_ttl_ms:
                 raise ValueError("cached signer lease configuration changed")
             return directory / "params.yaml"
         keys = ("world", "fault") if role == "world" else ("vla",)
@@ -125,9 +127,14 @@ class Roles:
             "counter_path": str(directory / "runtime/counters.json"),
             "keys_json": json.dumps({key: str(directory / (key + ".key")) for key in keys}),
             "arm_joints_json": json.dumps(self.arm_joints), "arm_fixed_ttl_ms": arm_fixed_ttl_ms}}}
-        (directory / "params.yaml").write_text(json.dumps(params))
-        os.chown(directory / "params.yaml", UIDS[role], UIDS[role])
-        (directory / "params.yaml").chmod(0o600)
+        # The root-owned principal directory pins this entry. Exclusive create
+        # refuses unexpected existing files, links and FIFOs before any read.
+        with (directory / "params.yaml").open("x") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(json.dumps(params))
+            stream.flush()
+            os.fchown(stream.fileno(), UIDS[role], UIDS[role])
+        self._source_ttls[role] = arm_fixed_ttl_ms
         return directory / "params.yaml"
 
     def counter(self, role):

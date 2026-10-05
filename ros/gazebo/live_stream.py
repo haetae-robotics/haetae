@@ -43,7 +43,11 @@ class LiveHub:
             self.publish(message)
             self._failure = self._messages[-1]
             self._ready = False
-            if result is not None or not self._report or self._report.get("status") != "failed":
+            if result is None and self._report:
+                # A post-success export failure invalidates success while
+                # retaining the profile and all previously measured checks.
+                self._report = {**self._report, "status": "failed"}
+            else:
                 self._report = report(result if result is not None else
                                       {"profile":"household_hazards"} if self.household_hazards else None,
                                       revision=os.environ.get("HAETAE_REVISION", "unknown"),
@@ -136,6 +140,7 @@ def start_server(hub, port, bind_host="127.0.0.1", gazebo_gui=False,
         # Closing an HTTP/1.0 response can orphan queued TCP packets; the
         # container's non-root network guard correctly rejects ownerless traffic.
         protocol_version = "HTTP/1.1"
+        timeout = 10
 
         def log_message(self, _format, *_args):
             pass

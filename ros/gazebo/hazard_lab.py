@@ -658,6 +658,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             last_stamp=None,
             accepted=None,
         )
+        if time.monotonic() - started_wall > 0.05:
+            raise RuntimeError("hazard dispatch preparation exceeded 50 ms")
         world.propose_arm_plan(points)
         goal = points[-1][1][0]
         wait_for(

@@ -4,6 +4,7 @@ import json
 import gzip
 import threading
 import unittest
+from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -11,6 +12,19 @@ from live_stream import LiveHub, start_server
 
 
 class LiveStreamTest(unittest.TestCase):
+    def test_post_success_failure_keeps_profile_and_measured_checks(self):
+        hub = LiveHub(household_hazards=True)
+        passed = {"status": "passed", "scope": "household_hazard_preflight_simulation",
+                  "checks": [{"id": "heat", "status": "passed",
+                              "measurements": {"measured_motion_rad": .3}}]}
+        with mock.patch("live_stream.report", return_value=passed):
+            hub.publish({"kind": "result", "result": {"profile": "household_hazards"}})
+        before = hub.public_report()
+        hub.fail({"kind": "error", "label": "final export rejected"})
+        after = hub.public_report()
+        self.assertEqual(after, {**before, "status": "failed"})
+        self.assertEqual(after["scope"], "household_hazard_preflight_simulation")
+
     def test_household_failure_keeps_partial_evidence_after_outer_failure(self):
         hub = LiveHub(household_hazards=True)
         row = {"id": "human", "blocked": True, "allowed": True,
