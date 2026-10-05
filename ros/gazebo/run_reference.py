@@ -143,6 +143,7 @@ class GazeboWorld(Node):
         decision = value.get("decision", {})
         if decision:
             self._emit("decision", verdict=decision.get("verdict"),
+                       proposal_id=decision.get("proposal_id"),
                        fired=decision.get("fired", []),
                        action=decision.get("action", {}).get("type")
                        if decision.get("action") else None)
@@ -477,6 +478,16 @@ def prepare_arm_fault(world, processes, roles=None):
               for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))}
     deadline = time.monotonic() + 5
     attempts = []
+    timeout_observations = []
+    def routes():
+        # Graph counts are diagnostic only, never proof of delivery/acceptance.
+        try:
+            return {topic: {"publishers": world.count_publishers(topic),
+                            "subscriptions": world.count_subscribers(topic)}
+                    for topic in ("/haetae_gate/signed/vla", "/haetae_gate/signed/world")}
+        except Exception as exc:
+            return {"unavailable": type(exc).__name__}
+    world.arm_preparation_diagnostics = None
     for attempt in range(2 if roles else 1):
         # In the isolated profile each parsed proposal increments both this
         # durable VLA reservation and proposal_id once, before DDS publication.
@@ -484,9 +495,11 @@ def prepare_arm_fault(world, processes, roles=None):
         before = (roles.counter("vla") if roles else max((
             row.get("decision", {}).get("proposal_id", 0) for _, row in world.outcomes), default=0))
         proposal_id = before + 1
+        route_counts = routes()
         sent = time.monotonic()
         world.propose_base(0.0)
-        attempts.append({"attempt": attempt + 1, "sent_wall": sent, "proposal_id": proposal_id})
+        attempts.append({"attempt": attempt + 1, "sent_wall": sent, "proposal_id": proposal_id,
+                         "counter_before": before, "routes_at_send": route_counts})
         try:
             # One pending request at a time, at most two OFF-only requests.
             # A lost volatile DDS delivery at gate discovery can use the second
@@ -499,8 +512,20 @@ def prepare_arm_fault(world, processes, roles=None):
                         accepted_proposal_id=proposal_id, expected_nonces=nonces)
             return {"attempts": attempts, "accepted_proposal_id": proposal_id}
         except TimeoutError:
-            if roles and roles.counter("vla") != proposal_id:
+            after = roles.counter("vla") if roles else None
+            attempts[-1]["counter_after"] = after
+            attempts[-1]["routes_at_timeout"] = routes()
+            timeout_observations.append({"proposal_id": proposal_id,
+                "outcomes": [(at, row) for at, row in list(world.outcomes) if at >= sent],
+                "states": [(at, row) for at, row in list(world.states) if at >= sent],
+                "arm_guards": [(at, row) for at, row in list(world.guard_states) if at >= sent],
+                "base_guards": [(at, row) for at, row in list(world.base_guard_states) if at >= sent]})
+            if roles and after != proposal_id:
                 break  # Missing/competing source parse is not proof of DDS loss.
+    world.arm_preparation_diagnostics = {"attempts": attempts, "timeout_observations": timeout_observations,
+        "routes_at_failure": routes(),
+        "outcomes": [(at, row) for at, row in list(world.outcomes) if at >= attempts[0]["sent_wall"]],
+        "states": [(at, row) for at, row in list(world.states) if at >= attempts[0]["sent_wall"]]}
     raise TimeoutError("fresh explicit arm fault fixture reset: " + json.dumps({
         "attempts": attempts, "expected_nonces": nonces,
         "state": world.states[-1] if world.states else None,
@@ -1089,7 +1114,20 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
                  and world.states[-1][1].get("arm_controller_ready"),
                      10, processes, "new isolated arm fault fixture")
-            arm_fault_results[case] = exercise_arm_fault(world, processes, case, roles)
+            try:
+                arm_fault_results[case] = exercise_arm_fault(world, processes, case, roles)
+            except Exception:
+                # Keep the original qualification failure. Capture this fault
+                # session, not the old ordinary gate's log, before cleanup.
+                try:
+                    diagnostics = getattr(world, "arm_preparation_diagnostics", None)
+                    if diagnostics is not None:
+                        (fault_root / "preparation-diagnostics.json").write_text(json.dumps(diagnostics, indent=2))
+                    if roles:
+                        checkpoint_evidence(root, fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl", UIDS["gate"])
+                except Exception as evidence_exc:
+                    print("Arm fault diagnostic capture failed: " + type(evidence_exc).__name__, file=sys.stderr)
+                raise
             if roles:
                 checkpoint_evidence(root, fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl", UIDS["gate"])
             (fault_root / "result.json").write_text(json.dumps(arm_fault_results[case], indent=2) + "\n")

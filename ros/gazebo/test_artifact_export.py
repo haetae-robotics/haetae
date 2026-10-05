@@ -37,12 +37,20 @@ class ExportTest(unittest.TestCase):
             arm = root / 'arm-kill'
             arm.mkdir()
             (arm / 'result.json').write_text('{"ok":true}')
+            (arm / 'preparation-diagnostics.json').write_text('{"attempts":[]}')
+            (arm / 'controller.key').write_text('private')
             export_artifacts(root, output)
             self.assertEqual({p.relative_to(output).as_posix() for p in output.rglob('*') if p.is_file()},
-                             {'verification-report.json', 'arm-kill/result.json'})
+                             {'verification-report.json', 'arm-kill/result.json', 'arm-kill/preparation-diagnostics.json'})
             (root / 'verification-report.json').write_text('{"status":"passed"}')
             export_artifacts(root, output)
             self.assertEqual(json.loads((output / 'verification-report.json').read_text())['status'], 'passed')
+            (arm / 'preparation-diagnostics.json').unlink()
+            (arm / 'preparation-diagnostics.json').symlink_to(root / 'key.pem')
+            with self.assertRaises(ValueError):
+                final_export(root, output)
+            self.assertEqual(json.loads((output / 'verification-report.json').read_text())['status'], 'failed')
+            self.assertEqual(json.loads((output / 'arm-kill/preparation-diagnostics.json').read_text()), {'attempts': []})
 
     def test_final_export_preserves_existing_failure_but_rejects_success(self):
         with patch('artifact_export.export_artifacts', side_effect=ValueError('unsafe diagnostic')):

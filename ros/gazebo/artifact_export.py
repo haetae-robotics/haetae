@@ -23,7 +23,7 @@ def export_artifacts(root, output):
     output.mkdir(parents=True, exist_ok=True)
     names = [Path(name) for name in PUBLIC_FILES]
     names += [Path('arm-' + case) / name for case in ('kill', 'stall', 'delay')
-              for name in ('result.json', 'gate.log', 'sillok.jsonl')]
+              for name in ('result.json', 'gate.log', 'sillok.jsonl', 'preparation-diagnostics.json')]
     rejected = []
     for name in names:
         source = root / name
