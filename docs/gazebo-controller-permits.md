@@ -91,6 +91,14 @@ Fresh traffic or renewal alone cannot unlock either controller. Stop packets
 cannot authorize motion. The reference uses mutexes and OpenSSL; physical stop
 timing, scheduling bounds and worst-case processing costs are unqualified.
 
+Locally generated `arm-stop` and exact zero `base-stop` revocations use the
+current clocks of that new locking operation, including during asynchronous
+cancellation or bridge failure. They retain the same under-50ms admission,
+sequence/replay checks and maximum 200ms wire lifetime. They cannot unlock or
+create motion authority. Goals, commands, leases and especially resets retain
+the original Rust request clocks and remaining world/proposal budget; a delayed
+response or cancel callback cannot refresh that positive authority.
+
 ## Verification
 
 ```bash

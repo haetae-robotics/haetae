@@ -1099,6 +1099,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             json.dumps(
                 {
                     "case": active["case"],
+                    "recent_controller_states": [state for _, state in world.guard_states[-100:]],
                     "failure_hold_observed": hold_observed,
                     "sim_ms": now(),
                     "sensor": {

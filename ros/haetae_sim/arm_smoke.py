@@ -27,6 +27,7 @@ from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from run_scenario import fixture, public
+from arm_barrier import rearm_ready
 
 
 class ArmWorld(Node):
@@ -165,22 +166,11 @@ def main(binary, out=None):
                 def arm_source():
                     sent = time.monotonic()
                     world.propose()
-                    until(lambda: world.states and world.states[-1][0] >= sent
-                          and "vla" in world.states[-1][1]["armed"]
-                          and world.states[-1][1].get("active") is None
-                          and not world.states[-1][1].get("arm_cancelling")
-                          and world.states[-1][1].get("arm_controller_ready")
-                          and sum(t >= sent and value.get("decision", {}).get("verdict") == "yun"
-                                  and value["decision"].get("action") == {"type": "stop"}
-                                  for t, value in world.outcomes) >= 2,
+                    # Zero preparation messages and the later motion use the
+                    # same reliable publisher. Wait for a causal fresh stop /
+                    # newer idle state, without a fixed world-expiry-sized gap.
+                    until(lambda: rearm_ready(world.states, world.outcomes, sent),
                           gate, action=lambda: world.propose())
-                    # No new stop is sent during draining. Otherwise a queued
-                    # retry can replace the single positive motion proposal.
-                    drained = time.monotonic() + 0.15
-                    until(lambda: world.states and world.states[-1][0] >= drained
-                          and "vla" in world.states[-1][1]["armed"]
-                          and world.states[-1][1].get("active") is None
-                          and not world.states[-1][1].get("arm_cancelling"), gate)
 
                 def settled_after(reset_at):
                     until(lambda: any(t >= reset_at + 0.15 and not state["arm_cancelling"]

@@ -12,7 +12,8 @@ tree = ast.parse(Path(__file__).with_name('node.py').read_text())
 definition = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'HaetaeGate')
 definition.bases = []
 clock = SimpleNamespace(value=0.0)
-environment = dict(time=SimpleNamespace(monotonic=lambda: clock.value), UInt64=SimpleNamespace,
+environment = dict(time=SimpleNamespace(monotonic=lambda: clock.value,
+                                       monotonic_ns=lambda: int(clock.value * 1_000_000_000)), UInt64=SimpleNamespace,
                    String=SimpleNamespace, IDLE="0" * 64,
                    GoalStatus=SimpleNamespace(STATUS_SUCCEEDED=4, STATUS_CANCELED=5, STATUS_ABORTED=6),
                    BridgeFailure=BridgeFailure, StaleActuation=StaleActuation,
@@ -52,6 +53,22 @@ class NodeBoundaryTest(unittest.TestCase):
         g.heartbeat_pub = SimpleNamespace(publish=lambda message: g.heartbeats.append(message.data))
         g._publish = lambda step: None
         g._abort = lambda exc: g.aborts.append(str(exc))
+
+    def test_delayed_cancel_is_fresh_revocation_without_restamping_authority(self):
+        g = self.gate
+        signed = []
+        g.permits = SimpleNamespace(challenges={"arm": "b" * 32},
+                                    sign=lambda *args: signed.append(args) or "token")
+        g.permit_sim_ns, g.permit_wall_ns, g.permit_remaining_ns = 1_000_000_000, 0, 100_000_000
+        clock.value = .25
+        g._cancel_arm()
+        self.assertEqual(signed[-1], ("arm", "stop", "0" * 64, 1_250_000_000,
+                                      200_000_000, 250_000_000))
+        for kind in ("command", "goal", "lease", "reset"):
+            g._permit("arm", kind, "a" * 64)
+            self.assertEqual(signed[-1][3:], (1_000_000_000, 100_000_000, 0))
+        with self.assertRaises(ValueError):
+            g._permit("arm", "stop", "0" * 64)
 
     def test_relay_ack_cannot_renew_before_trusted_controller_admission(self):
         g = self.gate

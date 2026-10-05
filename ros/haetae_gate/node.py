@@ -245,7 +245,7 @@ class HaetaeGate(Node):
 
     def _cancel_arm(self):
         if self.permits and "arm" in self.permits.challenges:
-            self.heartbeat_pub.publish(String(data=self._permit("arm", "stop", IDLE)))
+            self.heartbeat_pub.publish(String(data=self._stop_permit("arm", IDLE, self._now() * 1_000_000)))
             self.permits.active_arm = IDLE
             self.permits.goal_sequence = 0
         if self.arm_goal is None and self.arm_goal_future is None:
@@ -298,14 +298,24 @@ class HaetaeGate(Node):
                 if linear or angular:
                     raise BridgeFailure("base challenge unavailable")
                 return
-            command.header.stamp.sec, command.header.stamp.nanosec = divmod(self.permit_sim_ns, 1_000_000_000)
-            command.header.frame_id = self._permit("base", "reset" if self.permit_reset else
-                "stop" if linear == 0 and angular == 0 and self.permit_stop else "command", base_digest(command))
+            stopping = not self.permit_reset and linear == 0 and angular == 0 and self.permit_stop
+            sim_ns = self._now() * 1_000_000 if stopping else self.permit_sim_ns
+            command.header.stamp.sec, command.header.stamp.nanosec = divmod(sim_ns, 1_000_000_000)
+            command.header.frame_id = (self._stop_permit("base", base_digest(command), sim_ns) if stopping
+                else self._permit("base", "reset" if self.permit_reset else "command", base_digest(command)))
         self.command_pub.publish(command)
 
     def _permit(self, target, kind, digest):
+        if kind == "stop":
+            raise ValueError("revocation requires the dedicated stop path")
         return self.permits.sign(target, kind, digest, self.permit_sim_ns,
                                  self.permit_remaining_ns, self.permit_wall_ns)
+
+    def _stop_permit(self, target, digest, sim_ns):
+        # This newly generated local revocation can only lock. Positive
+        # commands, goals, leases and resets retain original request clocks.
+        return self.permits.sign(target, "stop", digest, sim_ns,
+                                 200_000_000, time.monotonic_ns())
 
     def _heartbeat(self, started_ros_ms):
         if self.permits:

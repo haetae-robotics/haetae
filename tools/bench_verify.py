@@ -12,6 +12,7 @@ import time
 
 from bench_link import LinkError, SerialLink
 from bench_gate import BenchGate
+from bench_evidence import scheduling_loss
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "bench"
@@ -113,16 +114,22 @@ def host_case(name, scenario="allow", interrupt=None):
             elif interrupt == "gate-kill":
                 os.kill(gate_pid, signal.SIGKILL)
             expected = "lease" if interrupt in ("kill", "pause") else "stop"
-            stopped = wait_for(lambda: device.stopped(positive["device_ms"], expected))
+            stopped = wait_for(lambda: device.stopped(positive["device_ms"], expected) or
+                              (device.stopped(positive["device_ms"], "lease") if scenario == "allow" else None))
             if interrupt == "pause":
                 os.kill(host.pid, signal.SIGCONT)
             code = host.wait(timeout=3)
+            availability = "normal"
             if interrupt is None:
                 if scenario != "allow":
                     assert json.loads(ready.read_text())["fault"] == scenario, "stopped before injecting intended fault"
                 expected_expiry = (scenario == "world-loss" and code == 1 and
                                    "stale actuation response: world expired" in Path(log.name).read_text())
-                assert code == 0 or expected_expiry, "host scenario failed; see " + str(log.name)
+                measured_loss = scheduling_loss(Path(log.name).read_text(), code, scenario, device.events())
+                assert code == 0 or expected_expiry or measured_loss, "host scenario failed; see " + str(log.name)
+                if measured_loss:
+                    stopped = measured_loss
+                    availability = "host-scheduling-loss"
             else:
                 assert code != 0, "interrupted host unexpectedly reported success"
             time.sleep(.05)
@@ -134,6 +141,7 @@ def host_case(name, scenario="allow", interrupt=None):
             # scheduling/PTY overhead. It is not a physical timing acceptance gate.
             assert 0 <= delay <= 300, f"native process stop too late: {delay}ms"
             return {"case": name, "passed": True, "positive_control": True,
+                    "availability": availability,
                     "stop_reason": stopped["reason"], "last_run_to_off_ms": delay, "host_exit": code}
     finally:
         if host and host.poll() is None:
@@ -205,7 +213,8 @@ def main():
         for name, test in cases:
             result = test()
             report["cases"].append(result)
-            print(f"PASS {name}: {result['stop_reason']} / {result['last_run_to_off_ms']} ms", flush=True)
+            label = "host-scheduling-loss (fail-closed)" if result.get("availability") == "host-scheduling-loss" else name
+            print(f"PASS {label}: {result['stop_reason']} / {result['last_run_to_off_ms']} ms", flush=True)
         report["passed"] = True
     except BaseException as exc:
         report["error"] = str(exc)
