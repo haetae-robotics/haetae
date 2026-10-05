@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives import serialization
 
 from bench_verify import wait_for
+from permit_checks import require
 from permit_keys import private_bytes, provision
 from permit_link import PermitLink
 from permit_protocol import frame, payload, bind_payload
@@ -74,7 +75,7 @@ def bind_controller(link, key, config):
     bytes_ = bind_payload(request, ephemeral, config["controller_public_key"])
     shared = ephemeral_key.exchange(X25519PublicKey.from_public_bytes(bytes.fromhex(config["controller_public_key"])))
     session_key = hashlib.blake2b(bytes_, key=shared, digest_size=32).digest()
-    link.execute(request, {"allowed": True, "signature": key.sign(bytes_).hex(), "ephemeral": ephemeral,
+    link.execute(request, {"kind": "permit", "signature": key.sign(bytes_).hex(), "ephemeral": ephemeral,
                            "duration": 0, "remaining_ms": 500}, .5)
     return session_key
 
@@ -89,7 +90,7 @@ def protocol_case(directory, config, name, attack, reason):
     def approve(op="RUN"):
         request = dict(link.current, op=op)
         signature = sign(request)
-        link.execute(request, {"allowed": True, "signature": signature, "duration": 200, "remaining_ms": 50}, .05)
+        link.execute(request, {"kind": "permit", "signature": signature, "duration": 200, "remaining_ms": 50}, .05)
         return request, signature
     try:
         link.query("HELLO")
@@ -110,7 +111,7 @@ def protocol_case(directory, config, name, attack, reason):
         except RuntimeError:
             pass
         time.sleep(.025)
-        assert not any(e["on"] for e in device.events()[device.events().index(stopped) + 1:])
+        require(not any((e['on'] for e in device.events()[device.events().index(stopped) + 1:])), 'permit_verify.py: qualification predicate failed')
         return {"case": name, "passed": True, "positive_control": True, "stop_reason": stopped["reason"]}
     finally:
         link.close()
@@ -150,21 +151,21 @@ def host_case(directory, config, name, scenario="allow", pause=False, kill_autho
                     authorizer.kill()
                 code = relay.wait(timeout=4)
                 stopped = wait_for(lambda: device.stopped(positive["device_ms"]))
-                assert stopped and (not pause and not kill_authorizer or code != 0)
+                require(stopped and (not pause and (not kill_authorizer) or code != 0), 'permit_verify.py: qualification predicate failed')
                 if not pause and not kill_authorizer:
-                    assert code == 0, "scenario failed: " + str(relay_log.name)
+                    require(code == 0, 'scenario failed: ' + str(relay_log.name))
                     auth_text = Path(auth_log.name).read_text()
                     if scenario == "allow":
-                        assert "Authorizer terminal: operator_complete" in auth_text
+                        require('Authorizer terminal: operator_complete' in auth_text, 'permit_verify.py: qualification predicate failed')
                     else:
-                        assert "Authorizer fault injected: " + scenario in auth_text, "stopped before intended fault"
-                        assert "Authorizer terminal: " in auth_text
+                        require('Authorizer fault injected: ' + scenario in auth_text, 'stopped before intended fault')
+                        require('Authorizer terminal: ' in auth_text, 'permit_verify.py: qualification predicate failed')
                 time.sleep(.05)
                 events = device.events()
-                assert not any(e["on"] for e in events[events.index(stopped)+1:])
+                require(not any((e['on'] for e in events[events.index(stopped) + 1:])), 'permit_verify.py: qualification predicate failed')
                 last_on = next(e for e in reversed(events) if e["on"])
                 delay = stopped["device_ms"] - last_on["renewed_ms"]
-                assert 0 <= delay <= 300
+                require(0 <= delay <= 300, 'permit_verify.py: qualification predicate failed')
                 return {"case": name, "passed": True, "positive_control": True,
                         "stop_reason": stopped["reason"], "last_run_to_off_ms": delay, "relay_exit": code}
         finally:

@@ -50,7 +50,7 @@ class Authorizer:
                 self.session_key = hashlib.blake2b(bytes_, key=shared, digest_size=32).digest()
                 signature = self.key.sign(bytes_).hex()
                 self.sequence, self.challenge = 1, request["challenge"]
-                return {"allowed": True, "signature": signature, "ephemeral": ephemeral,
+                return {"kind": "permit", "signature": signature, "ephemeral": ephemeral,
                         "duration": 0, "remaining_ms": 500}
             elif binding != self.binding or request["op"] != ("RUN" if self.armed_authorized else "ARM"):
                 raise ValueError("controller session changed; new operator invocation required")
@@ -62,23 +62,23 @@ class Authorizer:
             fault = self.scenario if elapsed >= self.seconds and self.scenario != "allow" else None
             if self.scenario == "allow" and elapsed >= self.seconds:
                 self.locked = True
-                return {"allowed": False, "reason": "operator_complete"}
+                return {"kind": "terminal", "reason": "operator_complete"}
             if fault and fault != self.last_fault:
                 self.last_fault = fault
                 print("Authorizer fault injected: " + fault, flush=True)
             if not self.gate.cycle(fault):
                 self.locked = True
-                return {"allowed": False, "reason": "gate_denied"}
+                return {"kind": "terminal", "reason": "gate_denied"}
             signature = hashlib.blake2b(payload(request), key=self.session_key, digest_size=32).hexdigest()
             # Signing cannot turn a late gate decision into fresh authorization.
             remaining = self.gate.remaining()
             self.sequence, self.challenge = request["sequence"] + 1, request["challenge"]
             self.armed_authorized = True
-            return {"allowed": True, "signature": signature, "duration": 200,
+            return {"kind": "permit", "signature": signature, "duration": 200,
                     "remaining_ms": remaining * 1000}
         except (RuntimeError, ValueError):
             self.locked = True
-            return {"allowed": False, "reason": "authorizer_failure"}
+            return {"kind": "terminal", "reason": "authorizer_failure"}
 
     def close(self):
         self.gate.close()
@@ -113,7 +113,7 @@ def serve(binary, key, config, path, scenario, seconds, ready_file=None, socket_
                     return
                 result = authorizer.approve(decode_json(raw))
                 stream.write(json.dumps(result, separators=(",", ":")).encode() + b"\n")
-                if not result["allowed"]:
+                if result["kind"] == "terminal":
                     print("Authorizer terminal: " + result["reason"], flush=True)
                     return
     finally:

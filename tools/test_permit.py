@@ -1,8 +1,13 @@
 import json
+import hashlib
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
+from unittest.mock import patch
 
 from permit_keys import deployment, private_bytes, provision
 from permit_protocol import decode_json, frame, payload, bind_payload
@@ -73,9 +78,99 @@ class PermitContractTest(unittest.TestCase):
         authorizer.locked = False
         authorizer.last_fault = None
         authorizer.armed_authorized = False
-        self.assertFalse(authorizer.approve(self.value)["allowed"])
+        self.assertEqual(authorizer.approve(self.value)["kind"], "terminal")
         self.assertTrue(authorizer.locked)
-        self.assertFalse(authorizer.approve(dict(self.value, generation=2))["allowed"])
+        self.assertEqual(authorizer.approve(dict(self.value, generation=2))["kind"], "terminal")
+
+    def test_optimized_usb_qualification_rejects_exposed_dfu_before_port_open(self):
+        # This subprocess really uses -O: a normal unit test cannot detect
+        # qualification oracles that disappear under Python optimization.
+        script = textwrap.dedent('''
+            import hashlib, json, tempfile
+            from pathlib import Path
+            from unittest.mock import patch
+            import permit_usb_verify as usb
+            from permit_keys import provision
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config = provision(root / 'device')
+                usb.ROOT, usb.OUT = root, root / 'evidence'
+                (root / 'target/release').mkdir(parents=True)
+                (root / 'target/release/haetae').write_bytes(b'gate')
+                build = root / 'artifacts/controller-permit-build'
+                build.mkdir(parents=True)
+                (build / 'manifest.json').write_text(json.dumps(dict(config,
+                    resolved_core='haetae_permit', firmware_source_sha256={})))
+                with patch.object(usb, 'interfaces', return_value=[2, 10, 254]), \\
+                     patch.object(usb.subprocess, 'check_output', side_effect=['test-head\\n', '']), \\
+                     patch.object(usb, 'PermitLink', side_effect=RuntimeError('unexpected USB access')) as link:
+                    try:
+                        usb.main('must-not-open', root / 'device')
+                    except AssertionError as exc:
+                        if 'DFU still exposed' not in str(exc):
+                            raise
+                    else:
+                        raise RuntimeError('exposed DFU was accepted under -O')
+                    link.assert_not_called()
+                report = json.loads((usb.OUT / 'report.json').read_text())
+                if report['passed'] is not False or report['cases'] != []:
+                    raise RuntimeError('failed qualification wrote successful evidence')
+        ''')
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent))
+        result = subprocess.run([sys.executable, "-O", "-c", script], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_run_provenance_rejects_stale_or_failed_evidence(self):
+        from permit_provenance import require_verified_h2
+        digest = lambda value: hashlib.sha256(value).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for folder in ('artifacts/controller-permit', 'artifacts/controller-permit-usb',
+                           'artifacts/controller-permit-build/build', 'target/release',
+                           'hardware/uno_r4_permit', 'device'):
+                (root / folder).mkdir(parents=True)
+            binary = root / 'target/release/haetae'
+            binary.write_bytes(b'gate')
+            image = root / 'artifacts/controller-permit-build/build/uno_r4_permit.ino.bin'
+            image.write_bytes(b'private image fixture')
+            source = root / 'hardware/uno_r4_permit/guard.h'
+            source.write_bytes(b'guard')
+            sources = {'hardware/uno_r4_permit/guard.h': digest(b'guard')}
+            config = dict(install='01'*16, public_key='02'*32, controller_public_key='03'*32)
+            (root / 'device/deployment.json').write_text(json.dumps(config))
+            manifest = dict(config, firmware_source_sha256=sources, resolved_core='haetae_permit',
+                            binary_sha256=digest(b'private image fixture'))
+            software = dict(passed=True, source_revision='head', source_dirty=False,
+                            firmware_sha256=sources, gate_sha256=digest(b'gate'))
+            usb = dict(passed=True, source_revision='head', source_dirty=False,
+                       firmware_source_sha256=sources, gate_sha256=digest(b'gate'),
+                       build_manifest={k: v for k, v in manifest.items() if k not in ('install', 'public_key')})
+            files = [('artifacts/controller-permit-build/manifest.json', manifest),
+                     ('artifacts/controller-permit/report.json', software),
+                     ('artifacts/controller-permit-usb/report.json', usb)]
+            for path, value in files:
+                (root / path).write_text(json.dumps(value))
+            def check():
+                with patch('permit_provenance.subprocess.check_output', side_effect=['head\n', '']):
+                    return require_verified_h2(root, binary, root / 'device')
+            self.assertEqual(check(), (software, usb))
+            usb['passed'] = False
+            (root / files[2][0]).write_text(json.dumps(usb))
+            with self.assertRaises(RuntimeError):
+                check()
+            usb['passed'] = True
+            (root / files[2][0]).write_text(json.dumps(usb))
+            binary.write_bytes(b'changed gate')
+            with self.assertRaises(RuntimeError):
+                check()
+            binary.write_bytes(b'gate')
+            source.write_bytes(b'changed source')
+            with self.assertRaises(RuntimeError):
+                check()
+            source.write_bytes(b'guard')
+            image.write_bytes(b'changed image')
+            with self.assertRaises(RuntimeError):
+                check()
 
 
 if __name__ == "__main__":

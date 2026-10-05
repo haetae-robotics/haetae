@@ -111,6 +111,7 @@ def build(config_path, controller_key, port=None):
                           "--build-path", str(output), str(stage)], check=True)
     manifest = {"schema": 2, "scope": "device-specific LED firmware; private image, not redistributable",
                 "install": config["install"], "public_key": config["public_key"],
+                "controller_public_key": config["controller_public_key"],
                 "arduino_cli": arduino.CLI_VERSION, "arduino_core": arduino.CORE_VERSION,
                 "fqbn": FQBN, "resolved_core": "haetae_permit", "board_mapping_sha256": board_hash,
                 "stock_core_sha256": CORE_HASHES, "hardened_core_sha256": hashes,

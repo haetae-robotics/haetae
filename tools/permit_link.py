@@ -67,8 +67,8 @@ class PermitLink(SerialLink):
 
     def execute(self, request, permit, timeout):
         binding = request["op"] == "BIND"
-        required = {"allowed", "signature", "duration", "remaining_ms"} | ({"ephemeral"} if binding else set())
-        if (set(permit) != required or permit["allowed"] is not True or
+        required = {"kind", "signature", "duration", "remaining_ms"} | ({"ephemeral"} if binding else set())
+        if (set(permit) != required or permit["kind"] != "permit" or
                 permit["duration"] != (0 if binding else 200)):
             raise LinkError("invalid authorizer permit")
         state = self.wire(frame(request, permit["signature"], permit["duration"], permit.get("ephemeral")), timeout)
@@ -109,7 +109,7 @@ def relay(port, install, authorizer_socket, ready_file=None):
             if not raw.endswith(b"\n"):
                 raise LinkError("authorizer response closed/oversized")
             permit = json.loads(raw)
-            if permit.get("allowed") is not True:
+            if permit.get("kind") != "permit":
                 link.query("STOP")
                 print("차단: 서명 허가 중단, LED OFF", flush=True)
                 return

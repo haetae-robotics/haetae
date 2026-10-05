@@ -8,6 +8,7 @@ import time
 
 from permit_keys import deployment
 from permit_link import relay
+from permit_provenance import require_verified_h2
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def run(port, directory, scenario, seconds):
     directory = Path(directory).resolve()
     config = deployment(directory / "deployment.json")
+    require_verified_h2(ROOT, ROOT / "target/release/haetae", directory)
     with tempfile.TemporaryDirectory(prefix="h2-") as tmp:
         tmp = Path(tmp)
         socket, ready = tmp / "auth.sock", tmp / "ready"

@@ -17,6 +17,7 @@ python3 -m pip install cryptography
 ./haetae-bench ports
 ./haetae-permit flash --port PORT --deployment artifacts/my-controller/deployment.json \
   --controller-key artifacts/my-controller/controller.seed
+./haetae-permit verify-usb --port PORT --device-directory artifacts/my-controller
 ./haetae-permit run --port PORT --device-directory artifacts/my-controller
 ```
 
@@ -25,6 +26,12 @@ after three seconds synthetic person input causes a stop. Other scenarios:
 `world-loss`, `replay`, `invalid-signature`, `allow`. Only LED_BUILTIN is driven.
 The same-UID developer launcher trusts the host: process separation alone does
 **not** protect keys from another program with that UID.
+
+Use a clean checkout. `run` requires successful software and physical USB
+reports for the current commit, matching gate binary, firmware sources, build
+manifest and private image. Repeat verification after a source/build change.
+These local records are operator evidence, not authenticated on-device firmware
+attestation; root and the developer host remain trusted.
 
 Provisioning never overwrites a directory. Keep `authorizer.seed` with the
 trusted authorizer and `controller.seed` with the device provisioner. Public
@@ -50,6 +57,11 @@ sign. Each ARM/RUN needs a fresh positive actual Rust result with healthy
 state/recording and the existing freshness recheck. Denial/context/transport
 failure ends the invocation. Explicit restarts create new synthetic fixtures,
 not durable real robot incident/effect history.
+
+The response contains a permit or a terminal envelope. A relay can observe
+authorization metadata and denial reasons, but cannot create valid authority.
+The MCU independently checks the signature/MAC; an IPC field never authorizes
+output by itself.
 
 Per-command Ed25519 took 65.398 ms on the development board's USB reply and was
 correctly rejected under 50 ms. O3 also failed. Therefore **Ed25519-signed BIND

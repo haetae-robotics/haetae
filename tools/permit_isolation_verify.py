@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 from bench_verify import wait_for
+from permit_checks import require
 from permit_keys import provision
 from permit_verify import ROOT, OUT, Device, compile_native
 
@@ -89,7 +90,7 @@ print(json.dumps(results))
                     result = subprocess.run([sys.executable, "-c", probe, str(private), str(authorizer.pid)],
                                             preexec_fn=role(uid), capture_output=True, check=True, text=True)
                     denied = json.loads(result.stdout)
-                    assert all(denied.values()), "role separation failed"
+                    require(all(denied.values()), 'role separation failed')
                     report["denials"][str(uid)] = denied
                 relay_ready = relay_scratch / "ready"
                 relay = subprocess.Popen([sys.executable, str(ROOT / "haetae-permit"), "relay", "--port", device.port,
@@ -100,8 +101,8 @@ print(json.dumps(results))
                         raise AssertionError("isolated relay failed; see isolation-relay.log")
                     return relay_ready.exists() and device.on()
                 on = wait_for(positive)
-                assert relay.wait(timeout=4) == 0
-                assert "Authorizer fault injected: person" in (OUT / "isolation-authorizer.log").read_text()
+                require(relay.wait(timeout=4) == 0, 'permit_isolation_verify.py: qualification predicate failed')
+                require('Authorizer fault injected: person' in (OUT / 'isolation-authorizer.log').read_text(), 'permit_isolation_verify.py: qualification predicate failed')
                 stopped = wait_for(lambda: device.stopped(on["device_ms"], "stop"))
                 report["positive_controller_ON"] = True
                 report["gate_hazard_to_controller_LOCKED"] = bool(stopped)

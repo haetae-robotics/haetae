@@ -19,6 +19,7 @@ from permit_keys import deployment, private_bytes
 from permit_link import PermitLink
 from permit_protocol import payload, frame
 from permit_verify import bind_controller
+from permit_checks import require
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts/controller-permit-usb"
@@ -82,7 +83,7 @@ def protocol_case(port, config, key, name):
             request = dict(link.current, op=op)
             signature = sign(request)
             started = time.monotonic()
-            link.execute(request, {"allowed": True, "signature": signature, "duration": 200, "remaining_ms": 50}, .05)
+            link.execute(request, {"kind": "permit", "signature": signature, "duration": 200, "remaining_ms": 50}, .05)
             timings.append((time.monotonic()-started)*1000)
         if name == "STATUS_does_not_renew":
             started = time.monotonic()
@@ -112,12 +113,12 @@ def protocol_case(port, config, key, name):
             raw = frame(request, mac)
             reason = "signature"
         response, duration = raw_reply(link, raw)
-        assert len(response) == 11 and response[:3] == ["H2", "ERR", config["install"]]
-        assert response[-2:] == ["LOCKED", reason]
-        assert link.query("STATUS") == "LOCKED"
+        require(len(response) == 11 and response[:3] == ['H2', 'ERR', config['install']], 'permit_usb_verify.py: qualification predicate failed')
+        require(response[-2:] == ['LOCKED', reason], 'permit_usb_verify.py: qualification predicate failed')
+        require(link.query('STATUS') == 'LOCKED', 'permit_usb_verify.py: qualification predicate failed')
         fresh = dict(link.current, op="RUN")
         response, _ = raw_reply(link, frame(fresh, sign(fresh)))
-        assert response[1] == "ERR" and response[-2] == "LOCKED"
+        require(response[1] == 'ERR' and response[-2] == 'LOCKED', 'permit_usb_verify.py: qualification predicate failed')
         return {"case": name, "passed": True, "positive_USB_ON": True,
                 "negative_USB_LOCKED": True, "same_session_fresh_permit_rejected": True,
                 "positive_round_trip_ms": timings, "rejection_round_trip_ms": duration}
@@ -156,15 +157,15 @@ def host_case(port, directory, config, scenario, pause=False):
                     time.sleep(.6)
                     os.kill(relay.pid, signal.SIGCONT)
                 code = relay.wait(timeout=4)
-                assert code != 0 if pause else code == 0
+                require(code != 0 if pause else code == 0, 'permit_usb_verify.py: qualification predicate failed')
                 if not pause:
                     text = (OUT / (name + "-authorizer.log")).read_text()
-                    assert "Authorizer fault injected: " + scenario in text
-                    assert "Authorizer terminal:" in text
-                assert (OUT / (name + "-relay.log")).read_text().count("허용:") == 1
+                    require('Authorizer fault injected: ' + scenario in text, 'permit_usb_verify.py: qualification predicate failed')
+                    require('Authorizer terminal:' in text, 'permit_usb_verify.py: qualification predicate failed')
+                require((OUT / (name + '-relay.log')).read_text().count('허용:') == 1, 'permit_usb_verify.py: qualification predicate failed')
                 link = PermitLink(port, config["install"])
                 try:
-                    assert link.query("STATUS") == "LOCKED"
+                    require(link.query('STATUS') == 'LOCKED', 'permit_usb_verify.py: qualification predicate failed')
                 finally:
                     link.close()
                 return {"case": name, "passed": True, "positive_USB_ON": True,
@@ -197,8 +198,8 @@ def no_1200_reset(port, config):
         attrs[4] = attrs[5] = termios.B115200
         termios.tcsetattr(link.fd, termios.TCSANOW, attrs)
         fcntl.ioctl(link.fd, termios.TIOCMBIS, struct.pack("I", termios.TIOCM_DTR))
-        assert link.query("STATUS") == "LOCKED"
-        assert link.current["epoch"] == old["epoch"] and link.current["generation"] == old["generation"]
+        require(link.query('STATUS') == 'LOCKED', 'permit_usb_verify.py: qualification predicate failed')
+        require(link.current['epoch'] == old['epoch'] and link.current['generation'] == old['generation'], 'permit_usb_verify.py: qualification predicate failed')
         return {"case": "runtime_1200_baud_no_reset", "passed": True, "boot_and_generation_unchanged": True}
     finally:
         link.stop()
@@ -218,15 +219,16 @@ def main(port, directory):
               "source_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
               "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip())}
     try:
+        report["gate_sha256"] = hashlib.sha256((ROOT / "target/release/haetae").read_bytes()).hexdigest()
         manifest = json.loads((ROOT / "artifacts/controller-permit-build/manifest.json").read_text())
         sources = {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
                    for p in sorted((ROOT / "hardware/uno_r4_permit").rglob("*")) if p.is_file()}
-        assert manifest["install"] == config["install"] and manifest["public_key"] == config["public_key"]
-        assert manifest["resolved_core"] == "haetae_permit" and manifest["firmware_source_sha256"] == sources
+        require(all(manifest[k] == config[k] for k in ('install', 'public_key', 'controller_public_key')), 'firmware deployment does not match device directory')
+        require(manifest['resolved_core'] == 'haetae_permit' and manifest['firmware_source_sha256'] == sources, 'permit_usb_verify.py: qualification predicate failed')
         report["firmware_source_sha256"] = sources
         report["build_manifest"] = {k: v for k, v in manifest.items() if k not in ("install", "public_key")}
         classes = interfaces()
-        assert classes == [2, 10], "runtime USB must have CDC only; DFU still exposed"
+        require(classes == [2, 10], 'runtime USB must have CDC only; DFU still exposed')
         report["USB_interface_classes"] = classes
         report["cases"].append({"case": "runtime_DFU_descriptor_absent", "passed": True})
         for name in ("forged_MAC", "replayed_permit", "wrong_epoch", "wrong_action", "future_nonce", "STATUS_does_not_renew"):
