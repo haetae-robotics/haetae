@@ -156,6 +156,18 @@ rejection plus fresh holding/drift evidence. Log messages name the ingress kind.
 
 ## Verification
 
+The supported reference runs its controllers at 100 Hz. The trusted owner
+conservatively backdates each permit's simulation origin and simulation expiry
+by one 10 ms controller cycle (clamped at simulation zero). Its original wall
+origin/expiry, original world observation, payload and sequence remain unchanged.
+This covers a one-cycle difference between ROS clock reception and controller
+updates by shortening simulation authority. It does not authorize a future
+timestamp at the verifier, extend either expiry or change the 50/200 ms limits.
+Larger clock skew still locks; frozen world and wall expiry still stop. Issuer
+admission/headroom checks include this backdate, so they reject earlier too.
+Other controller rates need a separately reviewed configuration; this is not a
+general distributed-clock synchronization guarantee.
+
 ```bash
 ./haetae-demo verify
 ```

@@ -7,6 +7,7 @@ from unittest import mock
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
 from controller_permits import (DOMAIN, PermitSigner, AcceptedWorldClock, IDLE,
+                               SIM_ORDERING_BACKDATE_NS,
                                base_digest, arm_digest, explicit_rearm)
 
 
@@ -120,6 +121,33 @@ class ControllerPermitTest(unittest.TestCase):
         self.assertEqual(arm_digest(trajectory),
             '2ffe617c47e93dde70c78ad1f7afbed8981a22b955ede4eb85c85ea4f4e3b64c')
         self.assertNotEqual(arm_digest(trajectory), original)
+
+    def test_simulation_backdate_only_shortens_authority_for_one_reference_cycle(self):
+        import re
+        config = Path(__file__).parents[1] / 'gazebo' / 'controllers.yaml'
+        rate = int(re.search(r'update_rate:\s*(\d+)', config.read_text()).group(1))
+        self.assertEqual(SIM_ORDERING_BACKDATE_NS, 1_000_000_000 // rate)
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Ed25519PrivateKey.generate()
+            path = Path(tmp) / 'private.key'
+            path.write_text(key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption()).hex())
+            signer = PermitSigner(path, sim_backdate_ns=SIM_ORDERING_BACKDATE_NS)
+            for target in ('base', 'arm'):
+                signer.observe(target, {'nonce': 'a' * 32})
+                for kind in ('reset', 'stop', 'command' if target == 'base' else 'lease'):
+                    original = 1_000_000_000
+                    token = signer.sign(target, kind, IDLE, original, 180_000_000, 2_000_000_000)
+                    body, signature = token.rsplit(':', 1)
+                    key.public_key().verify(bytes.fromhex(signature), DOMAIN + body.encode())
+                    fields = body.split(':')
+                    self.assertEqual(int(fields[4]), original - SIM_ORDERING_BACKDATE_NS)
+                    self.assertEqual(int(fields[6]), original + 180_000_000 - SIM_ORDERING_BACKDATE_NS)
+                    self.assertEqual((int(fields[5]), int(fields[7])), (2_000_000_000, 2_180_000_000))
+                fields = signer.sign(target, 'stop', IDLE, 0, 180_000_000, 2_000_000_000).split(':')
+                self.assertEqual((int(fields[4]), int(fields[6])), (0, 180_000_000))
+            for invalid in (-1, 50_000_000, True, 1.5):
+                with self.assertRaises(ValueError):
+                    PermitSigner(path, sim_backdate_ns=invalid)
 
     def test_only_explicit_accepted_stop_can_issue_reset(self):
         step={'outcome':{'decision':{'action':{'type':'stop'},'verdict':'yun'}},

@@ -21,7 +21,7 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import TwistStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -153,9 +153,14 @@ def main(binary, out=None):
         rclpy.init()
         world = ArmWorld()
         server = ReferenceArm(world)
-        executor = MultiThreadedExecutor(num_threads=4)
-        executor.add_node(world)
+        # Keep the trusted 20 Hz observer out of the action server's blocking
+        # execute worker pool. Cancellation still runs alongside execution.
+        world_executor = SingleThreadedExecutor()
+        world_executor.add_node(world)
+        executor = MultiThreadedExecutor(num_threads=2)
         executor.add_node(server)
+        world_thread = threading.Thread(target=world_executor.spin, daemon=True)
+        world_thread.start()
         thread = threading.Thread(target=executor.spin, daemon=True)
         thread.start()
         script = Path(__file__).resolve().parents[1] / "haetae_gate/node.py"
@@ -246,10 +251,12 @@ def main(binary, out=None):
                 failure = sys.exc_info()[1]
                 kill_gate(gate)
                 executor.shutdown()
+                world_executor.shutdown()
                 world.destroy_node()
                 server.destroy_node()
                 rclpy.shutdown()
                 thread.join(timeout=2)
+                world_thread.join(timeout=2)
                 if out is not None:
                     out = Path(out)
                     out.mkdir(parents=True, exist_ok=True)

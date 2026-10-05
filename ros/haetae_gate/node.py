@@ -27,6 +27,7 @@ from bridge import (Bridge, BridgeFailure, StaleActuation, ExpiredActuation,
 from signing import Signer
 from proposals import InvalidProposal, base_action, arm_action
 from controller_permits import (PermitSigner, AcceptedWorldClock, IDLE,
+                               SIM_ORDERING_BACKDATE_NS,
                                base_digest, arm_digest, explicit_rearm)
 
 
@@ -68,7 +69,9 @@ class HaetaeGate(Node):
                 "--root-pubkey", param("root_pubkey")]
         self.bridge = Bridge(argv, int(param("response_timeout_ms")))
         self.output_stamped = param("output_stamped")
-        self.permits = PermitSigner(Path(param("controller_key_path"))) if param("controller_key_path") else None
+        self.permits = (PermitSigner(Path(param("controller_key_path")),
+                                    sim_backdate_ns=SIM_ORDERING_BACKDATE_NS)
+                        if param("controller_key_path") else None)
         self.permit_world = AcceptedWorldClock()
         self.permit_reset = False
         self.permit_stop = True
@@ -323,12 +326,12 @@ class HaetaeGate(Node):
             raise ValueError("revocation requires the dedicated stop path")
         sim_age = self._now() * 1_000_000 - self.permit_sim_ns
         wall_age = time.monotonic_ns() - self.permit_wall_ns
-        age = max(sim_age, wall_age)
+        age = max(sim_age + self.permits.sim_backdate_ns, wall_age)
         if (min(sim_age, wall_age) >= 0 and age < 50_000_000
                 and self.permit_world_remaining_ns - age <= 50_000_000):
             raise ExpiredActuation("trusted world has insufficient controller admission budget")
-        if (min(sim_age, wall_age) < 0 or max(sim_age, wall_age) >= 50_000_000
-                or self.permit_remaining_ns - max(sim_age, wall_age) <= 50_000_000):
+        if (min(sim_age, wall_age) < 0 or age >= 50_000_000
+                or self.permit_remaining_ns - age <= 50_000_000):
             # Reserve the existing admission window INSIDE original expiry.
             # A 1ms grant can otherwise be fresh at signing but expired on DDS.
             raise ExpiredActuation("original controller authority has insufficient admission budget")

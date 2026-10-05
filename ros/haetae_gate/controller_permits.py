@@ -13,6 +13,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 DOMAIN = b"haetae-controller-v1\0"
 IDLE = "0" * 64
 MAX_LEASE_NS = 200_000_000
+# One controller cycle in the supported 100 Hz Gazebo reference. This moves
+# the simulation expiry earlier; it is not verifier clock-skew tolerance.
+SIM_ORDERING_BACKDATE_NS = 10_000_000
 
 
 class AcceptedWorldClock:
@@ -86,7 +89,10 @@ def explicit_rearm(step):
 
 
 class PermitSigner:
-    def __init__(self, key_path):
+    def __init__(self, key_path, *, sim_backdate_ns=0):
+        if type(sim_backdate_ns) is not int or not 0 <= sim_backdate_ns < 50_000_000:
+            raise ValueError("invalid conservative simulation backdate")
+        self.sim_backdate_ns = sim_backdate_ns
         self.key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(key_path.read_text().strip()))
         self.challenges = {}
         self.sequence = {"base": 0, "arm": 0}
@@ -123,6 +129,10 @@ class PermitSigner:
             raise ValueError("controller authority expired")
         self.sequence[target] += 1
         wall_ns = time.monotonic_ns() if wall_ns is None else wall_ns
+        # ROS /clock reception and the controller update can differ by one
+        # cycle. Backdate only the signed simulation origin and expiry. Keep
+        # the original wall origin/expiry and never extend either deadline.
+        sim_ns = max(0, sim_ns - self.sim_backdate_ns)
         body = ":".join(("v1", target + "-" + kind, self.challenges[target],
                          str(self.sequence[target]), str(sim_ns), str(wall_ns),
                          str(sim_ns + remaining_ns), str(wall_ns + remaining_ns), digest))

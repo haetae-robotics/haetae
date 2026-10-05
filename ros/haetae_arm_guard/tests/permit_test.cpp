@@ -57,6 +57,24 @@ int main()
   check(!admit(token(nonce, 9, "reset"), "reset", true, 1000000000, 2050000000), "50ms wall admission deadline");
   check(!admit(token(nonce, 10, "reset", 1000000001), "reset", true), "future sim timestamp");
   check(!admit(token(nonce, 11, "reset", 1000000000, 2000000001), "reset", true), "future wall timestamp");
+  // Issuer backdating never relaxes verifier checks or extends expiry.
+  PermitGuard skew; skew.configure(hex(public_key.data(), size), "base"); skew.activate();
+  const uint64_t origin = 1000000000, backdate = 10000000;
+  uint64_t sequence = 0;
+  for (uint64_t lag : {uint64_t{0}, uint64_t{1000000}, backdate}) {
+    check(skew.accept(token(skew.nonce(), ++sequence, "reset", origin - backdate),
+      "reset", idle_digest, origin - lag, 2000000000, true), "one-cycle skew conservatively admitted");
+    check(skew.grant().sim_end == origin + 200000000 - backdate, "simulation expiry earlier");
+    check(skew.grant().wall_end == 2200000000, "wall expiry never extended");
+  }
+  const auto skew_rejections = skew.rejected();
+  check(!skew.accept(token(skew.nonce(), ++sequence, "reset", origin - backdate),
+    "reset", idle_digest, origin - backdate - 1, 2000000000, true), "larger skew still future and rejected");
+  check(skew.rejected() == skew_rejections + 1 && !skew.fresh(origin, 2000000000),
+    "larger skew rejects and locks");
+  check(skew.accept(token(skew.nonce(), ++sequence, "reset", origin - backdate),
+    "reset", idle_digest, origin, 2000000000, true), "explicit reset after skew rejection");
+  check(!skew.fresh(origin + 200000000 - backdate, 2000000000), "backdated simulation expiry enforced");
   check(admit(token(nonce, 12, "reset"), "reset", true), "reset for wall expiry");
   check(!guard.fresh(1000000000, 2200000000), "paused simulation still expires");
   check(guard.grant().seq == 0, "expiry clears stale grant");

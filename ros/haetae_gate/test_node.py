@@ -58,7 +58,7 @@ class NodeBoundaryTest(unittest.TestCase):
     def test_delayed_cancel_is_fresh_revocation_without_restamping_authority(self):
         g = self.gate
         signed = []
-        g.permits = SimpleNamespace(challenges={"arm": "b" * 32},
+        g.permits = SimpleNamespace(challenges={"arm": "b" * 32}, sim_backdate_ns=0,
                                     sign=lambda *args: signed.append(args) or "token")
         g.permit_sim_ns, g.permit_wall_ns, g.permit_remaining_ns = 1_000_000_000, 0, 100_000_000
         clock.value = .25
@@ -78,7 +78,7 @@ class NodeBoundaryTest(unittest.TestCase):
     def test_short_original_grant_is_not_dispatched_near_expiry(self):
         g = self.gate
         signed = []
-        g.permits = SimpleNamespace(sign=lambda *args: signed.append(args) or "token")
+        g.permits = SimpleNamespace(sim_backdate_ns=0, sign=lambda *args: signed.append(args) or "token")
         g.permit_sim_ns, g.permit_wall_ns = 1_000_000_000, 0
         clock.value = .006
         g.permit_remaining_ns = 56_000_000
@@ -93,7 +93,7 @@ class NodeBoundaryTest(unittest.TestCase):
     def test_world_admission_cutoff_is_distinct_from_proposal_expiry(self):
         g = self.gate
         signed = []
-        g.permits = SimpleNamespace(sign=lambda *args: signed.append(args) or "token")
+        g.permits = SimpleNamespace(sim_backdate_ns=0, sign=lambda *args: signed.append(args) or "token")
         g.permit_sim_ns, g.permit_wall_ns = 1_000_000_000, 0
         clock.value = .006
         g.permit_remaining_ns = g.permit_world_remaining_ns = 56_000_000
@@ -107,6 +107,24 @@ class NodeBoundaryTest(unittest.TestCase):
         g.permit_remaining_ns = g.permit_world_remaining_ns = 56_000_001
         g._permit("base", "command", "a" * 64)
         self.assertEqual(signed[-1][3:], (1_000_000_000, 56_000_001, 0))
+
+    def test_conservative_backdate_rejects_at_earlier_admission_and_world_cutoff(self):
+        g = self.gate
+        signed = []
+        g.permits = SimpleNamespace(sim_backdate_ns=10_000_000,
+                                    sign=lambda *args: signed.append(args) or "token")
+        g.permit_sim_ns, g.permit_wall_ns = 1_000_000_000, 0
+        g.permit_remaining_ns = g.permit_world_remaining_ns = 200_000_000
+        clock.value = .04
+        with self.assertRaises(ExpiredActuation):
+            g._permit("arm", "lease", "a" * 64)
+        self.assertFalse(signed)
+        clock.value = .039
+        g._permit("arm", "lease", "a" * 64)
+        self.assertEqual(signed[-1][3:], (1_000_000_000, 200_000_000, 0))
+        g.permit_world_remaining_ns = 99_000_000
+        with self.assertRaisesRegex(ExpiredActuation, "trusted world has insufficient"):
+            g._permit("arm", "lease", "a" * 64)
 
     def test_relay_ack_cannot_renew_before_trusted_controller_admission(self):
         g = self.gate
