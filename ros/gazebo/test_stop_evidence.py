@@ -13,6 +13,41 @@ from stop_evidence import person_stop_observed, person_stop_report
 
 
 class ProbeEntryStopTest(unittest.TestCase):
+    def test_every_trusted_probe_world_preserves_measured_twist_and_source_stamp(self):
+        tree = ast.parse(Path(__file__).with_name('controller_probes.py').read_text())
+        method = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'measured_world')
+        names = ['joint1', 'joint2', 'joint3', 'joint4']
+        def header(ms):
+            return SimpleNamespace(stamp=SimpleNamespace(sec=ms // 1000, nanosec=ms % 1000 * 1_000_000))
+        world = SimpleNamespace(
+            odom=SimpleNamespace(header=header(1020), pose=SimpleNamespace(pose=SimpleNamespace(
+                position=SimpleNamespace(x=1.2, y=.5), orientation=SimpleNamespace(x=0., y=0., z=0., w=1.))),
+                twist=SimpleNamespace(twist=SimpleNamespace(linear=SimpleNamespace(x=.2), angular=SimpleNamespace(z=.7)))),
+            joint=SimpleNamespace(header=header(1060), name=names, position=[.1]*4, velocity=[.01]*4))
+        scope = dict(world=world, ARM_JOINTS=names, math=math)
+        exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-probe-world', 'exec'), scope)
+        scope['world_snapshot'] = lambda: scope['measured_world'](world)
+        # Execute every real world-payload expression, covering both initial
+        # admission and arm renewal instead of only testing the shared helper.
+        payloads = [call.args[1] for call in ast.walk(tree) if isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name) and call.func.id == 'feed'
+                    and len(call.args) == 2 and isinstance(call.args[0], ast.Constant)
+                    and call.args[0].value == 'world']
+        self.assertEqual(len(payloads), 2)
+        for angular in (.7, -.8, float('nan'), float('inf')):
+            world.odom.twist.twist.angular.z = angular
+            for expression in payloads:
+                payload = eval(compile(ast.Expression(expression), 'actual-world-ingress', 'eval'), scope)
+                self.assertEqual(payload['robot']['twist']['linear'], .2)
+                if math.isnan(angular):
+                    self.assertTrue(math.isnan(payload['robot']['twist']['angular']))
+                else:
+                    self.assertEqual(payload['robot']['twist']['angular'], angular)
+                self.assertEqual(payload['robot']['pose'], {'x': 6.2, 'y': 5.5})
+                self.assertEqual(payload['stamp_ms'], 1020)
+        world.joint.header = header(980)
+        self.assertEqual(scope['measured_world'](world)['stamp_ms'], 980)
+
     def test_maintenance_requires_fresh_base_and_every_arm_joint_stopped(self):
         tree = ast.parse(Path(__file__).with_name('controller_probes.py').read_text())
         exercise = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'exercise')

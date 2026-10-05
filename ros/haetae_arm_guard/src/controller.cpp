@@ -134,10 +134,13 @@ public:
             return rclcpp_action::GoalResponse::REJECT;
           }
           if (!current_goal(goal->trajectory)) {
+            const auto grant = permit_.grant();
+            const bool alive = alive_nonrt();
             RCLCPP_WARN(get_node()->get_logger(),
-              "Controller current goal rejected: issued_sim_ns=%llu cutoff_ms=%lld holding=%d",
-              static_cast<unsigned long long>(permit_.grant().sim),
-              static_cast<long long>(cutoff_ms_.load()), holding_.load() ? 1 : 0);
+              "Controller current goal rejected: issued_sim_ns=%llu now_sim_ns=%lld cutoff_ms=%lld holding=%d alive=%d",
+              static_cast<unsigned long long>(grant.sim),
+              static_cast<long long>(get_node()->now().nanoseconds()),
+              static_cast<long long>(cutoff_ms_.load()), holding_.load() ? 1 : 0, alive ? 1 : 0);
             permit_.reject();
             return rclcpp_action::GoalResponse::REJECT;
           }

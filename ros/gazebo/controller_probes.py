@@ -28,6 +28,24 @@ from product_model import ARM_JOINTS, arm_policy
 from role_isolation import fresh_fixture, UIDS
 
 
+def measured_world(world):
+    # Pin each immutable ROS message once, keeping fields and their source
+    # stamp together even if a callback replaces the latest message.
+    odom, joint = world.odom, world.joint
+    position = odom.pose.pose.position
+    q = odom.pose.pose.orientation
+    stamp = min(msg.header.stamp.sec * 1000 + msg.header.stamp.nanosec // 1_000_000
+                for msg in (odom, joint))
+    return {"stamp_ms": stamp, "robot": {
+        # Same spawn-relative odom frame as GazeboWorld.pose().
+        "pose": {"x": 5.0 + position.x, "y": 5.0 + position.y},
+        "yaw": math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)),
+        "twist": {"linear": odom.twist.twist.linear.x, "angular": odom.twist.twist.angular.z},
+        "joints": [{"name": name, "position": joint.position[joint.name.index(name)],
+                    "velocity": joint.velocity[joint.name.index(name)]} for name in ARM_JOINTS]},
+        "humans": [], "confidence": 1.0}
+
+
 def exercise(world, root, binary, roles, processes, start, stop, command, wait_for, env):
     """Never invoked unless the ordinary authorization process is already gone."""
     if "gate" in processes:
@@ -74,17 +92,13 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
     def feed(role, payload):
         envelope = source.sign(role, payload)
         return bridge.request({"k": "signed", "t": now(), "data": json.dumps(envelope)})
-    def joints_snapshot():
+    def world_snapshot():
         # Provisioning a fresh Rust fixture is synchronous. Wait for actual
         # fresh feedback afterwards; never relabel an old observation as fresh.
         wait_for(lambda: time.monotonic()-world.joint_received < .05 and
                  time.monotonic()-world.odom_received < .05,
                  2, processes, "fresh measured controller probe world")
-        return [{"name":j,"position":world.joint.position[list(world.joint.name).index(j)],
-                 "velocity":world.joint.velocity[list(world.joint.name).index(j)]} for j in ARM_JOINTS]
-    def measured_stamp():
-        return min(m.header.stamp.sec * 1000 + m.header.stamp.nanosec // 1_000_000
-                   for m in (world.odom, world.joint))
+        return measured_world(world)
     def budget(step, sim):
         status = step["status"]
         remaining = min(200, 200 - status["world_age_ms"])
@@ -95,10 +109,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         return remaining * 1_000_000
     def approve(action):
         nonlocal proposal_id
-        measured = joints_snapshot()
-        feed("world", {"stamp_ms": measured_stamp(), "robot": {"pose": {"x": world.pose()[0], "y": world.pose()[1]},
-            "yaw": world.heading(), "twist": {"linear": world.speed(), "angular": world.odom.twist.twist.angular.z},
-            "joints": measured}, "humans": [], "confidence": 1.0})
+        feed("world", world_snapshot())
         proposal_id += 1
         begin = time.monotonic_ns()
         stamp = now()
@@ -217,11 +228,8 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         def renew():
             # The world response already rechecks the same Rust goal. A second
             # audited tick adds IPC/commit delay without adding authorization.
-            measured = joints_snapshot()
             sim, wall = now()*1_000_000, time.monotonic_ns()
-            step = feed("world", {"stamp_ms": measured_stamp(), "robot": {"pose": {"x":world.pose()[0],"y":world.pose()[1]},
-                "yaw":world.heading(),"twist":{"linear":world.speed(),"angular":0.0},
-                "joints":measured},"humans":[],"confidence":1.0})
+            step = feed("world", world_snapshot())
             elapsed = max((time.monotonic_ns()-wall)/1e6, now()-sim//1_000_000)
             require_fresh_actuation(step,elapsed,now(),200,50)
             if elapsed >= 50:
