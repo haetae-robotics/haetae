@@ -4,9 +4,42 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import ast
+import math
+from types import SimpleNamespace
 from stop_evidence import world_expiry_stop_observed, sensor_stop_report
 
 from stop_evidence import person_stop_observed, person_stop_report
+
+
+class ProbeEntryStopTest(unittest.TestCase):
+    def test_maintenance_requires_fresh_base_and_every_arm_joint_stopped(self):
+        tree = ast.parse(Path(__file__).with_name('controller_probes.py').read_text())
+        exercise = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'exercise')
+        method = next(node for node in exercise.body if isinstance(node, ast.FunctionDef) and node.name == 'stopped')
+        names = ['joint1', 'joint2', 'joint3', 'joint4']
+        world = SimpleNamespace(joint=SimpleNamespace(name=names[:], velocity=[0.] * 4),
+                                joint_received=9.95, odom_received=9.95, speed=lambda: 0.)
+        scope = dict(world=world, ARM_JOINTS=names, math=math,
+                     time=SimpleNamespace(monotonic=lambda: 10.))
+        exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-probe-stop', 'exec'), scope)
+        stopped = scope['stopped']
+        self.assertTrue(stopped())
+        for values in ([0., 0., .04, 0.], [0.] * 3, [0., float('nan'), 0., 0.]):
+            world.joint.velocity = values
+            self.assertFalse(stopped())
+        world.joint.velocity = [0.] * 4
+        world.joint.name = names[:-1]
+        self.assertFalse(stopped())
+        world.joint.name = names[:]
+        world.joint_received = 9.89
+        self.assertFalse(stopped())
+        world.joint_received, world.odom_received = 9.95, 9.89
+        self.assertFalse(stopped())
+        world.odom_received, world.speed = 9.95, lambda: .04
+        self.assertFalse(stopped())
+        world.joint = None
+        self.assertFalse(stopped())
 
 
 class StopEvidenceTest(unittest.TestCase):
