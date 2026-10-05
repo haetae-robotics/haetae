@@ -311,7 +311,12 @@ impl Enforcer {
     }
 
     fn rejudge(&mut self, now_ms: u64, forced: &mut Option<StopReason>) {
-        if self.active_arm.is_some()
+        // Ordinary lease expiry belongs to output(), including cancellation.
+        // Do not turn it into a semantic revocation at the exact TTL boundary.
+        if self
+            .active_arm
+            .as_ref()
+            .is_some_and(|active| now_ms < active.expires_ms)
             && !self.runtime.mode().stop_only()
             && self
                 .runtime

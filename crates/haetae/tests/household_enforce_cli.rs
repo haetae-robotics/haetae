@@ -343,6 +343,39 @@ fn exact_safe_signed_trajectory_reaches_real_execute_output() {
 }
 
 #[test]
+fn signed_world_changes_cancel_an_already_admitted_household_trajectory() {
+    for case in ["hazard", "missing", "stale", "identity"] {
+        let fixture = Fixture::new();
+        let mut session = fixture.spawn("active.jsonl");
+        session.prepare(world(1000));
+        let accepted = session.send(1000, Role::Vla, 2, trajectory(2, 1000, 0.1), VLA_SEED);
+        assert!(accepted["arm"]["execute"].is_object(), "{accepted}");
+        let mut changed = world(1050);
+        changed["robot"]["joints"][0]["position"] = json!(0.05);
+        changed["semantic"]["revision"] = json!(2);
+        match case {
+            "hazard" => {
+                changed["semantic"]["regions"][0]["bounds"] = json!({
+                    "min":{"x":5.18,"y":4.99,"z":-0.02},
+                    "max":{"x":5.22,"y":5.03,"z":0.02}
+                });
+            }
+            "missing" => {
+                changed.as_object_mut().unwrap().remove("semantic");
+            }
+            "stale" => changed["semantic"]["observed_ms"] = json!(799),
+            "identity" => changed["semantic"]["item_id"] = json!("different-item"),
+            _ => unreachable!(),
+        }
+        let revoked = session.send(1050, Role::World, 2, changed, WORLD_SEED);
+        assert_eq!(revoked["arm"], "cancel", "{case}: {revoked}");
+        assert!(revoked["status"]["active"].is_null(), "{case}: {revoked}");
+        assert_eq!(revoked["status"]["armed"], json!([]), "{case}: {revoked}");
+        assert_no_execute(&revoked);
+    }
+}
+
+#[test]
 fn valid_vla_signature_cannot_omit_semantic_binding_or_world_facts() {
     for missing_world in [false, true] {
         let fixture = Fixture::new();

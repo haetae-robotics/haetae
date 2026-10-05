@@ -134,6 +134,26 @@ fn exact_safe_trajectory_executes_and_moving_joints_do_not_repeat_start_validati
 }
 
 #[test]
+fn ordinary_ttl_expiry_owns_completion_at_the_exact_boundary() {
+    let mut g = gate();
+    accepted(&mut g);
+    let fresh = g.handle(world(1900, 0.25, Some(semantic(1900))), 1900);
+    assert!(fresh.stop.is_none(), "{fresh:?}");
+    let expired = g.tick(2000);
+    assert_eq!(expired.stop, Some(haetae_enforce::StopReason::Expired));
+    cancelled(expired);
+}
+
+#[test]
+fn no_world_after_admission_cancels_on_outer_world_expiry() {
+    let mut g = gate();
+    accepted(&mut g);
+    let stale = g.tick(1201);
+    assert_eq!(stale.stop, Some(haetae_enforce::StopReason::StaleWorld));
+    cancelled(stale);
+}
+
+#[test]
 fn every_allowed_proposal_source_needs_binding_and_trusted_facts() {
     for source in [Source::Vla, Source::Planner] {
         let mut g = gate();

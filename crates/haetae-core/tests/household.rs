@@ -146,6 +146,16 @@ fn trusted_fk_checks_exact_candidate_not_cartesian_claims_or_waypoint_endpoints(
 }
 
 #[test]
+fn semantic_confidence_threshold_is_inclusive_at_point_nine() {
+    let gate = Gate::new(policy()).unwrap();
+    for (confidence, expected) in [(0.899999, Verdict::Bul), (0.9, Verdict::Yun)] {
+        let mut w = world();
+        w.semantic.as_mut().unwrap().confidence = confidence;
+        assert_eq!(gate.judge_at(&proposal(), &w, 1000).verdict, expected);
+    }
+}
+
+#[test]
 fn stale_unknown_and_missing_facts_or_stationary_base_violation_deny() {
     let gate = Gate::new(policy()).unwrap();
     for change in 0..8 {
