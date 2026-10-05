@@ -135,14 +135,18 @@ Each isolated arm kill/stall/delay fixture waits for newly published, rotated
 wheel/arm activation challenges. It allows at most two sequential OFF-only
 preparation requests within five seconds, to tolerate volatile DDS discovery
 loss. The exact final proposal ID must match the Rust-accepted stop; it also
-requires a newer fresh idle/armed state, unlocked wheel/arm controller reports
-bound to the new nonces and measured wheel/all-four-joint stop immediately
+requires a newer fresh idle/armed state, fresh wheel/arm controller reports
+bound to the new nonces, an unlocked arm with a fresh idle lease, and measured
+wheel/all-four-joint stop immediately
 before dispatch. There is no repeating request producer or trailing stop after
 the final accepted ID from the ordered signed VLA writer. The non-secure path
 without the durable VLA counter allows only one preparation request. A fixed 300 ms
 preparation sleep can hide a lapse beyond the 200 ms permit lifetime.
 Preparation emits no further stops or resets once the single arm goal is sent;
 failure after dispatch cannot use this barrier to recover or retry motion.
+The arm-only fixture permits a locked wheel controller when its current report
+and measured stop are fresh; it grants no wheel motion authority. General
+rearm and scenes requiring wheel motion still require both controllers unlocked.
 
 Telemetry keeps the total rejection counter, including invalid stop packets,
 and a separate motion/reset/lease rejection counter. Normal arm completion

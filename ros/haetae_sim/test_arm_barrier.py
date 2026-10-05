@@ -54,7 +54,7 @@ class ArmBarrierTest(unittest.TestCase):
         changed.outcomes[-1][1]["decision"]["proposal_id"] = 6
         self.assertFalse(self.ready(changed))
         for field in ("guard_states", "base_guard_states"):
-            for changes in ({"holding": True}, {"nonce": "old"},
+            for changes in ({"holding": None}, {"holding": 0}, {"nonce": "old"},
                             {"published_wall_ns": 9_890_000_000},
                             {"published_wall_ns": 10_010_000_000}):
                 changed = copy.deepcopy(world)
@@ -67,6 +67,9 @@ class ArmBarrierTest(unittest.TestCase):
             changed = copy.deepcopy(world)
             setattr(changed, field, [])
             self.assertFalse(self.ready(changed))
+            changed = copy.deepcopy(world)
+            del getattr(changed, field)[-1][1]["holding"]
+            self.assertFalse(self.ready(changed))
         for lease in (0, 9_920_000_000, 10_010_000_000):
             changed = copy.deepcopy(world)
             changed.guard_states[-1][1]["lease_received_wall_ns"] = lease
@@ -76,6 +79,17 @@ class ArmBarrierTest(unittest.TestCase):
             changed.guard_states[-1][1].update(changes)
             self.assertFalse(self.ready(changed))
         world.states[-1] = (9.89, world.states[-1][1])
+        self.assertFalse(self.ready(world))
+
+    def test_arm_only_fixture_accepts_locked_stopped_base_but_not_locked_arm(self):
+        world = self.fixture()
+        world.base_guard_states[-1][1]["holding"] = True
+        self.assertTrue(self.ready(world))
+        for speed in (0.03, -0.03, float("nan")):
+            world.speed = lambda: speed
+            self.assertFalse(self.ready(world))
+        world.speed = lambda: 0.
+        world.guard_states[-1][1]["holding"] = True
         self.assertFalse(self.ready(world))
 
     def test_gazebo_reset_needs_fresh_measured_wheel_and_every_joint_stop(self):

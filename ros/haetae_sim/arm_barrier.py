@@ -33,10 +33,14 @@ def gazebo_rearm_ready(world, sent_at, now, arm_joints, nonces, proposal_id):
         received, guard = samples[-1]
         published = guard.get("published_wall_ns", 0) / 1e9
         if (not nonces.get(target) or guard.get("nonce") != nonces[target]
-                or received < sent_at or published < sent_at or guard.get("holding", True)
+                or received < sent_at or published < sent_at
+                or type(guard.get("holding")) is not bool
+                or (target == "arm" and guard["holding"])
                 or not 0 <= now - received < 0.1
                 or not 0 <= now - published < 0.1):
             return False
+    # This fixture dispatches only an arm goal. A locked wheel route is safe
+    # provided its current report and measured physical stop are both fresh.
     arm = world.guard_states[-1][1]
     if arm.get("active_digest") != "0" * 64 or arm.get("goal_sequence") != 0:
         return False
