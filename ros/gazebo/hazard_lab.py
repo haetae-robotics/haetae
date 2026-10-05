@@ -358,6 +358,33 @@ def ordinary_completion(state):
     )
 
 
+def setup_reset_ready(world, sim_ms, wall):
+    """Fresh measured idle baseline for the one-shot household fixture setup."""
+    if (not world.states or world.joint is None or not world.sensor_info.get("healthy")
+            or not 0 <= wall - world.states[-1][0] < 0.1
+            or not 0 <= wall - world.odom_received < 0.1
+            or not 0 <= wall - world.joint_received < 0.1):
+        return False
+    state, semantic = world.states[-1][1], world.semantic_last
+    if (state.get("mode") != "normal" or state.get("recorder_ok") is not True
+            or state.get("state_ok") is not True or state.get("active") is not None
+            or state.get("arm_cancelling") or not state.get("arm_controller_ready")
+            or type(state.get("world_age_ms")) not in (int, float)
+            or not 0 <= state["world_age_ms"] < 75
+            or not semantic or semantic.get("coverage_known") is not True
+            or semantic.get("confidence") != 1
+            or not 0 <= sim_ms - semantic["observed_ms"] < 75
+            or state.get("semantic_revision") != semantic["revision"]
+            or state.get("semantic_task_revision") != semantic["task_revision"]):
+        return False
+    velocities = dict(zip(world.joint.name, world.joint.velocity))
+    speed = world.speed()
+    return (math.isfinite(speed) and abs(speed) < 0.03
+            and all(name in velocities and math.isfinite(velocities[name])
+                    and abs(velocities[name]) < 0.03
+                    for name in ("joint1", "joint2", "joint3", "joint4")))
+
+
 def accepted_plan_matches(points, action):
     rows = action.get("points", [])
     return (
@@ -464,6 +491,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                         "task_revision": 0, "facts": None, "task_id": None,
                         "base_pose": None, "base_yaw": None}
     verified_denial: dict[str, Optional[float]] = {"at": None}
+    arm_dispatch = {"sent": False, "initialized": False}
     policy_binding = kinematics.household_policy(urdf)
     world.hazard_guard = lambda: not motion_guard["active"] or healthy()
 
@@ -681,6 +709,29 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                   "model_sha256", "tool_id", "item_id")
         return {**{key: snapshot[key] for key in fields}, "world_revision": snapshot["revision"]}
 
+    def initialize_for_test(item, contents):
+        # Explicit fixture-maintenance reset before the first arm proposal.
+        # It cannot recover a failed dispatched motion or a tested denial.
+        if arm_dispatch["sent"] or arm_dispatch["initialized"] or verified_denial["at"] is not None:
+            raise RuntimeError("household setup reset is only available before the first arm proposal")
+        arm_dispatch["initialized"] = True
+        current_binding(item, contents)
+        wait_for(lambda: setup_reset_ready(world, now(), time.monotonic()),
+                 3, processes, "fresh measured idle household setup baseline")
+        reset_at = time.monotonic()
+
+        def explicit_stop():
+            if setup_reset_ready(world, now(), time.monotonic()):
+                world.propose_base(0.0)
+
+        wait_for(lambda: setup_reset_ready(world, now(), time.monotonic())
+                 and "vla" in world.states[-1][1].get("armed", [])
+                 and world.controllers_unlocked()
+                 and sum(t >= reset_at and row.get("decision", {}).get("verdict") == "yun"
+                         and row.get("decision", {}).get("action", {}).get("type") == "stop"
+                         for t, row in world.outcomes) >= 2,
+                 3, processes, "one-shot explicit household setup reset", action=explicit_stop)
+
     def rearm_for_test():
         def ready_for_explicit_test_rearm():
             if not world.states:
@@ -718,6 +769,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             binding = binding_override(binding) if callable(binding_override) else binding_override
         before = world.arm_positions()
         submitted_at = time.monotonic()
+        arm_dispatch["sent"] = True
         world.propose_arm_plan(points, semantic=binding)
 
         def rejection():
@@ -795,6 +847,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         if time.monotonic() - started_wall > 0.05:
             raise RuntimeError("hazard dispatch preparation exceeded 50 ms")
         rejected_before = world.guard_states[-1][1]["rejected_motion"]
+        arm_dispatch["sent"] = True
         world.propose_arm_plan(points, semantic=binding)
         (root / "hazard-preflight.json").write_text(json.dumps(preflight, indent=2))
         goal = points[-1][1][0]
@@ -978,6 +1031,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             verdict = judge_engine.decide(checked)
             if verdict["allowed"] or verdict["reason"] != expected:
                 raise AssertionError(f"{case}: expected {expected}, got {verdict}")
+            if index == 1 and not arm_dispatch["sent"]:
+                initialize_for_test(item, contents)
             gate_denial = reject_at_gate(dangerous, item, contents, "household:" + expected)
             drift = gate_denial["denied_drift_rad"]
             world._emit(

@@ -14,6 +14,7 @@ from hazard_lab import (
     stationary,
     plan,
     ordinary_completion,
+    setup_reset_ready,
     accepted_plan_matches,
     expected_positions,
     tracking_start_ms,
@@ -22,6 +23,72 @@ from public_report import report, failed_household_result
 
 
 class WorldPublicationTest(unittest.TestCase):
+    def setup_world(self):
+        semantic = {"observed_ms": 995, "revision": 2, "task_revision": 1,
+                    "coverage_known": True, "confidence": 1}
+        state = {"mode": "normal", "stop": "denied", "armed": [], "active": None,
+                 "recorder_ok": True, "state_ok": True, "arm_cancelling": False,
+                 "arm_controller_ready": True, "world_age_ms": 5,
+                 "semantic_revision": 2, "semantic_task_revision": 1}
+        return SimpleNamespace(states=[(9.95, state)], sensor_info={"healthy": True},
+            semantic_last=semantic, odom_received=9.95, joint_received=9.95,
+            joint=SimpleNamespace(name=["joint1", "joint2", "joint3", "joint4"], velocity=[0.] * 4),
+            speed=lambda: 0., outcomes=[], controllers_unlocked=lambda: True)
+
+    def test_setup_reset_requires_fresh_accepted_world_and_every_actuator_stopped(self):
+        world = self.setup_world()
+        self.assertTrue(setup_reset_ready(world, 1000, 10.))
+        self.assertFalse(ordinary_completion(world.states[-1][1]))
+        for key, value in (("active", {"id": 1}), ("arm_cancelling", True),
+                           ("recorder_ok", False), ("state_ok", False), ("mode", "hazard"),
+                           ("world_age_ms", 75), ("semantic_revision", 3)):
+            invalid = self.setup_world()
+            invalid.states[-1][1][key] = value
+            self.assertFalse(setup_reset_ready(invalid, 1000, 10.))
+        for key in ("odom_received", "joint_received"):
+            invalid = self.setup_world()
+            setattr(invalid, key, 9.89)
+            self.assertFalse(setup_reset_ready(invalid, 1000, 10.))
+        for velocities in ([0., 0., .04, 0.], [0.] * 3, [0., 0., float("nan"), 0.]):
+            invalid = self.setup_world()
+            invalid.joint.velocity = velocities
+            self.assertFalse(setup_reset_ready(invalid, 1000, 10.))
+        world.semantic_last["observed_ms"] = 900
+        self.assertFalse(setup_reset_ready(world, 1000, 10.))
+
+    def test_initial_explicit_setup_reset_cannot_run_after_an_arm_dispatch_or_denial(self):
+        tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
+        lab = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_lab")
+        method = next(n for n in lab.body if isinstance(n, ast.FunctionDef) and n.name == "initialize_for_test")
+        world = self.setup_world()
+        stops = []
+        def stop(value):
+            stops.append(value)
+            world.states[-1][1].update(stop="no_command", armed=["vla"])
+            world.outcomes.append((10., {"decision": {"verdict": "yun", "action": {"type": "stop"}}}))
+        world.propose_base = stop
+        def wait(check, *args, action=None):
+            for _ in range(4):
+                if check():
+                    return True
+                if action:
+                    action()
+            raise TimeoutError("unqualified setup must not reset")
+        scope = {"world": world, "arm_dispatch": {"sent": False, "initialized": False},
+                 "verified_denial": {"at": None}, "current_binding": lambda *_: {},
+                 "setup_reset_ready": setup_reset_ready, "now": lambda: 1000, "wait_for": wait,
+                 "processes": {}, "time": SimpleNamespace(monotonic=lambda: 10.)}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "actual-household-setup", "exec"), scope)
+        scope["initialize_for_test"]("knife", [])
+        self.assertEqual(stops, [0., 0.])
+        for flag, denial in (({"sent": True, "initialized": False}, None),
+                             ({"sent": False, "initialized": True}, None),
+                             ({"sent": False, "initialized": False}, 9.)):
+            scope["arm_dispatch"], scope["verified_denial"]["at"] = flag, denial
+            with self.assertRaises(RuntimeError):
+                scope["initialize_for_test"]("knife", [])
+        self.assertEqual(stops, [0., 0.])
+
     def test_hazard_rejection_binds_after_explicit_rearm_queue_drains(self):
         # Exercise the actual fixture dispatcher against an observer revision
         # that changes while the explicit STOP/rearm queue drains.
@@ -50,6 +117,7 @@ class WorldPublicationTest(unittest.TestCase):
                  "world": world, "current_binding": lambda *_: {"world_revision": revision["value"]},
                  "rearm_for_test": rearm, "wait_for": wait, "processes": {},
                  "verified_denial": {"at": None},
+                 "arm_dispatch": {"sent": False, "initialized": False},
                  "time": SimpleNamespace(monotonic=lambda: 10, sleep=lambda _: None)}
         exec(compile(ast.Module(body=[method], type_ignores=[]), "hazard_lab.py", "exec"), scope)
         result = scope["reject_at_gate"]([], "inert", expected="household:human")

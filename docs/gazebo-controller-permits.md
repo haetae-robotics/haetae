@@ -118,6 +118,15 @@ unknown-perception revocation; a generic admission-budget rejection cannot
 stand in for either cause. Normal household arm completion can enter measured
 arm settling before `no_command`; arbitrary denied states are not completion.
 
+The household fixture harness has one explicit maintenance reset after initial
+scene preparation, before any arm proposal is dispatched. It requires fresh
+Rust-accepted semantic/world state, normal healthy engine state and measured
+wheel/all-four-joint stop before each zero/stop request. The path is unavailable
+after any arm proposal or verified denial and cannot recover a failed test.
+Subsequent test rearm still requires ordinary completion or the expected
+rejection verified by that test. This is fixture initialization, not production
+automatic recovery.
+
 Telemetry keeps the total rejection counter, including invalid stop packets,
 and a separate motion/reset/lease rejection counter. Normal arm completion
 checks the latter: a rejected locking-only stop still locks and cannot be
