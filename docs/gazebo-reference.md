@@ -288,10 +288,19 @@ and appropriate sensors before adapting this reference to a real robot.
 The adapter checks the complete range vector, configured pose/angles/range,
 original simulator stamp, receipt age and calibration return. NaN, malformed,
 missing, out-of-order, future, stale (200 ms) or uncovered measurements cannot
-refresh Haetae's world. Healthy fusion uses the oldest lidar/joint/odom stamp;
-it never stamps old sensor data as new. Unknown telemetry stays visible while
-the enforcer's existing 200 ms world-age stop applies. Sensor recovery cannot
-rearm a stopped source without an explicit zero command.
+become healthy observations. A bounded 16-frame history selects the newest
+monotonically accepted scan whose original stamp is no later than the ROS
+clock, including an invalid scan. Original source and wall receive ages must
+remain below 200 ms; future-only, expired or evicted coverage stays unknown.
+Healthy fusion uses the oldest lidar/joint/odom stamp; it never stamps old
+sensor data as new. Unknown coverage is delivered as a confidence-zero world
+when mechanical observations are fresh. The root-signed `perception-unknown`
+rule rejects and revokes motion below 0.9 confidence. The coverage test requires
+the accepted unknown world, named Rust revocation, disarm and a subsequent
+measured zero command within 400 ms of the actual fault request. Mechanical
+observation or signing disappearance retains the existing 200 ms world-age
+stop. Sensor recovery cannot rearm a stopped source without an explicit zero
+command; a latched household failure suppresses all world publication.
 
 The test removes the **native calibration geometry** to exercise lost coverage,
 and disconnects the lidar receiver to exercise stale input while the robot is

@@ -158,8 +158,10 @@ ROS node names within an enclave are not an authentication boundary.
 The Gazebo reference now contains native person geometry and a real simulated
 GPU lidar. Scenario paths move that geometry; only measured occupancy populates
 signed worlds. A known calibration return, complete scan validation, original
-source age and receipt age guard the controlled bay. Invalid/unknown scans do
-not refresh the world; the existing 200 ms world-age stop remains unchanged.
+source age and receipt age guard the controlled bay. Invalid/unknown scans
+produce explicit confidence-zero worlds when mechanical observations are
+fresh, and the root-signed `perception-unknown` rule revokes motion immediately.
+Observation/signing disappearance retains the existing 200 ms world-age stop.
 Moving-base tests cover receiver disconnect and removal of the native
 calibration target, with no automatic motion rearm after sensor recovery.
 
@@ -206,6 +208,11 @@ When the observation or signing path disappears, engine `stale_world` or a
 disarmed rejection with the exact response-boundary world-expiry error remains
 valid evidence. Joint/odom source-age checks and the household failure guard
 still suppress publication; sensor recovery alone cannot rearm a source.
+Gazebo scan delivery and the ROS clock are asynchronous. A bounded history of
+16 monotonically accepted frames supplies the newest scan no later than the
+snapshot clock, including an invalid scan. Original source and wall receive
+ages remain below 200 ms; future-only, expired or evicted coverage stays
+unknown. Buffering does not refresh observations or restore motion authority.
 Malformed responses, backwards clock, IPC failures and responses taking 50 ms
 or more still trigger the fatal stop path. No freshness budget is increased.
 

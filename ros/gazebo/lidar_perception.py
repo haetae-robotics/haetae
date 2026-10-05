@@ -6,6 +6,7 @@ Unknown/stale/invalid coverage cannot become an empty, confident world.
 """
 
 from dataclasses import dataclass
+from collections import deque
 import math
 import threading
 import time
@@ -122,6 +123,7 @@ class Perception:
     def __init__(self):
         self.lock = threading.Lock()
         self.frame = None
+        self.history = deque(maxlen=16)
         self.drop_frames = False  # Test-only simulated receiver disconnect.
         self.frames = 0
 
@@ -134,11 +136,16 @@ class Perception:
             if self.frame and frame.stamp_ms <= self.frame.stamp_ms:
                 return
             self.frame = frame
+            self.history.append(frame)
             self.frames += 1
 
     def snapshot(self, now_ms, robot):
         with self.lock:
-            frame = self.frame
+            # Gazebo Transport can deliver a scan before the asynchronous ROS
+            # clock catches up. Use the newest time-eligible observation, even
+            # when invalid, keeping its original stamp and wall receive time.
+            # This never masks a current bad scan with an older healthy scan.
+            frame = next((f for f in reversed(self.history) if f.stamp_ms <= now_ms), self.frame)
         reason = "no sensor frame"
         healthy = False
         points = ()

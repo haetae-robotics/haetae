@@ -57,8 +57,8 @@ class SensorStopTest(unittest.TestCase):
                 outcomes or [], zeros if zeros is not None else [(10.05, 1050)],
                 10, 1000, require_perception=require_perception)
 
-    def rows(self, confidence=0, stamp=1020, fired="perception-unknown", kind="revoke"):
-        return [{"kind": "world", "ts_ms": 1030,
+    def rows(self, confidence=0, stamp=1020, received=1030, fired="perception-unknown", kind="revoke"):
+        return [{"kind": "world", "ts_ms": received,
                  "payload": {"stamp_ms": stamp, "confidence": confidence}},
                 {"kind": kind, "ts_ms": 1040, "payload": {"fired": [fired]}}]
 
@@ -66,7 +66,7 @@ class SensorStopTest(unittest.TestCase):
         report = self.check(self.rows())
         self.assertEqual(report, {"stop_reason": "perception_unknown", "zero_at": 10.05,
                                   "world_stamp_ms": 1020})
-        for rows in (self.rows(confidence=1), self.rows(stamp=999),
+        for rows in (self.rows(confidence=1), self.rows(received=999),
                      self.rows(fired="person"), self.rows(kind="decision"),
                      self.rows()[1:], self.rows()[:1]):
             with self.subTest(rows=rows):
@@ -78,6 +78,12 @@ class SensorStopTest(unittest.TestCase):
                 self.assertIsNone(self.check(self.rows(), states=states))
         self.assertIsNone(self.check(self.rows(), zeros=[(10.01, 1030)]))
         self.assertIsNone(self.check(self.rows(), zeros=[(9.9, 1050)]))
+        # The world source stamp is mechanical feedback, which can precede
+        # the fault while still fresh. Correlate the engine's accepted-world
+        # receipt time, preserving that original source timestamp.
+        report = self.check(self.rows(stamp=995))
+        assert report is not None
+        self.assertEqual(report["world_stamp_ms"], 995)
 
     def test_latest_world_must_be_unknown(self):
         rows = self.rows()
