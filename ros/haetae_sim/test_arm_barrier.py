@@ -184,6 +184,9 @@ class ArmBarrierTest(unittest.TestCase):
                         self.assertFalse(sent)
                         self.assertTrue(predicate())
                         return
+                    if description == 'owner fresh world before OFF request':
+                        self.assertTrue(predicate())
+                        return
                     if remaining[0]:
                         remaining[0] -= 1
                         raise TimeoutError(description)
@@ -220,6 +223,8 @@ class ArmBarrierTest(unittest.TestCase):
             if description == 'owner accepted fresh world before fixture reset':
                 self.assertFalse(requests)
                 return
+            if description == 'owner fresh world before OFF request':
+                return
             raise TimeoutError(description)
         scope = dict(time=SimpleNamespace(monotonic=lambda: 10.), json=json,
                      ARM_JOINTS=['j1', 'j2', 'j3', 'j4'], wait_for=wait,
@@ -251,7 +256,9 @@ class ArmBarrierTest(unittest.TestCase):
         for failure in ('deadline', 'nonce', 'world'):
             world, clock, fresh = self.fixture(), [10.], [True]
             world.propose_base = lambda value: self.fail('reset sent after prerequisite invalidation')
-            def wait(*args):
+            def wait(predicate, timeout, processes, description):
+                if description == 'owner fresh world before OFF request' and failure == 'world':
+                    raise TimeoutError('world lost')
                 if failure == 'deadline':
                     clock[0] = 15.
                 elif failure == 'nonce':
@@ -264,3 +271,43 @@ class ArmBarrierTest(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 scope['prepare_arm_fault'](world, {}, None)
             self.assertEqual(world.arm_preparation_diagnostics['attempts'], [])
+
+    def test_transient_state_outcome_ordering_does_not_skip_second_off_attempt(self):
+        tree = ast.parse((Path(__file__).parents[1] / 'gazebo/run_reference.py').read_text())
+        method = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == 'prepare_arm_fault')
+        world, clock, counter, sent = self.fixture(), [10.], [7], []
+        def propose(value):
+            sent.append(value)
+            counter[0] += 1
+        world.propose_base, world._emit = propose, lambda *args, **kwargs: None
+        def new_world():
+            clock[0] += .01
+            # The real gate publishes state before its WorldUpdated outcome.
+            world.states.append((clock[0], dict(world.states[-1][1])))
+            clock[0] += .001
+            world.outcomes.append((clock[0], {'world_updated': {'stamp_ms': int(clock[0]*1000)}}))
+        def wait(predicate, timeout, processes, description):
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, 5)
+            if description.startswith('owner '):
+                count = len(sent)
+                new_world()
+                self.assertFalse(predicate())
+                clock[0] += .001
+                world.states.append((clock[0], dict(world.states[-1][1])))
+                self.assertTrue(predicate())
+                self.assertEqual(len(sent), count)
+            elif len(sent) == 1:
+                new_world()
+                raise TimeoutError('first OFF delivery missed')
+            else:
+                self.assertTrue(predicate())
+        scope = dict(time=SimpleNamespace(monotonic=lambda: clock[0]), json=json,
+                     ARM_JOINTS=['j1', 'j2', 'j3', 'j4'], wait_for=wait,
+                     accepted_world_ready=accepted_world_ready,
+                     gazebo_rearm_ready=lambda *args: args[-1] == counter[0])
+        exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-ordering-preparation', 'exec'), scope)
+        result = scope['prepare_arm_fault'](world, {}, SimpleNamespace(counter=lambda role: counter[0]))
+        self.assertEqual(sent, [0., 0.])
+        self.assertEqual(result['accepted_proposal_id'], 9)

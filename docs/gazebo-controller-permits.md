@@ -139,6 +139,9 @@ world and a subsequent fresh idle state before the first OFF request. Graph
 discovery alone cannot satisfy this prerequisite. It neither arms a source nor
 replaces the final authorization barrier; unchanged activation nonces and the
 remaining deadline are checked before each OFF request.
+Readiness can be transiently false because state and outcome use separate DDS
+topics. Each OFF request waits for the same prerequisite inside the original
+five-second deadline; this adds neither an OFF attempt nor a motion retry.
 The exact final proposal ID must match the Rust-accepted stop; it also
 requires a newer fresh idle/armed state, fresh wheel/arm controller reports
 bound to the new nonces, an unlocked arm with a fresh idle lease, and measured

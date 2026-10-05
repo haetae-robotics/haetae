@@ -501,15 +501,16 @@ def prepare_arm_fault(world, processes, roles=None):
         except Exception as exc:
             return {"unavailable": type(exc).__name__}
     world.arm_preparation_diagnostics = None
+    def prerequisite_ready():
+        return (accepted_world_ready(world.states, world.outcomes,
+                started_at, time.monotonic(), previous_stamp)
+                and all(samples and samples[-1][1].get("nonce") == nonces[target]
+                    for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))))
     try:
         # A discovered world subscription is not proof that the restarted
         # owner has accepted a world. Spend the existing OFF-only deadline on
         # that prerequisite before consuming either explicit reset attempt.
-        wait_for(lambda: accepted_world_ready(world.states, world.outcomes,
-                  started_at, time.monotonic(), previous_stamp)
-                  and all(samples and samples[-1][1].get("nonce") == nonces[target]
-                      for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))),
-                 deadline - time.monotonic(),
+        wait_for(prerequisite_ready, deadline - time.monotonic(),
                  processes, "owner accepted fresh world before fixture reset")
     except TimeoutError:
         world.arm_preparation_diagnostics = {"attempts": [], "timeout_observations": [],
@@ -518,11 +519,22 @@ def prepare_arm_fault(world, processes, roles=None):
             "states": [(at, row) for at, row in list(world.states) if at >= started_at]}
         raise
     for attempt in range(2 if roles else 1):
-        if (time.monotonic() >= deadline or not accepted_world_ready(
-                world.states, world.outcomes, started_at, time.monotonic(), previous_stamp)
-                or any(not samples or
+        if (time.monotonic() >= deadline or any(not samples or
                 samples[-1][1].get("nonce") != nonces[target] for target, samples in
                 (("arm", world.guard_states), ("base", world.base_guard_states)))):
+            break
+        try:
+            # State is published before outcome on a world step. A later tick
+            # supplies the subsequent state, so this readiness hint can be
+            # transiently false. Poll within the same deadline; never consume
+            # an extra OFF attempt or retry a dispatched motion.
+            wait_for(prerequisite_ready, deadline - time.monotonic(),
+                     processes, "owner fresh world before OFF request")
+        except TimeoutError:
+            break
+        if time.monotonic() >= deadline or any(not samples or
+                samples[-1][1].get("nonce") != nonces[target] for target, samples in
+                (("arm", world.guard_states), ("base", world.base_guard_states))):
             break
         # In the isolated profile each parsed proposal increments both this
         # durable VLA reservation and proposal_id once, before DDS publication.
