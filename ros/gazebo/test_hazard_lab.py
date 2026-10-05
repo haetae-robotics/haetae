@@ -55,9 +55,24 @@ class WorldPublicationTest(unittest.TestCase):
         publish(world)
         world.semantic_snapshot.assert_called_once_with(1000)
         self.assertEqual(json.loads(world.world_pub.publish.call_args.args[0].data)["semantic"]["observed_ms"], 950)
+        # Unknown coverage must reach the root policy immediately as confidence
+        # zero; waiting for the old world to age adds simulation-time latency.
+        world.perception = SimpleNamespace(snapshot=lambda *_: ([], 0, {"healthy": False, "stamp_ms": 900}))
+        publish(world)
+        payload = json.loads(world.world_pub.publish.call_args.args[0].data)
+        self.assertEqual(payload["confidence"], 0)
+        self.assertEqual(payload["stamp_ms"], 1000)
         world.hazard_guard = lambda: False
         publish(world)
-        self.assertEqual(world.world_pub.publish.call_count, 2)
+        self.assertEqual(world.world_pub.publish.call_count, 3)
+        world.hazard_guard = None
+        world.odom_received = time.monotonic() - 1
+        publish(world)
+        self.assertEqual(world.world_pub.publish.call_count, 3)
+        world.odom_received = time.monotonic()
+        world.joint.header = SimpleNamespace(stamp=SimpleNamespace(sec=0, nanosec=700_000_000))
+        publish(world)
+        self.assertEqual(world.world_pub.publish.call_count, 3)
 
 
 class HazardAdapterTest(unittest.TestCase):

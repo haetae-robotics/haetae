@@ -9,12 +9,10 @@ from pathlib import Path
 import signal
 import time
 
-from stop_evidence import world_expiry_stop_observed
-
 PROFILES = ((40, 0.06), (80, 0.14), (100, 0.22))
 
 
-def exercise_compound(world, roles, processes, wait_for, repeats, evidence_path):
+def exercise_compound(world, roles, processes, wait_for, repeats, evidence_path, stop_report):
     def counter():
         return roles.counter("vla")
 
@@ -53,6 +51,7 @@ def exercise_compound(world, roles, processes, wait_for, repeats, evidence_path)
             with world.perception.lock:
                 world.perception.drop_frames = True
                 fault_at = time.monotonic()
+                fault_ms = world.get_clock().now().nanoseconds // 1_000_000
             os.kill(signer.pid, signal.SIGSTOP)
             paused = True
             wait_for(lambda: "\nState:\tT" in Path(f"/proc/{signer.pid}/status").read_text(),
@@ -60,10 +59,13 @@ def exercise_compound(world, roles, processes, wait_for, repeats, evidence_path)
             time.sleep(pause_seconds)
             os.kill(signer.pid, signal.SIGCONT)
             paused = False
-            wait_for(lambda: not world.sensor_info.get("healthy") and world_expiry_stop_observed(
-                world.states, world.outcomes, fault_at) and abs(world.speed()) < 0.03,
-                     3, processes, "compound stale-world stop under continuous proposals")
-            zero_at = next(t for t, _ in world.zero_commands if t >= fault_at)
+            def sensor_stop():
+                return stop_report(world.states, world.outcomes, world.zero_commands, fault_at, fault_ms)
+
+            wait_for(lambda: not world.sensor_info.get("healthy") and sensor_stop() and abs(world.speed()) < 0.03,
+                     3, processes, "compound authenticated stop under continuous proposals")
+            stopped = sensor_stop()
+            zero_at = stopped["zero_at"]
             stopped_at = time.monotonic()
             if zero_at - fault_at > 0.4 or world.sensor_info.get("healthy"):
                 raise AssertionError("compound fault zero_ms=" + str(round((zero_at-fault_at)*1000,1)) +
@@ -98,7 +100,7 @@ def exercise_compound(world, roles, processes, wait_for, repeats, evidence_path)
                    "post_recovery_proposal_rejected_by_engine": True,
                    "world_signer_pause_ms": round(pause_seconds * 1000),
                    "signer_stop_observed": True, "sensor": "gazebo_gpu_lidar_disconnect",
-                   "moving_positive_control": True, "stop_reason": world_expiry_stop_observed(world.states, world.outcomes, fault_at),
+                   "moving_positive_control": True, "stop_reason": stopped["stop_reason"],
                    "fault_to_zero_wall_ms": round((zero_at - fault_at) * 1000, 1),
                    "fault_to_stopped_observation_wall_ms": round((stopped_at - fault_at) * 1000, 1),
                    "recovery_did_not_rearm": True}

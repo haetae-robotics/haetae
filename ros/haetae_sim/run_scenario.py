@@ -43,6 +43,8 @@ def fixture(root, binary, arm=False, arm_policy=None, person_distance=0.3):
         "zones": [{"id": "child-room", "area": {"min": {"x": 7, "y": 4},
                                                  "max": {"x": 8, "y": 6}}, "no_entry": True}],
         "rules": [{"id": "person", "when": {"human_within": {"distance": person_distance}},
+                   "then": "bul"},
+                  {"id": "perception-unknown", "when": {"confidence_below": 0.9},
                    "then": "bul"}],
     }
     if arm:

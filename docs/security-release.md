@@ -196,8 +196,16 @@ A timely positive response that crosses the original proposal/world expiry is
 discarded before output. The bridge sends zero and requests arm cancellation
 first, then explicitly rejects the engine's active goal and armed sources. A
 zero, non-executing, disarmed response is mandatory. Sensor recovery alone
-cannot resume motion. The sensor oracle accepts either engine `stale_world` or
-a disarmed rejection with the exact response-boundary world-expiry error.
+cannot resume motion. Mechanically fresh observations with unknown lidar
+coverage are delivered as confidence zero, never as a verified empty scene.
+The root-signed reference policy's `perception-unknown` rule rejects and revokes
+motion below 0.9 confidence. The coverage-loss oracle requires an accepted
+confidence-zero world, its named Rust revocation, a disarmed status and a
+subsequent measured zero command within the original 400 ms wall-clock budget.
+When the observation or signing path disappears, engine `stale_world` or a
+disarmed rejection with the exact response-boundary world-expiry error remains
+valid evidence. Joint/odom source-age checks and the household failure guard
+still suppress publication; sensor recovery alone cannot rearm a source.
 Malformed responses, backwards clock, IPC failures and responses taking 50 ms
 or more still trigger the fatal stop path. No freshness budget is increased.
 

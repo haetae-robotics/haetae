@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from stop_evidence import world_expiry_stop_observed
+from stop_evidence import world_expiry_stop_observed, sensor_stop_report
 
 from stop_evidence import person_stop_observed, person_stop_report
 
@@ -37,9 +37,6 @@ class StopEvidenceTest(unittest.TestCase):
                                                   [(11, 1100)], 1000))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class WorldExpiryTest(unittest.TestCase):
     def test_expiry_requires_current_disarmed_state_and_specific_world_error(self):
         outcome = {"rejected": {"error": "stale actuation response: world expired"}}
@@ -48,3 +45,53 @@ class WorldExpiryTest(unittest.TestCase):
         self.assertIsNone(world_expiry_stop_observed(states, [(9, outcome)], 10))
         self.assertIsNone(world_expiry_stop_observed([(10, {"stop": "denied", "armed": ["vla"]})], [(10, outcome)], 10))
         self.assertIsNone(world_expiry_stop_observed(states, [(10, {"rejected": {"error": "proposal expired"}})], 10))
+
+
+class SensorStopTest(unittest.TestCase):
+    def check(self, rows, states=None, zeros=None, outcomes=None, require_perception=True):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "sillok.jsonl"
+            log.write_text("\n".join(json.dumps(row) for row in rows) + '\n{"kind":')
+            return sensor_stop_report(
+                log, states if states is not None else [(10.06, {"stop": "revoked", "armed": []})],
+                outcomes or [], zeros if zeros is not None else [(10.05, 1050)],
+                10, 1000, require_perception=require_perception)
+
+    def rows(self, confidence=0, stamp=1020, fired="perception-unknown", kind="revoke"):
+        return [{"kind": "world", "ts_ms": 1030,
+                 "payload": {"stamp_ms": stamp, "confidence": confidence}},
+                {"kind": kind, "ts_ms": 1040, "payload": {"fired": [fired]}}]
+
+    def test_requires_causal_unknown_world_revocation_disarm_and_subsequent_zero(self):
+        report = self.check(self.rows())
+        self.assertEqual(report, {"stop_reason": "perception_unknown", "zero_at": 10.05,
+                                  "world_stamp_ms": 1020})
+        for rows in (self.rows(confidence=1), self.rows(stamp=999),
+                     self.rows(fired="person"), self.rows(kind="decision"),
+                     self.rows()[1:], self.rows()[:1]):
+            with self.subTest(rows=rows):
+                self.assertIsNone(self.check(rows))
+        for states in ([], [(9, {"stop": "revoked", "armed": []})],
+                       [(10.06, {"stop": "revoked", "armed": ["vla"]})],
+                       [(10.06, {"stop": "unarmed", "armed": []})]):
+            with self.subTest(states=states):
+                self.assertIsNone(self.check(self.rows(), states=states))
+        self.assertIsNone(self.check(self.rows(), zeros=[(10.01, 1030)]))
+        self.assertIsNone(self.check(self.rows(), zeros=[(9.9, 1050)]))
+
+    def test_latest_world_must_be_unknown(self):
+        rows = self.rows()
+        rows.insert(1, {"kind": "world", "ts_ms": 1035,
+                        "payload": {"stamp_ms": 1035, "confidence": 1}})
+        self.assertIsNone(self.check(rows))
+
+    def test_expiry_remains_available_only_for_disappearing_observer(self):
+        states = [(10.05, {"stop": "stale_world", "armed": []})]
+        self.assertIsNone(self.check([], states=states))
+        self.assertEqual(self.check([], states=states, require_perception=False),
+                         {"stop_reason": "stale_world", "zero_at": 10.05})
+        self.assertIsNone(self.check([], states=states, zeros=[], require_perception=False))
+
+
+if __name__ == "__main__":
+    unittest.main()

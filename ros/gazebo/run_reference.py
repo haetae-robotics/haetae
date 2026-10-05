@@ -48,7 +48,7 @@ from lidar_perception import Perception
 from native_person import NativeScene, add_native_scene
 from safe_evidence import checkpoint_evidence, read_evidence_text
 from functools import partial
-from stop_evidence import person_stop_report, person_stop_observed, world_expiry_stop_observed  # noqa: E402
+from stop_evidence import person_stop_report, person_stop_observed, sensor_stop_report  # noqa: E402
 from attack_probe import (prepare_gazebo_security, probe_gazebo_permissions,
                           probe_permissions, probe_signed_inputs)  # noqa: E402
 
@@ -265,11 +265,12 @@ class GazeboWorld(Node):
             nearest = min(humans, key=lambda h: math.hypot(h["pos"]["x"]-x, h["pos"]["y"]-y))
             self.person_reports.append({"wall": time.monotonic(), "stamp_ms": stamp,
                                         "robot": (x, y), "human": (nearest["pos"]["x"], nearest["pos"]["y"])})
-        if confidence and (self.hazard_guard is None or self.hazard_guard()):
+        if self.hazard_guard is None or self.hazard_guard():
             self.world_pub.publish(String(data=json.dumps(payload)))
             self.world_count += 1
-        # Unknown coverage is visible in telemetry, but cannot refresh the
-        # enforcer world: its original 200 ms source-age stop remains active.
+        # Unknown coverage is an explicit negative observation, never a safe
+        # empty scene. The root-signed perception-unknown rule revokes motion
+        # immediately; mechanical/signing disappearance still ages out.
         self._emit("telemetry", sim_ms=joint_stamp, x=x, y=y, speed=self.speed(),
                    joint=self.primary_joint(), joints=joints, yaw=yaw, humans=render_humans,
                    detections=humans, sensor=sensor,
@@ -348,7 +349,7 @@ def check_person_sensor(world, label, processes):
             "returns": len(frame.points), "ok": True}
 
 
-def exercise_sensor_fault(world, processes, case, roles=None):
+def exercise_sensor_fault(world, processes, case, stop_report, roles=None):
     world.marker("센서 연결 끊김 시험" if case == "disconnect" else "센서 검증 표적 사라짐")
     wait_for(lambda: world.sensor_info.get("healthy") and not world.perception.snapshot(
         world.get_clock().now().nanoseconds // 1_000_000, world.pose())[0],
@@ -362,17 +363,22 @@ def exercise_sensor_fault(world, processes, case, roles=None):
     wait_for(lambda: world.speed() > 0.06, 5, processes, "sensor fixture actual motion",
              action=lambda: world.propose_base(0.12))
     fault_at = time.monotonic()
+    fault_ms = world.get_clock().now().nanoseconds // 1_000_000
     last_sensor_ms = world.sensor_info["stamp_ms"]
     if case == "disconnect":
         with world.perception.lock:
             world.perception.drop_frames = True
     elif not world.native.calibration_visible(False):
         raise AssertionError("could not remove native calibration target")
-    wait_for(lambda: not world.sensor_info.get("healthy") and world_expiry_stop_observed(
-        world.states, world.outcomes, fault_at) and abs(world.speed()) < 0.03,
-             3, processes, "sensor fault causes stale-world stop",
+    def sensor_stop():
+        return stop_report(world.states, world.outcomes, world.zero_commands, fault_at, fault_ms,
+                           require_perception=case == "coverage")
+
+    wait_for(lambda: not world.sensor_info.get("healthy") and sensor_stop() and abs(world.speed()) < 0.03,
+             3, processes, "sensor fault causes authenticated engine stop",
              action=lambda: world.propose_base(0.12))
-    zero_at = next(t for t, _ in world.zero_commands if t >= fault_at)
+    stopped = sensor_stop()
+    zero_at = stopped["zero_at"]
     unknown = dict(world.sensor_info)
     if unknown["healthy"] or zero_at - fault_at > 0.4:
         raise AssertionError("sensor fault " + case + " zero_ms=" + str(round((zero_at-fault_at)*1000,1)) + " unknown=" + json.dumps(unknown))
@@ -396,7 +402,7 @@ def exercise_sensor_fault(world, processes, case, roles=None):
     result = {"ok": True, "case": case, "input": "gazebo_gpu_lidar",
               "last_sensor_ms": last_sensor_ms, "unknown": unknown,
               "fault_to_zero_wall_ms": round((zero_at-fault_at)*1000, 1),
-              "stop_reason": world_expiry_stop_observed(world.states, world.outcomes, fault_at),
+              "stop_reason": stopped["stop_reason"],
               "recovery_did_not_rearm": True, "post_recovery_proposal_rejected_by_engine": True}
     world._emit("sensor_fault_result", **result)
     world.marker("센서 이상 → 정지")
@@ -583,6 +589,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     log_boundary = {"root": root, "expected_uid": UIDS["gate"] if roles else os.geteuid()}
     stop_report = partial(person_stop_report, **log_boundary)
     stop_observed = partial(person_stop_observed, **log_boundary)
+    sensor_stop = partial(sensor_stop_report, gate_directory / "sillok.jsonl", **log_boundary)
 
     def role_env(role):
         env = os.environ.copy()
@@ -880,12 +887,13 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
 
         sensor_faults = {}
         for case in ("disconnect", "coverage"):
-            sensor_faults[case] = exercise_sensor_fault(world, processes, case, roles)
+            sensor_faults[case] = exercise_sensor_fault(world, processes, case, sensor_stop, roles)
             presentation_wait(3)
         (root / "sensor-faults.json").write_text(json.dumps(sensor_faults, indent=2))
         (root / "sensor-person.json").write_text(json.dumps(sensor_person_evidence, indent=2))
 
-        compound = exercise_compound(world, roles, processes, wait_for, compound_repeat, root / "compound-faults.json") if compound_repeat else None
+        compound = exercise_compound(world, roles, processes, wait_for, compound_repeat,
+                                     root / "compound-faults.json", sensor_stop) if compound_repeat else None
         if compound:
             (root / "compound-faults.json").write_text(json.dumps(compound, indent=2))
             presentation_wait(3)
