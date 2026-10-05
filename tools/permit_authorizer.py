@@ -72,6 +72,9 @@ class Authorizer:
             signature = hashlib.blake2b(payload(request), key=self.session_key, digest_size=32).hexdigest()
             # Signing cannot turn a late gate decision into fresh authorization.
             remaining = self.gate.remaining()
+            if not 0 < remaining <= .05:
+                self.locked = True
+                return {"kind": "terminal", "reason": "gate_expired"}
             self.sequence, self.challenge = request["sequence"] + 1, request["challenge"]
             self.armed_authorized = True
             return {"kind": "permit", "signature": signature, "duration": 200,

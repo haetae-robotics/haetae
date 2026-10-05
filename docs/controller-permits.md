@@ -100,8 +100,8 @@ H2 <OK|ERR> <install_hex32> <epoch> <generation> <sequence> <challenge> <issued>
 
 HELLO removes output/key, increments generation, sets sequence 0/challenge 1.
 BIND establishes BOUND, still OFF. ARM creates an OFF lease; RUN turns ON.
-Each consumes sequence/challenge and issues a new nonce. STATUS changes only
-challenge/nonce. STOP always removes output. Protocol/replay/expiry/crypto/TX
+Each consumes sequence/challenge and issues a new nonce. STATUS refreshes
+challenge/nonce/issue stamp, never the lease. STOP always removes output. Protocol/replay/expiry/crypto/TX
 errors latch OFF; HELLO still needs new trusted authorization. Replies are
 **not authenticated telemetry**, electrical measurements or motor evidence.
 
@@ -119,12 +119,15 @@ duration 0/action 2, then ephemeral public key (32 bytes), controller public
 key (32 bytes). MCU X25519 private key is keyed BLAKE2b-256 of
 `HAETAE-X25519-H2` under its private master. Reject all-zero shared secrets.
 Connection key is keyed BLAKE2b-256 of the complete BIND payload under the
-shared secret. Challenge PRF uses a separate domain/action context.
+shared secret. Challenge PRF uses the LED domain with action 2 under the separate
+MCU master key; it does not use the RAM session key or KEX certificate domain.
 
 ## Reboot, update and deployment boundaries
 
 Before any USB challenge, startup reserves an epoch in a 4 KiB append-only
-data-flash journal. Each contiguous non-erased four-byte word consumes an
+data-flash journal. The hardware BlankCheck API determines blank cells because
+[Renesas documents](https://renesas.github.io/fsp/group___f_l_a_s_h___l_p.html)
+that erased data-flash reads are not guaranteed to return FF. Each contiguous non-erased four-byte word consumes an
 epoch, including torn reservations. Holes followed by data, write/readback
 failure or 1024-slot exhaustion lock the MCU. **No runtime erase/reset command**.
 Trusted physical reprovisioning needs new identity **and keys**. Power-cut

@@ -57,7 +57,13 @@ static void start(PermitGuard& guard, uint32_t now = 0) {
 }
 struct Storage {
   std::array<uint32_t, 4> words = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
-  bool read_ok = true, write_ok = true;
+  bool read_ok = true, write_ok = true, blank_ok = true;
+  // Model a consumed cell whose memory read resembles an erased value.
+  size_t consumed_ff = SIZE_MAX;
+  bool blank(size_t offset, bool& value) {
+    value = words[offset/4] == UINT32_MAX && offset != consumed_ff;
+    return blank_ok;
+  }
   bool read(size_t offset, uint32_t& value) { value = words[offset/4]; return read_ok; }
   bool program_zero(size_t offset) { if (write_ok) words[offset/4] = 0; return write_ok; }
 };
@@ -110,5 +116,8 @@ int main() {
   Storage hole; hole.words[1] = 0; assert(reserve_boot_epoch(hole, 4) == 0);
   Storage unreadable; unreadable.read_ok = false; assert(reserve_boot_epoch(unreadable, 4) == 0);
   Storage unwritable; unwritable.write_ok = false; assert(reserve_boot_epoch(unwritable, 4) == 0);
+  Storage unchecked; unchecked.blank_ok = false; assert(reserve_boot_epoch(unchecked, 4) == 0);
+  Storage ambiguous; ambiguous.consumed_ff = 0;
+  assert(reserve_boot_epoch(ambiguous, 4) == 2); // BlankCheck, never FF read, owns classification.
   puts("H2 Ed25519/X25519 binding, per-action MAC, epoch/nonce/replay/expiry/latch/rollover/parser and append-only epoch passed");
 }

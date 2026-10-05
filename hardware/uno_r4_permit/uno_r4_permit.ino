@@ -17,6 +17,15 @@ struct BootFlash {
     word = *reinterpret_cast<volatile const uint32_t*>(FLASH_BASE_ADDRESS + offset);
     return true;
   }
+  bool blank(size_t offset, bool& blank) {
+    if (offset >= 4096 || offset % 4) return false;
+    // RA erased data-flash reads are unspecified; never infer blank from FF.
+    flash_result_t result = FLASH_RESULT_BGO_ACTIVE;
+    if (R_FLASH_LP_BlankCheck(&ctrl, FLASH_BASE_ADDRESS + offset, 4, &result) != FSP_SUCCESS ||
+        (result != FLASH_RESULT_BLANK && result != FLASH_RESULT_NOT_BLANK)) return false;
+    blank = result == FLASH_RESULT_BLANK;
+    return true;
+  }
   bool program_zero(size_t offset) {
     if (offset >= 4096 || offset % 4) return false;
     const uint32_t zero = 0;

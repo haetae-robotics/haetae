@@ -81,6 +81,16 @@ class PermitContractTest(unittest.TestCase):
         self.assertEqual(authorizer.approve(self.value)["kind"], "terminal")
         self.assertTrue(authorizer.locked)
         self.assertEqual(authorizer.approve(dict(self.value, generation=2))["kind"], "terminal")
+        class ExpiredGate:
+            def cycle(self, fault):
+                return True
+            def remaining(self):
+                return 0
+        authorizer.gate = ExpiredGate()
+        authorizer.locked = False
+        authorizer.session_key = bytes(32)
+        self.assertEqual(authorizer.approve(self.value), {"kind": "terminal", "reason": "gate_expired"})
+        self.assertTrue(authorizer.locked)
 
     def test_optimized_usb_qualification_rejects_exposed_dfu_before_port_open(self):
         # This subprocess really uses -O: a normal unit test cannot detect
@@ -158,6 +168,7 @@ class PermitContractTest(unittest.TestCase):
             (root / files[2][0]).write_text(json.dumps(usb))
             with self.assertRaises(RuntimeError):
                 check()
+
             usb['passed'] = True
             (root / files[2][0]).write_text(json.dumps(usb))
             binary.write_bytes(b'changed gate')
@@ -171,6 +182,27 @@ class PermitContractTest(unittest.TestCase):
             image.write_bytes(b'changed image')
             with self.assertRaises(RuntimeError):
                 check()
+
+    def test_isolation_stages_only_public_runtime_without_opening_checkout(self):
+        from permit_isolation_verify import stage_public_runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'private-checkout'
+            root.mkdir(mode=0o700)
+            for folder in ('tools', 'ros/haetae_gate'):
+                (root / folder).mkdir(parents=True)
+                (root / folder / 'module.py').write_text('pass\n')
+                (root / folder / 'private.seed').write_bytes(b'excluded private fixture')
+            (root / 'haetae-permit').write_text('entry')
+            binary = root / 'gate'
+            binary.write_bytes(b'gate binary')
+            dest = Path(tmp) / 'public-runtime'
+            entry, gate = stage_public_runtime(root, binary, dest)
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(entry.stat().st_mode & 0o777, 0o555)
+            self.assertEqual(gate.read_bytes(), binary.read_bytes())
+            self.assertFalse(list(dest.rglob('*.seed')))
+            self.assertEqual((dest / 'tools/module.py').stat().st_mode & 0o777, 0o444)
+
 
 
 if __name__ == "__main__":
