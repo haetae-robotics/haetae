@@ -3,7 +3,7 @@
 
 This is a physics-backed reference test, not a robot safety certification.
 Person occupancy comes from the native Gazebo GPU lidar; robot feedback,
-Gazebo Transport and ros2_control are trusted. The four-joint controller checks an independent 250 ms gateway lease.
+Gazebo Transport and ros2_control are trusted. The four-joint controller checks independent permits lasting at most 200 ms.
 """
 
 import argparse
