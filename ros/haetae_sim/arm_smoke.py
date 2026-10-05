@@ -6,6 +6,7 @@ software contract test, not evidence that a real arm controller stops.
 """
 
 import json
+import argparse
 import inspect
 import os
 from pathlib import Path
@@ -141,7 +142,7 @@ def kill_gate(gate):
     raise AssertionError("orphaned Rust gate did not exit")
 
 
-def main(binary):
+def main(binary, out=None):
     binary = str(Path(binary).resolve())
     shared = Path("/dev/shm")
     with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
@@ -166,9 +167,20 @@ def main(binary):
                     world.propose()
                     until(lambda: world.states and world.states[-1][0] >= sent
                           and "vla" in world.states[-1][1]["armed"]
-                          and any(t >= sent and "decision" in value
-                                  for t, value in world.outcomes),
+                          and world.states[-1][1].get("active") is None
+                          and not world.states[-1][1].get("arm_cancelling")
+                          and world.states[-1][1].get("arm_controller_ready")
+                          and sum(t >= sent and value.get("decision", {}).get("verdict") == "yun"
+                                  and value["decision"].get("action") == {"type": "stop"}
+                                  for t, value in world.outcomes) >= 2,
                           gate, action=lambda: world.propose())
+                    # No new stop is sent during draining. Otherwise a queued
+                    # retry can replace the single positive motion proposal.
+                    drained = time.monotonic() + 0.15
+                    until(lambda: world.states and world.states[-1][0] >= drained
+                          and "vla" in world.states[-1][1]["armed"]
+                          and world.states[-1][1].get("active") is None
+                          and not world.states[-1][1].get("arm_cancelling"), gate)
 
                 def settled_after(reset_at):
                     until(lambda: any(t >= reset_at + 0.15 and not state["arm_cancelling"]
@@ -241,15 +253,35 @@ def main(binary):
                                   "kill_deadman_ms": round((deadman-killed)*1000, 1),
                                   "last_heartbeat_deadman_ms": round((deadman-heartbeat)*1000, 1)}))
             finally:
+                failure = sys.exc_info()[1]
                 kill_gate(gate)
                 executor.shutdown()
                 world.destroy_node()
                 server.destroy_node()
                 rclpy.shutdown()
                 thread.join(timeout=2)
+                if out is not None:
+                    out = Path(out)
+                    out.mkdir(parents=True, exist_ok=True)
+                    # Explicit public allowlist: never export params, private
+                    # fixture credentials, or the temporary directory wholesale.
+                    for name in ("gate.stderr", "sillok.jsonl"):
+                        path = root / name
+                        if path.is_file() and path.stat().st_size <= 32 * 1024 * 1024:
+                            (out / name).write_bytes(path.read_bytes())
+                    (out / "diagnostics.json").write_text(json.dumps({
+                        "ok": failure is None, "error": str(failure) if failure else None,
+                        "source_revision": os.environ.get("HAETAE_REVISION", "unknown"),
+                        "states": world.states[-400:], "outcomes": world.outcomes[-400:],
+                        "accepted": server.accepted, "stops": server.stops,
+                    }, indent=2))
                 if (root / "gate.stderr").stat().st_size:
                     print((root / "gate.stderr").read_text(), file=sys.stderr)
 
 
 if __name__ == "__main__":
-    main(os.path.abspath(sys.argv[1]))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary")
+    parser.add_argument("--out", type=Path)
+    args = parser.parse_args()
+    main(os.path.abspath(args.binary), args.out)

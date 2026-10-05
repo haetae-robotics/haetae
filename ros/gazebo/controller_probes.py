@@ -5,6 +5,7 @@ Synthetic clear-world semantics remain trusted. No test signer runs in relay.
 """
 import copy
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -222,7 +223,13 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                     if target=="base":data["linear"]+=.1
                     else:data["points"][0]["positions"][0]+=.1
                 elif case=="signature":data["permit"]=data["permit"][:-1]+("0" if data["permit"][-1]!="0" else "1")
-                elif case=="target":data["permit"]=data["permit"].replace("v1:"+target+"-","v1:"+("arm" if target=="base" else "base")+"-",1)
+                elif case=="target":
+                    # A genuine, validly signed foreign-controller permit;
+                    # do not make the signature invalid by editing its body.
+                    foreign = "arm" if target == "base" else "base"
+                    fields = data["permit"].split(":")
+                    data["permit"] = token(foreign, "goal" if foreign == "arm" else "command",
+                        fields[8], int(fields[4]), int(fields[5]), int(fields[6])-int(fields[4]))
                 elif case=="delay":time.sleep(.06)
                 prior = guard(target).get("rejected",0)
                 pose, joints=world.pose(),world.arm_positions()
@@ -242,15 +249,31 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                 new_issuer()
                 approve({"type":"stop"})
                 fresh=base_packet() if target=="base" else arm_packet()[0]
+                accepted_before = guard(target).get("accepted", 0)
+                rejected_before = guard(target).get("rejected", 0)
+                recovery_pose, recovery_joints = world.pose(), world.arm_positions()
+                delivered_wall = time.monotonic_ns()
                 send(fresh)
-                until=time.monotonic()+.1
+                wait_for(lambda: guard(target).get("published_wall_ns", 0) >= delivered_wall
+                         and guard(target).get("rejected", 0) > rejected_before
+                         and guard(target).get("holding") is True,
+                         2, processes, "fresh recovery rejected at locked controller")
+                until=time.monotonic()+.3
                 wait_for(lambda:time.monotonic()>=until,2,processes,"recovery remains locked")
-                if guard(target).get("holding") is not True:raise AssertionError("automatic recovery")
+                recovery_drift = (math.dist(world.pose(), recovery_pose) if target == "base" else
+                    max(abs(a-b) for a,b in zip(recovery_joints, world.arm_positions())))
+                if (guard(target).get("holding") is not True or
+                        guard(target).get("accepted", 0) != accepted_before or recovery_drift > .02):
+                    raise AssertionError("automatic recovery")
                 results[target+"_"+case]={"ok":True,"controller_rejection_observed":True,
-                    "drift":drift,"recovery_did_not_rearm":True}
+                    "drift":drift,"recovery_did_not_rearm":True,
+                    "recovery_rejection_observed":True, "recovery_drift": recovery_drift}
         result={"ok":True,"scope":"gazebo_exact_action_permits_with_compromised_relay_uid",
             "attacker_uid":UIDS["relay"],"issuer":"independent_real_rust_fixture",
             "checks":results,"trust":"root host simulator controller measured-world adapter and authorizer"}
+        result["relay_boundaries"] = {
+            "signer_credentials_unreadable": json.loads((root / "principal-isolation.json").read_text())["relay"]["signer_credentials_unreadable"],
+            "denied_services": json.loads((root / "role-permissions.json").read_text())["relay"]["denied_services"]}
         (root/"controller-permits.json").write_text(json.dumps(result,indent=2))
         return result
     finally:

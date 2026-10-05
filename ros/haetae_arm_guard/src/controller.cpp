@@ -20,6 +20,7 @@ class LeaseTrajectoryController : public joint_trajectory_controller::JointTraje
   realtime_tools::RealtimeBuffer<Lease> lease_;
   PermitGuard permit_;
   std::string active_digest_ = idle_digest, pending_token_;
+  std::string admitted_digest_ = idle_digest;
   std::atomic<uint64_t> last_stamp_{0};
   std::atomic<int64_t> cutoff_ms_{0}, updated_ms_{0};
   std::atomic<int64_t> stop_wall_ns_{0};
@@ -72,7 +73,8 @@ public:
         if (permit_.accept(msg->data, reset ? "reset" : stop ? "stop" : "lease",
           reset || stop ? idle_digest : active_digest_, get_node()->now().nanoseconds(), wall_ns(), reset, stop)) {
           if (reset || stop) {
-            active_digest_ = idle_digest; pending_token_.clear(); holding_.store(true);
+            active_digest_ = idle_digest; admitted_digest_ = idle_digest;
+            pending_token_.clear(); holding_.store(true);
             if (reset) {reset_requested_.store(true);}
           }
           const auto grant = permit_.grant();
@@ -121,10 +123,14 @@ public:
           auto result_msg = std::make_shared<FollowJTrajAction::Result>();
           result_msg->error_code = FollowJTrajAction::Result::INVALID_GOAL;
           result_msg->error_string = "Gateway lease expired before goal acceptance";
+          permit_.reject();
+          active_digest_ = idle_digest; admitted_digest_ = idle_digest; pending_token_.clear();
+          holding_.store(true);
           goal->abort(result_msg);
           return;
         }
         Base::goal_accepted_callback(goal);
+        admitted_digest_ = active_digest_;
       });
     joint_command_subscriber_.reset();
     joint_command_subscriber_ = get_node()->create_subscription<Trajectory>(
@@ -142,6 +148,7 @@ public:
           ",\"cutoff_ms\":" + std::to_string(cutoff_ms_.load()) + "}";
         msg.data.pop_back();
         msg.data += ",\"nonce\":\"" + permit_.nonce() + "\",\"stop_wall_ns\":" + std::to_string(stop_wall_ns_.load()) +
+          ",\"active_digest\":\"" + admitted_digest_ + "\",\"published_wall_ns\":" + std::to_string(wall_ns()) +
           ",\"accepted\":" + std::to_string(permit_.accepted()) +
           ",\"rejected\":" + std::to_string(permit_.rejected()) +
           ",\"lease_sent_ms\":" + std::to_string(lease.sent_ms) +
@@ -158,6 +165,7 @@ public:
       lease_.initRT(Lease{});
       permit_.activate();
       active_digest_ = idle_digest;
+      admitted_digest_ = idle_digest;
       pending_token_.clear();
       last_stamp_.store(0);
       cutoff_ms_.store(get_node()->now().nanoseconds() / 1000000);

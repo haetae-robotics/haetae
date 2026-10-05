@@ -13,6 +13,8 @@ definition = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name
 definition.bases = []
 clock = SimpleNamespace(value=0.0)
 environment = dict(time=SimpleNamespace(monotonic=lambda: clock.value), UInt64=SimpleNamespace,
+                   String=SimpleNamespace, IDLE="0" * 64,
+                   GoalStatus=SimpleNamespace(STATUS_SUCCEEDED=4, STATUS_CANCELED=5, STATUS_ABORTED=6),
                    BridgeFailure=BridgeFailure, StaleActuation=StaleActuation,
                    ExpiredActuation=ExpiredActuation, InvalidProposal=InvalidProposal,
                    require_fresh_actuation=require_fresh_actuation, lease_renewable=lease_renewable,
@@ -50,6 +52,31 @@ class NodeBoundaryTest(unittest.TestCase):
         g.heartbeat_pub = SimpleNamespace(publish=lambda message: g.heartbeats.append(message.data))
         g._publish = lambda step: None
         g._abort = lambda exc: g.aborts.append(str(exc))
+
+    def test_relay_ack_cannot_renew_before_trusted_controller_admission(self):
+        g = self.gate
+        g.arm_goal_future = None  # The untrusted relay already acknowledged.
+        digest = "a" * 64
+        g.permits = SimpleNamespace(challenges={"arm": "b" * 32},
+                                    active_arm=digest, admitted_arm="0" * 64)
+        g.permit_reset = False
+        g._permit = lambda target, kind, payload: kind + ":" + payload
+        g._heartbeat(1000)
+        self.assertFalse(g.heartbeats)
+        g.permits.admitted_arm = digest
+        g._heartbeat(1000)
+        self.assertEqual(g.heartbeats, ["lease:" + digest])
+        g.permit_reset = True
+        g.permits.admitted_arm = "c" * 64
+        g._heartbeat(1000)
+        self.assertEqual(g.heartbeats[-1], "reset:" + "0" * 64)
+
+    def test_success_retains_admitted_digest_until_explicit_stop(self):
+        g = self.gate
+        g.permits = SimpleNamespace(active_arm="a" * 64)
+        g._on_arm_result(SimpleNamespace(result=lambda: SimpleNamespace(status=4)))
+        self.assertFalse(g.aborts)
+        self.assertEqual(g.permits.active_arm, "a" * 64)
 
     def test_pending_goal_cancellation_has_absolute_deadline_and_no_renewal(self):
         g = self.gate

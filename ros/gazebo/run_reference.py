@@ -559,8 +559,8 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
     controller_seed = os.urandom(32)
-    (root / "controller.key").write_text(controller_seed.hex())
-    (root / "controller.key").chmod(0o600)
+    with (root / "controller.key").open("x", opener=lambda path, flags: os.open(path, flags, 0o600)) as key_file:
+        key_file.write(controller_seed.hex())
     controller_public = Ed25519PrivateKey.from_private_bytes(controller_seed).public_key().public_bytes(
         Encoding.Raw, PublicFormat.Raw).hex()
     params_path = root / "params.yaml"

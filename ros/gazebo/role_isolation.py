@@ -168,6 +168,13 @@ class Roles:
                 raise AssertionError(role + " could read another principal's private credentials")
             result[role] = {"uid": UIDS[role], "perception_credentials_unreadable": denied,
                             "other_principal_credentials_unreadable": cross_denied}
+            if role == "relay":
+                # These reads are already included in the cross-principal
+                # probe. Name the signing credentials explicitly in evidence.
+                signer_paths = {name: str(self.directories["gate"] / name) for name in
+                                ("controller.key", "log.key", "keystore/enclaves/haetae/gate/key.pem")}
+                result[role]["signer_credentials_unreadable"] = {
+                    name: cross_denied[other_keys.index(path)] for name, path in signer_paths.items()}
         return result
 
     def probe_graph_boundaries(self, base):

@@ -91,12 +91,18 @@ class PermitSigner:
         self.challenges = {}
         self.sequence = {"base": 0, "arm": 0}
         self.active_arm = IDLE
+        self.admitted_arm = IDLE
 
     def observe(self, target, value):
         nonce = value.get("nonce", "")
         if len(nonce) != 32 or any(c not in "0123456789abcdef" for c in nonce):
             raise ValueError("invalid controller nonce")
         self.challenges[target] = nonce
+        if target == "arm":
+            digest = value.get("active_digest", IDLE)
+            if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise ValueError("invalid admitted arm digest")
+            self.admitted_arm = digest
 
     def sign(self, target, kind, digest, sim_ns, remaining_ns=MAX_LEASE_NS, wall_ns=None):
         if target not in self.challenges:

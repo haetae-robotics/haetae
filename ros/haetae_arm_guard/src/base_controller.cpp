@@ -48,6 +48,7 @@ public:
       msg.data = "{\"nonce\":\"" + permit_.nonce() + "\",\"holding\":" +
         (permit_.fresh(get_node()->now().nanoseconds(), steady_ns()) ? "false" : "true") +
         ",\"accepted\":" + std::to_string(permit_.accepted()) +
+        ",\"published_wall_ns\":" + std::to_string(steady_ns()) +
         ",\"rejected\":" + std::to_string(permit_.rejected()) +
         ",\"reason\":\"" + permit_.reason() + "\"}";
       state_->publish(msg);

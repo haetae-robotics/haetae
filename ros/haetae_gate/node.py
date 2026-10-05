@@ -226,8 +226,10 @@ class HaetaeGate(Node):
             self.arm_result_future = None
             self.arm_cancel_deadline = None
             self.cancel_requested = False
-            if self.permits:
-                self.permits.active_arm = IDLE
+            # A successful JTC result retains its exact admitted digest until
+            # an explicit stop/reset. Signing IDLE here would disagree with
+            # the controller and falsely trip its rejection latch. Cancellation
+            # already clears it through the signed stop in _cancel_arm().
         except Exception as exc:
             self._abort(exc)
 
@@ -306,6 +308,11 @@ class HaetaeGate(Node):
     def _heartbeat(self, started_ros_ms):
         if self.permits:
             if "arm" not in self.permits.challenges:
+                return
+            if not self.permit_reset and self.permits.admitted_arm != self.permits.active_arm:
+                # The relay's outer action acknowledgement is not controller
+                # admission. Trusted controller telemetry gates renewal across
+                # the separate DDS goal and heartbeat routes.
                 return
             self.heartbeat_pub.publish(String(data=self._permit("arm",
                 "reset" if self.permit_reset else "lease", IDLE if self.permit_reset else self.permits.active_arm)))

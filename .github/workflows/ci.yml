@@ -317,7 +317,14 @@ jobs:
           apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp ros-jazzy-control-msgs ros-jazzy-trajectory-msgs ros-jazzy-nav-msgs ros-jazzy-rosgraph-msgs
           source /opt/ros/jazzy/setup.bash
           chmod +x bin/haetae
-          python3 ros/haetae_sim/arm_smoke.py bin/haetae
+          export HAETAE_REVISION="${GITHUB_SHA:?missing event commit}"
+          python3 ros/haetae_sim/arm_smoke.py bin/haetae --out artifacts/ros-arm
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ros-arm-evidence
+          path: artifacts/ros-arm
+          if-no-files-found: warn
 
   gazebo-reference:
     name: Gazebo physics base and arm reference

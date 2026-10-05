@@ -88,12 +88,24 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
           {"stopped_observation_wall_ms": result.get("gate_kill_to_base_stop_wall_ms")})
     permits = mapping(result.get("controller_permits"))
     permit_checks = mapping(permits.get("checks"))
+    boundaries = mapping(permits.get("relay_boundaries"))
+    signer_denied = mapping(boundaries.get("signer_credentials_unreadable"))
+    services_denied = mapping(boundaries.get("denied_services"))
     expected = {"base_positive", "arm_positive", "base_expiry", "arm_expiry"} | {
         target + "_" + case for target in ("base", "arm")
         for case in ("unsigned", "altered", "signature", "replay", "delay", "target")}
     check("controller_permits", "바퀴·팔 제어기의 동작별 허가 검사 · 침해된 전달자 계정", bool(permits),
           permits.get("ok") is True and permits.get("attacker_uid") == 2005 and
           permits.get("scope") == "gazebo_exact_action_permits_with_compromised_relay_uid" and
+          all(signer_denied.get(name) is True for name in
+              ("controller.key", "log.key", "keystore/enclaves/haetae/gate/key.pem")) and
+          all(services_denied.get(name) is True for name in
+              ("/controller_manager/switch_controller", "/controller_manager/load_controller",
+               "/controller_manager/unload_controller", "/controller_manager/configure_controller",
+               "/controller_manager/cleanup_controller", "/controller_manager/reload_controller_libraries",
+               "/diff_drive_base_controller/set_parameters", "/joint_trajectory_controller/set_parameters",
+               "/diff_drive_base_controller/set_parameters_atomically",
+               "/joint_trajectory_controller/set_parameters_atomically")) and
           set(permit_checks) == expected and all(mapping(row).get("ok") is True for row in permit_checks.values()) and
           (number(mapping(permit_checks.get("base_positive")).get("moved_m")) or 0) > .03 and
           (number(mapping(permit_checks.get("arm_positive")).get("moved_rad")) or 0) > .08 and
@@ -101,6 +113,8 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
               for target in ("base", "arm")) and
           all(mapping(permit_checks.get(target + "_" + case)).get("controller_rejection_observed") is True and
               mapping(permit_checks.get(target + "_" + case)).get("recovery_did_not_rearm") is True and
+              mapping(permit_checks.get(target + "_" + case)).get("recovery_rejection_observed") is True and
+              within(mapping(permit_checks.get(target + "_" + case)).get("recovery_drift"), .02) and
               within(mapping(permit_checks.get(target + "_" + case)).get("drift"), .02)
               for target in ("base", "arm") for case in ("unsigned", "altered", "signature", "replay", "delay", "target")),
           {"checks": len(permit_checks)})
