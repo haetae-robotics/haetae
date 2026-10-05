@@ -126,7 +126,8 @@ def host_case(name, scenario="allow", interrupt=None):
                 expected_expiry = (scenario == "world-loss" and code == 1 and
                                    "stale actuation response: world expired" in Path(log.name).read_text())
                 measured_loss = scheduling_loss(Path(log.name).read_text(), code, scenario, device.events())
-                assert code == 0 or expected_expiry or measured_loss, "host scenario failed; see " + str(log.name)
+                normal_exit = code == 0 and (scenario != "allow" or stopped["reason"] == "stop")
+                assert normal_exit or expected_expiry or measured_loss, "host scenario failed; see " + str(log.name)
                 if measured_loss:
                     stopped = measured_loss
                     availability = "host-scheduling-loss"
