@@ -47,11 +47,13 @@ def gazebo_rearm_ready(world, sent_at, now, arm_joints, nonces, proposal_id):
     lease = arm.get("lease_received_wall_ns", 0) / 1e9
     if lease < sent_at or not 0 <= now - lease < 0.1:
         return False
-    if (world.joint is None or not 0 <= now - world.joint_received < 0.1
+    if (world.joint is None or world.odom is None
+            or not 0 <= now - world.joint_received < 0.1
             or not 0 <= now - world.odom_received < 0.1):
         return False
-    speed = world.speed()
-    if not math.isfinite(speed) or abs(speed) >= 0.03:
+    twist = world.odom.twist.twist
+    if any(not math.isfinite(value) or abs(value) >= 0.03
+           for value in (twist.linear.x, twist.angular.z)):
         return False
     velocities = dict(zip(world.joint.name, world.joint.velocity))
     return all(name in velocities and math.isfinite(velocities[name])

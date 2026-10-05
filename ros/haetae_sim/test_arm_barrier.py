@@ -40,7 +40,9 @@ class ArmBarrierTest(unittest.TestCase):
         return SimpleNamespace(states=[(9.97, state)], outcomes=[(9.95, stop)],
             guard_states=[(9.98, dict(guard))], base_guard_states=[(9.98, dict(guard))],
             joint=SimpleNamespace(name=["j1", "j2", "j3", "j4"], velocity=[0.] * 4),
-            joint_received=9.98, odom_received=9.98, speed=lambda: 0.)
+            joint_received=9.98, odom_received=9.98, speed=lambda: 0.,
+            odom=SimpleNamespace(twist=SimpleNamespace(twist=SimpleNamespace(
+                linear=SimpleNamespace(x=0.), angular=SimpleNamespace(z=0.)))))
 
     def ready(self, world, sent=9.93):
         return gazebo_rearm_ready(world, sent, 10., ["j1", "j2", "j3", "j4"],
@@ -85,10 +87,12 @@ class ArmBarrierTest(unittest.TestCase):
         world = self.fixture()
         world.base_guard_states[-1][1]["holding"] = True
         self.assertTrue(self.ready(world))
-        for speed in (0.03, -0.03, float("nan")):
-            world.speed = lambda: speed
-            self.assertFalse(self.ready(world))
-        world.speed = lambda: 0.
+        for axis in ("linear", "angular"):
+            for speed in (0.03, -0.03, float("nan"), float("inf")):
+                twist = world.odom.twist.twist
+                setattr(getattr(twist, axis), "x" if axis == "linear" else "z", speed)
+                self.assertFalse(self.ready(world))
+            setattr(getattr(twist, axis), "x" if axis == "linear" else "z", 0.)
         world.guard_states[-1][1]["holding"] = True
         self.assertFalse(self.ready(world))
 
@@ -98,10 +102,12 @@ class ArmBarrierTest(unittest.TestCase):
                 world = self.fixture()
                 setattr(world, field, stamp)
                 self.assertFalse(self.ready(world))
-        for speed in (0.03, -0.03, float("nan"), float("inf")):
-            world = self.fixture()
-            world.speed = lambda: speed
-            self.assertFalse(self.ready(world))
+        for axis in ("linear", "angular"):
+            for speed in (0.03, -0.03, float("nan"), float("inf")):
+                world = self.fixture()
+                setattr(getattr(world.odom.twist.twist, axis),
+                        "x" if axis == "linear" else "z", speed)
+                self.assertFalse(self.ready(world))
         for values in ([0., 0., 0.03, 0.], [0.] * 3, [0., float("nan"), 0., 0.]):
             world = self.fixture()
             world.joint.velocity = values
@@ -110,6 +116,9 @@ class ArmBarrierTest(unittest.TestCase):
         world.joint.name = world.joint.name[:-1]
         self.assertFalse(self.ready(world))
         world.joint = None
+        self.assertFalse(self.ready(world))
+        world = self.fixture()
+        world.odom = None
         self.assertFalse(self.ready(world))
 
     def test_activation_requires_post_reset_publication_and_rotated_nonce(self):

@@ -145,7 +145,7 @@ preparation sleep can hide a lapse beyond the 200 ms permit lifetime.
 Preparation emits no further stops or resets once the single arm goal is sent;
 failure after dispatch cannot use this barrier to recover or retry motion.
 The arm-only fixture permits a locked wheel controller when its current report
-and measured stop are fresh; it grants no wheel motion authority. General
+and measured linear and angular stop are fresh; it grants no wheel motion authority. General
 rearm and scenes requiring wheel motion still require both controllers unlocked.
 
 Telemetry keeps the total rejection counter, including invalid stop packets,
