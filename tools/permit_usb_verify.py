@@ -20,6 +20,7 @@ from permit_link import PermitLink
 from permit_protocol import payload, frame
 from permit_verify import bind_controller
 from permit_checks import require
+from permit_process import stop_pair
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts/controller-permit-usb"
@@ -171,17 +172,7 @@ def host_case(port, directory, config, scenario, pause=False):
                 return {"case": name, "passed": True, "positive_USB_ON": True,
                         "post_stop_USB_LOCKED": True, "automatic_rearm": False, "relay_exit": code}
         finally:
-            for child in (relay, auth):
-                if child and child.poll() is None:
-                    os.kill(child.pid, signal.SIGCONT)
-                    child.kill()
-                if child:
-                    child.wait(timeout=2)
-            if auth:
-                try:
-                    os.killpg(auth.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            stop_pair(auth, relay)
 
 
 def no_1200_reset(port, config):

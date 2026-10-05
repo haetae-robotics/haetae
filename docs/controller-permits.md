@@ -160,3 +160,19 @@ relay's group and withhold seeds/private images/programming/admin access from
 AI/relay. File permissions cannot defend against root. Real robots still need
 exact command integration, measured perception, durable incidents/effects,
 independent electrical stop and robot-specific qualification.
+
+## First USB board result (2026-10-05)
+
+The official USB-only Minima passed 13 H2 checks: CDC-only runtime descriptors;
+five forged/replayed/context-mismatched permit cases; STATUS without lease
+renewal; four actual Rust synthetic fault cases; relay pause/resume without
+automatic rearm; and 1200-baud DTR without changing boot/generation.
+Every actuating case first requires a positive USB ON control. Native software
+verification also passed 17 cases, and Linux UID2001/2003/2004 separation
+denied key read/write/signalling while allowing the authenticated reference.
+The exact reviewed commit and final CI evidence are recorded in
+[PR19](https://github.com/haetae-robotics/haetae/pull/19).
+
+These results use MCU USB replies and trusted synthetic inputs. They do not
+measure GPIO/electrical output, watchdog reset, flash power-cut behavior,
+motors, real perception, or resistance to physical reset/debugger/host root.

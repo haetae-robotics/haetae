@@ -20,6 +20,7 @@ from permit_checks import require
 from permit_keys import private_bytes, provision
 from permit_link import PermitLink
 from permit_protocol import frame, payload, bind_payload
+from permit_process import stop_pair
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts/controller-permit"
@@ -169,18 +170,10 @@ def host_case(directory, config, name, scenario="allow", pause=False, kill_autho
                 return {"case": name, "passed": True, "positive_control": True,
                         "stop_reason": stopped["reason"], "last_run_to_off_ms": delay, "relay_exit": code}
         finally:
-            for child in (relay, authorizer):
-                if child and child.poll() is None:
-                    os.kill(child.pid, signal.SIGCONT)
-                    child.kill()
-                if child:
-                    child.wait(timeout=2)
-            if authorizer:
-                try:
-                    os.killpg(authorizer.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            device.close()
+            try:
+                stop_pair(authorizer, relay)
+            finally:
+                device.close()
 
 
 def main():

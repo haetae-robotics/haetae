@@ -3,7 +3,6 @@ import json
 import hashlib
 import os
 from pathlib import Path
-import signal
 import shutil
 import subprocess
 import sys
@@ -13,6 +12,7 @@ from bench_verify import wait_for
 from permit_checks import require
 from permit_keys import provision
 from permit_verify import ROOT, OUT, Device, compile_native
+from permit_process import stop_pair
 
 
 def role(uid, groups=()):
@@ -138,16 +138,14 @@ print(json.dumps(results))
                 report["gate_hazard_to_controller_LOCKED"] = bool(stopped)
                 report["passed"] = True
         finally:
-            for child in (relay, authorizer):
-                if child and child.poll() is None:
-                    child.kill()
-                if child:
-                    child.wait(timeout=2)
-            if authorizer:
+            try:
                 try:
-                    os.killpg(authorizer.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            device.close()
-            (OUT / "isolation-report.json").write_text(json.dumps(report, indent=2) + "\n")
+                    stop_pair(authorizer, relay)
+                finally:
+                    device.close()
+            except BaseException:
+                report["passed"] = False
+                raise
+            finally:
+                (OUT / "isolation-report.json").write_text(json.dumps(report, indent=2) + "\n")
     print("Linux UID separation and actual signed controller ON/hazard LOCKED passed.")

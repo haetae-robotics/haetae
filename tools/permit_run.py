@@ -1,6 +1,5 @@
 """Convenient explicit developer bench; same UID is a trusted host profile."""
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import tempfile
@@ -9,6 +8,7 @@ import time
 from permit_keys import deployment
 from permit_link import relay
 from permit_provenance import require_verified_h2
+from permit_process import stop_process
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,11 +34,4 @@ def run(port, directory, scenario, seconds):
                 time.sleep(.005)
             relay(port, config["install"], socket)
         finally:
-            if child.poll() is None:
-                child.terminate()
-            child.wait(timeout=2)
-            try:
-                import os
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            stop_process(child, session=True)

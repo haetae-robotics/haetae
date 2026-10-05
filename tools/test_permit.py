@@ -7,7 +7,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from permit_keys import deployment, private_bytes, provision
 from permit_protocol import decode_json, frame, payload, bind_payload
@@ -202,6 +202,25 @@ class PermitContractTest(unittest.TestCase):
             self.assertEqual(gate.read_bytes(), binary.read_bytes())
             self.assertFalse(list(dest.rglob('*.seed')))
             self.assertEqual((dest / 'tools/module.py').stat().st_mode & 0o777, 0o444)
+
+    def test_cleanup_never_signals_a_reaped_session_id(self):
+        from permit_process import stop_process
+        child = Mock(pid=12345, returncode=None)
+        def reap(**kwargs):
+            child.returncode = 0
+        child.wait.side_effect = reap
+        def signal_owned_group(pid, sig):
+            if child.returncode is not None:
+                raise RuntimeError('attempted signal of a reusable PGID')
+            self.assertEqual(pid, child.pid)
+        with patch('permit_process.os.killpg', side_effect=signal_owned_group) as killpg:
+            stop_process(child, session=True)
+            killpg.assert_called_once()
+        # A leader already reaped during startup/fault handling cannot be
+        # used to identify a process group, even if its numeric PID is known.
+        with patch('permit_process.os.killpg') as killpg:
+            stop_process(child, session=True)
+            killpg.assert_not_called()
 
 
 

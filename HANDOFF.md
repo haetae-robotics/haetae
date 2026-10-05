@@ -27,6 +27,8 @@
 
 - `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 유효하게 서명된 6개 위험 명령과 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 최종 controller permit, 영속 effect history, 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 아직 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
 
+- H2 UNO R4 Minima의 인증 허가·런타임 USB 경로 차단은 USB 실물 13개 시험, native 17개 시험과 Linux 역할 격리 시험을 통과했다. 최종 커밋별 리뷰·CI·머지 상태는 [PR19](https://github.com/haetae-robotics/haetae/pull/19)와 [H2 문서](docs/controller-permits.md)의 좁은 범위를 따른다. 보드에는 H2 강화 프로필을 올렸으며 이후 재업로드는 물리 RESET 진입이 필요하다. 개인 키·생성 헤더·장치 이미지는 로컬에만 있고 공개하지 않는다. GPIO·WDT reset·전원 차단·모터·실물 인지·secure boot 및 ROS arm/base M3는 미검증이다.
+
 ## 실행
 
 ```bash
