@@ -221,6 +221,16 @@ class PermitContractTest(unittest.TestCase):
         with patch('permit_process.os.killpg') as killpg:
             stop_process(child, session=True)
             killpg.assert_not_called()
+        exited = Mock(pid=12345, returncode=None)
+        with patch('permit_process.os.killpg', side_effect=PermissionError('empty Darwin session')) as killpg:
+            stop_process(exited, session=True)
+            killpg.assert_called_once()
+            exited.wait.assert_called_once_with(timeout=0)
+        alive = Mock(pid=12345, returncode=None)
+        alive.wait.side_effect = subprocess.TimeoutExpired('owned child', 0)
+        with patch('permit_process.os.killpg', side_effect=PermissionError('live session denied')):
+            with self.assertRaises(PermissionError):
+                stop_process(alive, session=True)
 
 
 

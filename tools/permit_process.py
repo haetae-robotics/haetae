@@ -1,6 +1,7 @@
 """Stop only an owned child, retaining its PID until group signalling finishes."""
 import os
 import signal
+import subprocess
 
 
 def stop_process(child, session=False):
@@ -14,6 +15,15 @@ def stop_process(child, session=False):
                 os.killpg(child.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass  # No live group; still reap the owned leader below.
+            except PermissionError as exc:
+                # Darwin returns EPERM for an empty session with an exited,
+                # unreaped leader. Accept only a completed owned child; a
+                # live leader's permission failure must still abort cleanup.
+                try:
+                    child.wait(timeout=0)
+                except subprocess.TimeoutExpired:
+                    raise exc
+                return  # Never retry killpg after releasing this PID.
         else:
             child.kill()  # Popen handles its own child/reaping race.
     child.wait(timeout=2)
