@@ -39,7 +39,7 @@ from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
 from artifact_export import export_artifacts, final_export
-from public_report import report as public_report
+from public_report import report as public_report, failed_household_result
 from live_stream import LiveHub, start_server  # noqa: E402
 from scene_layout import nearby_person, person_entry, PersonWalk  # noqa: E402
 from product_model import ARM_JOINTS, MODEL_NAME, PERSON_DISTANCE_M, arm_policy, resolve_meshes  # noqa: E402
@@ -686,7 +686,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             (root / "transport-isolation.json").write_text(json.dumps(transport_evidence, indent=2))
             for role in ("world", "vla"):
                 _, log = start([sys.executable, str(REPO / "ros/haetae_gate/source_node.py"),
-                                "--ros-args", "--params-file", str(roles.source_params(role))],
+                                "--ros-args", "--params-file", str(roles.source_params(role, arm_fixed_ttl_ms=1000 if household_hazards and role == "vla" else 0))],
                                root, "source_" + role, processes, role_env(role), UIDS[role])
                 logs.append(log)
             driver, log = start([sys.executable, str(HERE / "scenario_source.py")],
@@ -712,7 +712,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             before = roles.counter("vla")
             stop(processes.pop("source_vla"))
             _, log = start([sys.executable, str(REPO / "ros/haetae_gate/source_node.py"),
-                            "--ros-args", "--params-file", str(roles.source_params("vla"))],
+                            "--ros-args", "--params-file", str(roles.source_params("vla", arm_fixed_ttl_ms=1000 if household_hazards else 0))],
                            root, "source_vla", processes, role_env("vla"), UIDS["vla"])
             logs.append(log)
             wait_for(lambda: roles.counter("vla") > before,
@@ -749,6 +749,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         if household_hazards:
             from hazard_lab import run_lab
             result = run_lab(world,binary,model.read_text(),root,processes,wait_for,review_scene)
+            result["source_revision"] = os.environ.get("HAETAE_REVISION", "unknown")
             (root / "result.json").write_text(json.dumps(result,ensure_ascii=False,indent=2))
             (root / "verification-report.json").write_text(json.dumps(public_report(result,
                 os.environ.get("HAETAE_REVISION","unknown"),live.session_id if live else root.name),ensure_ascii=False,indent=2))
@@ -1098,6 +1099,8 @@ def main():
                         help="repeat bounded compound sensor/delay/proposal-burst faults (1..30, secured graph)")
     parser.add_argument("--household-hazards", action="store_true", help="run the trusted household hazard lab profile")
     args = parser.parse_args()
+    if args.household_hazards and not args.secure_graph:
+        parser.error("--household-hazards requires --secure-graph")
     if args.household_hazards and (args.arm_fault or args.compound_repeat or args.attack_probes):
         parser.error("--household-hazards is a separate profile; do not combine legacy fault/attack scenarios")
     if not 0 <= args.compound_repeat <= 30 or (args.compound_repeat and not args.secure_graph):
@@ -1136,14 +1139,14 @@ def main():
                     args.step_through, args.arm_fault, args.compound_repeat, args.out, args.household_hazards)
             except RunInterrupted:
                 if not (Path(directory) / "result.json").exists():
-                    (Path(directory) / "verification-report.json").write_text(json.dumps(public_report({"profile":"household_hazards"} if args.household_hazards else None,
+                    (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(failed_household_result(directory) if args.household_hazards else None,
                         revision=os.environ.get("HAETAE_REVISION", "unknown"),
                         run_id=live.session_id if live else Path(directory).name, failed=True), ensure_ascii=False, indent=2))
                     (Path(directory) / "error.json").write_text(json.dumps({
                         "error_type": "RunInterrupted", "error": "operator requested shutdown"}) + "\n")
                 raise
             except Exception as exc:
-                (Path(directory) / "verification-report.json").write_text(json.dumps(public_report({"profile":"household_hazards"} if args.household_hazards else None,
+                (Path(directory) / "verification-report.json").write_text(json.dumps(public_report(failed_household_result(directory) if args.household_hazards else None,
                     revision=os.environ.get("HAETAE_REVISION", "unknown"),
                     run_id=live.session_id if live else Path(directory).name, failed=True), ensure_ascii=False, indent=2))
                 (Path(directory) / "error.json").write_text(json.dumps({

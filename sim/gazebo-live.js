@@ -17,6 +17,7 @@ const canvas = $('visual');
 let sceneView = null;
 let renderError = '';
 let robotModelReady = false;
+let hazardAssetsReady = false;
 let originalAvailable = false;
 try {
   sceneView = createGazeboScene(canvas);
@@ -94,10 +95,11 @@ const phaseCopy = {
 function renderRunControl() {
   const button = $('start-simulation');
   button.hidden = !manualStart && !stepThrough;
-  button.disabled = failed || complete || !streamConnected || (!robotModelReady && !(originalAvailable && canvas.hidden)) || (!currentCheckpoint && (!ready || started));
+  const visualPending = householdHazards && !renderError && (!robotModelReady || !hazardAssetsReady) && !(originalAvailable && canvas.hidden);
+  button.disabled = failed || complete || !streamConnected || visualPending || (!currentCheckpoint && (!ready || started));
   button.textContent = failed ? '시뮬레이션 중단' : complete ? '시뮬레이션 완료' : currentCheckpoint ?
     '다음 단계 → ' + currentCheckpoint.next_label : started ? '장면 진행 중…' :
-      ready && robotModelReady ? '▶ 시뮬레이션 시작' : '로봇 준비 중…';
+      ready && !visualPending ? '▶ 시뮬레이션 시작' : '로봇 준비 중…';
   $('scene-hold').hidden = failed || !currentCheckpoint;
 }
 
@@ -181,6 +183,13 @@ fetch('/viewer-config', { cache: 'no-store' })
   .then((config) => {
     householdHazards = Boolean(config.household_hazards);
     if (householdHazards) {
+      if (!sceneView?.loadHazards) hazardAssetsReady = true;
+      else sceneView.loadHazards().then(() => {hazardAssetsReady = true; renderRunControl();}).catch(() => {
+        renderError = '시험 물체를 불러오지 못했습니다';
+        $('scene-label').textContent = renderError;
+        $('scene-note').textContent = '텍스트 판정은 볼 수 있습니다. 3D 장면은 새로고침하거나 Gazebo 원본을 확인해 주세요.';
+        renderRunControl();
+      });
       const names = ['준비', '사람 공간', '열원', '전기 기기', '물', '세정제 혼합', '추락 공간'];
       stageNames.splice(0, stageNames.length, ...names);
       for (let i=1;i<=6;i++) $('stage-'+i).lastChild.textContent = ' '+names[i];
@@ -243,10 +252,11 @@ stream.onmessage = (event) => {
     showStage(row.stage);
     $('hazard-context').textContent = row.title+' · 기기/물체 상태: 시험 입력';
     $('hazard-contents').textContent = row.case === 'chemicals' ?
-      '용기 이력: '+(row.contents?.length ? '첫 세정제 이전 완료 → 성분 유지' : '빈 용기') : '';
+      '용기 이력: '+(row.contents?.length ? '표백 성분 이동 완료 → 성분 유지' : '빈 용기') +
+      ' · 동일 병 모형의 시험 종류: '+(row.item_kind === 'ammonia' ? '암모니아 성분' : '표백 성분')+' (주입 데이터)' : '';
   } else if (row.kind === 'hazard_decision') {
     const blocked = row.allowed === false;
-    verdict(blocked ? 'block' : 'done', blocked ? '차단 · 계획 미전달' : row.reason==='control-pending' ? '정상 계획 검사 중' : '허용 · 측정 이동 확인');
+    verdict(blocked ? 'block' : 'done', blocked ? '차단 · 계획 미전달' : '허용 · 측정 이동 확인');
     sceneView?.setBlocked(blocked);
     sceneAlert(blocked ? '위험 경로 → 명령 전달 차단' : '정상 경로 대조', blocked ? 'command' : 'measured');
     $('phase').textContent = row.label;

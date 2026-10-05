@@ -1,6 +1,6 @@
 # HANDOFF — haetae
 
-갱신: 2026-10-04. 현재 기준은 `main`과 PR의 정확한 커밋별 CI/리뷰 증거다. 실행 설명은 [simulator alpha guide](docs/simulator-alpha.md), 보호용 배포 조건은 [security release gate](docs/security-release.md)를 따른다.
+갱신: 2026-10-05. 현재 기준은 `main`과 PR의 정확한 커밋별 CI/리뷰 증거다. 실행 설명은 [simulator alpha guide](docs/simulator-alpha.md), 보호용 배포 조건은 [security release gate](docs/security-release.md)를 따른다.
 
 ## 2026-10-04 전체 리뷰 수정
 
@@ -22,6 +22,8 @@
 - 40/80/100Hz 제안 압력과 센서 끊김·인지 서명 지연을 겹치는 복합 시험을 반복한다. 엔진의 실제 승인/거부, 400ms 이내 0출력, 실제 정지, 회복 뒤 자동 재가동 없음이 필수다. 서명 카운터만으로 수신 성공을 판단하지 않는다.
 - 시뮬레이터 평가용 알파 운영 명령, 공유용 허용 필드 리포트, CI 소스/검증 후보 패키지를 제공한다. 실물 보호나 인증 버전이 아니다.
 - 사용자가 UNO R4 Minima를 주문했다. [LED bench](docs/uno-r4-bench.md)의 서명된 실제 Rust 엔진→직렬 adapter→독립 200ms guard를 준비했다. `./haetae-bench verify`는 같은 guard의 native 프로세스 시험, `compile`은 Arduino용 빌드다. 실물 USB/GPIO/WDT/reset 및 모터 정지는 미검증이다. Apple Silicon의 Intel Arduino 도구는 compile만 Docker로 우회하며 실제 upload는 Rosetta가 필요하다.
+
+- `./haetae-demo hazards`는 별도 root 소유 생활 위험 실험이다. 신뢰된 종류·기기 상태·용기 이력과 측정 관절 FK로 6개 경로를 검사하고, 같은 관절 궤적의 서명된 승인·실제 이동·0.05rad 추적을 대조한다. 기존 침투 방어 시험과 합산하지 않는다. 실물 인지·파지·화학 반응·사람 밀기 방지 검증이 아니다. 세정제는 같은 병 모형의 시험 종류를 바꾸며 화면에 명시한다. 자세한 범위는 [생활 위험 실험](examples/household-hazards/README.md).
 
 ## 실행
 

@@ -3,6 +3,7 @@ import html
 import json
 import math
 import re
+from pathlib import Path
 
 
 def mapping(value):
@@ -136,8 +137,13 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
         if identifier=="chemicals":
             first=mapping(row.get("first_transfer"))
             passed = (passed and row.get("retained_contents")==["bleach"]
+                      and row.get("item_label_sequence") == ["bleach", "ammonia"] and row.get("same_visual_prop") is True
                       and motion_passed(first) and motion_passed(mapping(row.get("retreat"))))
-        checks.append({"id":identifier,"title":row.get("title",identifier),
+            for sequence in (first, mapping(row.get("retreat"))):
+                steps = sequence.get("steps")
+                passed = passed and isinstance(steps, list) and len(steps) == 2 and all(
+                    motion_passed(mapping(step)) for step in steps)
+        checks.append({"id":identifier,"title":row.get("title",identifier) + (" · 동일 병 모형의 종류 전환" if identifier == "chemicals" else ""),
                        "status":"not_run" if not matches else "passed" if passed else "failed",
                        "measurements":{k:v for k in ("denied_drift_rad","measured_motion_rad","max_joint_tracking_error_rad","tracking_samples") if (v:=number(row.get(k))) is not None}})
     controls=mapping(result.get("negative_controls"))
@@ -152,3 +158,19 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
             "notice":"생활 위험 실행 전 검사 실험입니다. 실물 보호 성능·인지·파지·화학 반응·사람 밀기 방지를 검증하지 않습니다.",
             "trust":"root 소유 시험 어댑터와 주입된 물체·기기 상태를 신뢰합니다. 좌표와 관절은 Gazebo 측정입니다.",
             "evidence":"서명되지 않은 로컬 요약입니다. 기존 침투 방어·독립 정지 시험은 이 프로필에서 통과로 집계하지 않습니다."}
+
+
+def failed_household_result(root):
+    """Preserve bounded completed evidence while the overall run stays failed."""
+    def read(name, fallback):
+        try:
+            with (Path(root) / name).open() as source:
+                return json.loads(source.read(1024 * 1024))
+        except (OSError, ValueError):
+            return fallback
+    rows = read("hazard-progress.json", [])
+    rows = rows if isinstance(rows, list) else []
+    active = mapping(read("hazard-diagnostics.json", {})).get("case")
+    if active in ("human", "heat", "electricity", "water", "chemicals", "fall") and not any(mapping(row).get("id") == active for row in rows):
+        rows.append({"id": active, "blocked": False, "allowed": False})
+    return {"profile": "household_hazards", "ok": False, "hazard_checks": rows}

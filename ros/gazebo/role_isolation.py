@@ -110,16 +110,21 @@ class Roles:
         private_tree(directory, UIDS["gate"])
         return directory
 
-    def source_params(self, role):
+    def source_params(self, role, arm_fixed_ttl_ms=0):
+        if type(arm_fixed_ttl_ms) is not int or arm_fixed_ttl_ms not in (0, 1000):
+            raise ValueError("unsupported fixed arm lease")
         directory = self.directories[role]
         if (directory / "params.yaml").exists():
+            existing = json.loads((directory / "params.yaml").read_text())["haetae_source_signer"]["ros__parameters"]
+            if existing.get("arm_fixed_ttl_ms", 0) != arm_fixed_ttl_ms:
+                raise ValueError("cached signer lease configuration changed")
             return directory / "params.yaml"
         keys = ("world", "fault") if role == "world" else ("vla",)
         params = {"haetae_source_signer": {"ros__parameters": {
             "use_sim_time": True, "role": role, "trust_path": str(directory / "trust.json"),
             "counter_path": str(directory / "runtime/counters.json"),
             "keys_json": json.dumps({key: str(directory / (key + ".key")) for key in keys}),
-            "arm_joints_json": json.dumps(self.arm_joints)}}}
+            "arm_joints_json": json.dumps(self.arm_joints), "arm_fixed_ttl_ms": arm_fixed_ttl_ms}}}
         (directory / "params.yaml").write_text(json.dumps(params))
         os.chown(directory / "params.yaml", UIDS[role], UIDS[role])
         (directory / "params.yaml").chmod(0o600)

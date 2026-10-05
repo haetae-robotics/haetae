@@ -20,10 +20,13 @@ class SourceSigner(Node):
     def __init__(self):
         super().__init__("haetae_source_signer")
         for name, default in (("role", ""), ("trust_path", ""), ("counter_path", ""),
-                              ("keys_json", "{}"), ("arm_joints_json", "[]")):
+                              ("keys_json", "{}"), ("arm_joints_json", "[]"), ("arm_fixed_ttl_ms", 0)):
             self.declare_parameter(name, default)
         param = lambda key: self.get_parameter(key).value
         self.role = param("role")
+        self.arm_fixed_ttl_ms = param("arm_fixed_ttl_ms")
+        if type(self.arm_fixed_ttl_ms) is not int or self.arm_fixed_ttl_ms not in (0, 1000):
+            raise ValueError("unsupported fixed arm lease")
         keys = json.loads(param("keys_json"))
         expected = {"world", "fault"} if self.role == "world" else {"vla"}
         if self.role not in ("world", "vla") or set(keys) != expected:
@@ -46,7 +49,7 @@ class SourceSigner(Node):
             self.create_subscription(TwistStamped, "/vla/cmd_vel",
                                      lambda msg: self.propose(lambda: base_action(msg, 200)), 1)
             self.create_subscription(JointTrajectory, "/vla/arm",
-                                     lambda msg: self.propose(lambda: arm_action(msg, self.joints)), 1)
+                                     lambda msg: self.propose(lambda: arm_action(msg, self.joints, self.arm_fixed_ttl_ms)), 1)
 
     def send(self, role, payload):
         envelope = self.signer.sign(role, payload)

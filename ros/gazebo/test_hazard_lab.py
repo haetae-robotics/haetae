@@ -1,6 +1,7 @@
 import math
 import json
 import copy
+import tempfile
 from pathlib import Path
 from xml.etree import ElementTree as E
 import unittest
@@ -12,8 +13,9 @@ from hazard_lab import (
     ordinary_completion,
     accepted_plan_matches,
     expected_positions,
+    tracking_start_ms,
 )
-from public_report import report
+from public_report import report, failed_household_result
 
 
 class HazardAdapterTest(unittest.TestCase):
@@ -129,11 +131,16 @@ class HazardAdapterTest(unittest.TestCase):
         points = plan([0, 0, 0, 0], 0.3)
         action = {
             "type": "joint_trajectory",
+            "ttl_ms": 1000,
             "points": [
                 {"time_from_start_ms": ms, "positions": list(q)} for ms, q in points
             ],
         }
         self.assertTrue(accepted_plan_matches(points, action))
+        self.assertEqual(
+            tracking_start_ms({"expires_ms": 6000, "action": action}), 5000
+        )
+        self.assertEqual(points[-1][0], 900)
         action["points"][1]["positions"][0] = 0.4
         self.assertFalse(accepted_plan_matches(points, action))
         self.assertAlmostEqual(expected_positions(points, 400)[0], 0.15)
@@ -180,10 +187,13 @@ class HazardAdapterTest(unittest.TestCase):
                     "denied_drift_rad": 0.001,
                 }
             )
+        chemical_motion = {**motion, "steps": [dict(motion), dict(motion)]}
         rows[4].update(
             retained_contents=["bleach"],
-            first_transfer=dict(motion),
-            retreat=dict(motion),
+            first_transfer=copy.deepcopy(chemical_motion),
+            retreat=copy.deepcopy(chemical_motion),
+            item_label_sequence=["bleach", "ammonia"],
+            same_visual_prop=True,
         )
         result = {
             "profile": "household_hazards",
@@ -210,5 +220,35 @@ class HazardAdapterTest(unittest.TestCase):
         changed = copy.deepcopy(result)
         del changed["hazard_checks"][4]["retreat"]
         self.assertEqual(report(changed)["status"], "failed")
+        changed = copy.deepcopy(result)
+        changed["hazard_checks"][4]["first_transfer"]["steps"][0][
+            "tracking_samples"
+        ] = 0
+        self.assertEqual(report(changed)["status"], "failed")
         result["ok"] = False
         self.assertEqual(report(result)["status"], "failed")
+
+    def test_failed_report_preserves_completed_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            row = {
+                "id": "human",
+                "blocked": True,
+                "allowed": True,
+                "reason": "human:protected-volume",
+                "denied_drift_rad": 0.001,
+                "measured_motion_rad": 0.3,
+                "plan_sha256": "a" * 64,
+                "signed_arm_acceptance_observed": True,
+                "accepted_waypoints_match": True,
+                "max_joint_tracking_error_rad": 0.01,
+                "tracking_samples": 20,
+            }
+            (root / "hazard-progress.json").write_text(json.dumps([row]))
+            (root / "hazard-diagnostics.json").write_text(json.dumps({"case": "heat"}))
+            summary = report(failed_household_result(root), failed=True)
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(
+                [r["status"] for r in summary["checks"][:3]],
+                ["passed", "failed", "not_run"],
+            )

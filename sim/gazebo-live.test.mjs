@@ -9,7 +9,7 @@ const { validTelemetry } = await import('data:text/javascript,' + encodeURICompo
 const source = readFileSync(new URL('./gazebo-live.js', import.meta.url), 'utf8')
   .replace(/^import .*;\n/gm, '');
 
-function viewer() {
+function viewer(rigFactory = () => ({ update() {}, setBlocked() {},setHazardScene() {} })) {
   const elements = new Map();
   const requests = [];
   let stream;
@@ -32,7 +32,7 @@ function viewer() {
     document: { querySelector: get, getElementById: get, createElement: element, createTextNode: (text) => text },
     window: { location: { hostname: '127.0.0.1' } },
     validTelemetry,
-    createGazeboScene: () => ({ update() {}, setBlocked() {},setHazardScene() {} }),
+    createGazeboScene: rigFactory,
     Date: { now: () => now },
     setInterval(callback) { tick = callback; },
     EventSource: class { constructor() { stream = this; } close() {} },
@@ -56,6 +56,17 @@ function viewer() {
     advance: () => finishAdvance({ ok: true })
   };
 }
+
+test('reference controls remain available when WebGL or robot assets fail', async () => {
+  for (const rig of [() => {throw new Error('WebGL unavailable');},
+    () => ({ready: Promise.reject(new Error('model unavailable'))})]) {
+    const page = viewer(rig);
+    await page.config({household_hazards: false, gazebo_gui: false});
+    page.emit({kind: 'phase', label: '3D 화면 준비 · 시작 버튼을 누르세요'});
+    assert.equal(page.get('start-simulation').disabled, false);
+    assert.match(page.get('start-simulation').textContent, /시뮬레이션 시작/);
+  }
+});
 
 test('refresh restores a waiting scene even when configuration arrives later', async () => {
   const page = viewer();

@@ -343,6 +343,7 @@ jobs:
           wait "$live_checker"
           python3 ros/gazebo/run_reference.py bin/haetae --secure-graph --household-hazards \
             --out artifacts/gazebo-reference/household-hazards --live-hold-seconds 0
+          python3 -c 'import json; r=json.load(open("artifacts/gazebo-reference/household-hazards/verification-report.json")); assert r["status"] == "passed" and r["scope"] == "household_hazard_preflight_simulation" and len(r["checks"]) == 9'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -361,7 +362,7 @@ jobs:
           name: gazebo-reference-evidence
           path: artifacts/alpha-evidence
       - name: Package passing evidence and committed source
-        run: python3 tools/package_simulator_alpha.py --result artifacts/alpha-evidence/result.json --out artifacts/simulator-alpha
+        run: python3 tools/package_simulator_alpha.py --result artifacts/alpha-evidence/result.json --household-result artifacts/alpha-evidence/household-hazards/result.json --out artifacts/simulator-alpha
       - uses: actions/upload-artifact@v4
         with:
           name: simulator-alpha-candidate

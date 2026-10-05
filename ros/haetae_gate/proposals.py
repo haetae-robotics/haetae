@@ -16,7 +16,9 @@ def base_action(msg, ttl):
         "type": "velocity", "linear": linear, "angular": angular, "ttl_ms": ttl}
 
 
-def arm_action(msg, joints):
+def arm_action(msg, joints, fixed_ttl_ms=0):
+    if type(fixed_ttl_ms) is not int or fixed_ttl_ms not in (0, 1000):
+        raise InvalidProposal("unsupported fixed arm lease")
     if list(msg.joint_names) != joints:
         raise InvalidProposal("wrong arm joint names")
     if not msg.points:
@@ -31,5 +33,8 @@ def arm_action(msg, joints):
             raise InvalidProposal("invalid arm time")
         millis = p.time_from_start.sec * 1000 + p.time_from_start.nanosec // 1_000_000
         points.append({"time_from_start_ms": millis, "positions": list(p.positions)})
+    duration = points[-1]["time_from_start_ms"]
+    if fixed_ttl_ms and duration > fixed_ttl_ms:
+        raise InvalidProposal("arm plan exceeds fixed lease")
     return {"type": "joint_trajectory", "points": points,
-            "ttl_ms": points[-1]["time_from_start_ms"]}
+            "ttl_ms": fixed_ttl_ms or duration}

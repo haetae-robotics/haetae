@@ -13,7 +13,7 @@ the completed profile's unsigned report. Never use real hazardous materials.
 | Heat | Pressurized item contacts active heat fixture | Same item moves away |
 | Electricity | Conductive tool contacts energized fixture | Same item moves away |
 | Water | Battery enters water fixture | Same item moves away |
-| Contents | Second, incompatible cleaner enters a vessel retaining the first cleaner | Same item moves away |
+| Contents | The same bottle fixture is relabelled as a second incompatible cleaner, approaching a vessel retaining the first cleaner | Relabelled item moves away |
 | Fall volume | End effector enters an excluded volume | End effector moves away |
 
 The human/fall cases are end-effector keepouts. They do not demonstrate human
@@ -21,6 +21,16 @@ recognition, knife-tip orientation checks, whole-arm collision prevention,
 edge detection, base stability, pushing, dropping or throwing prevention.
 The chemical fixture retains a bleach/ammonia pair; no general chemical
 compatibility database or fluid simulation is implemented.
+The chemical sequence deliberately reuses one visible bottle: its trusted
+test label changes from bleach to ammonia after measured transfer and retreat.
+The scene pauses and displays this change; no second physical bottle or liquid
+transfer is claimed. Each transfer/retreat uses two separately checked slow
+one-second chunks with measured tracking evidence.
+In this profile only, the trusted VLA signer is configured with a fixed
+1000 ms arm lease. Each trajectory finishes at 900 ms, leaving time for the
+action result before lease expiry; ramp motion ends at 800 ms. The legacy
+signer still derives the lease from the final waypoint. Core limits and the
+independent 250 ms controller watchdog remain unchanged.
 
 ## Trust and execution
 

@@ -169,7 +169,11 @@ export function createGazeboScene(canvas) {
   }
   const hazardGroup = new THREE.Group(); scene.add(hazardGroup);
   let hazardFixtures = null;
-  const hazardAssets = fetch('./assets/household-fixtures.json').then(r=>{if (!r.ok) throw new Error('Hazard fixtures unavailable'); return r.json();}).then(v=>{hazardFixtures=v;});
+  let hazardAssets = null;
+  function loadHazards() {
+    hazardAssets ??= fetch('./assets/household-fixtures.json').then(r=>{if (!r.ok) throw new Error('Hazard fixtures unavailable'); return r.json();}).then(v=>{hazardFixtures=v;});
+    return hazardAssets;
+  }
   let hazardCase = null, hazardItem = null, hazardTarget = null, hazardPath = null, pathKey = '';
   function setHazardScene(row) {
     const finitePoint = (p) => p && ['x','y','z'].every(k => Number.isFinite(p[k]) && Math.abs(p[k])<=100);
@@ -240,5 +244,5 @@ export function createGazeboScene(canvas) {
     requestAnimationFrame(frame);
   }
   frame();
-  return { update, setBlocked, setHazardScene, resetCamera, ready: Promise.all([ready,hazardAssets]) };
+  return { update, setBlocked, setHazardScene, resetCamera, ready, loadHazards };
 }

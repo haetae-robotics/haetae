@@ -27,6 +27,7 @@ fi
 usage() {
   printf '사용법: ./haetae-demo {doctor|start|hazards|status|stop|restart|verify|report [파일]|logs}\n'
   printf 'start: 화면 준비 후 시작 버튼 · verify: 화면 없이 6회 복합 시험 · report: 완료 결과 저장\n'
+  printf 'hazards: 생활 위험 6개 장면 · restart: 현재 프로필로 새 코드 실행\n'
 }
 daemon() {
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
@@ -94,6 +95,14 @@ stop_demo() {
     echo '시뮬레이터를 종료했습니다. 결과 폴더는 보존했습니다.'
   else echo '이 프로젝트의 시뮬레이터가 실행 중이지 않습니다.'; fi
 }
+current_profile() {
+  daemon
+  if exists "$name"; then
+    require_owner "$name"
+    saved_profile=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$name" | sed -n 's/^HAETAE_DEMO_PROFILE=//p')
+    case "$saved_profile" in household) profile=household;; reference|'') profile=reference;; *) echo '알 수 없는 실행 프로필입니다.' >&2; exit 1;; esac
+  fi
+}
 start_demo() {
   doctor
   if exists "$name"; then
@@ -128,9 +137,9 @@ case ${1:-help} in
   doctor) doctor;;
   start) start_demo;;
   hazards) profile=household; stop_demo; start_demo;;
-  restart) stop_demo; start_demo;;
+  restart) current_profile; stop_demo; start_demo;;
   stop) stop_demo;;
-  status) daemon; if exists "$name"; then require_owner "$name"; docker inspect --format '실행 중: {{.State.Running}} · 시작: {{.State.StartedAt}}' "$name"; if [[ $(docker inspect --format '{{.State.Running}}' "$name") = true ]]; then demo_address; curl -fsS --max-time 2 "$url/health" || true; fi; printf '\n화면: %s/\n' "$url"; else echo '실행 중이지 않습니다. ./haetae-demo start 를 실행하세요.'; fi;;
+  status) current_profile; if exists "$name"; then require_owner "$name"; printf '프로필: %s\n' "$profile"; docker inspect --format '실행 중: {{.State.Running}} · 시작: {{.State.StartedAt}}' "$name"; if [[ $(docker inspect --format '{{.State.Running}}' "$name") = true ]]; then demo_address; curl -fsS --max-time 2 "$url/health" || true; fi; printf '\n화면: %s/\n' "$url"; else echo '실행 중이지 않습니다. ./haetae-demo start 를 실행하세요.'; fi;;
   logs) daemon; exists "$name" && require_owner "$name"; docker logs --tail 80 "$name";;
   report) daemon; exists "$name" || { echo '시뮬레이터를 먼저 실행해 주세요.' >&2; exit 1; }; require_owner "$name";
     destination=${2:-"$repo/artifacts/simulator-alpha/report.json"}; mkdir -p "$(dirname "$destination")";

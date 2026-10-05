@@ -19,6 +19,7 @@ cd haetae
 
 | 할 일 | 명령 |
 | --- | --- |
+| 별도 생활 위험 실행 전 검사 실험 | `./haetae-demo hazards` |
 | 실행 상태 확인 | `./haetae-demo status` |
 | 새 코드로 다시 실행 | `./haetae-demo restart` |
 | 원인 확인 | `./haetae-demo logs` |
@@ -39,9 +40,11 @@ HAETAE_DEMO_PORT=8766 HAETAE_GUI_PORT=6081 ./haetae-demo start
 
 이 도구는 같은 프로젝트가 생성한 `haetae-demo` 컨테이너만 종료합니다. 동명 다른 컨테이너는 조작하지 않습니다. 다른 프로젝트의 포트 점유도 자동으로 종료하지 않습니다. 기존 `ros/gazebo/run_docker.sh`는 이 실행 명령으로 연결됩니다.
 
+`hazards`는 사람 보호 공간, 열원, 전기, 물, 세정제 이력, 추락 공간의 6개 실행 전 검사와 정상 이동 대조를 보여주는 별도 프로필입니다. 물체·기기 상태는 신뢰된 시험 입력이며, 실제 인지·파지·화학 반응·사람 밀기 방지를 검증하지 않습니다. [생활 위험 실험의 범위](../examples/household-hazards/README.md)를 확인하세요.
+
 ## 다운로드 가능한 검증 후보
 
-[CI](https://github.com/haetae-robotics/haetae/actions/workflows/ci.yml)의 성공한 실행에서 `simulator-alpha-candidate` 아티팩트를 받으세요. 소스 압축 파일, `verification-report.json`, 소스 커밋/트리와 증거 해시를 기록한 `manifest.json`, `SHA256SUMS`가 들어 있습니다. GitHub 로그인 여부에 따라 아티팩트 다운로드가 제한될 수 있습니다.
+[CI](https://github.com/haetae-robotics/haetae/actions/workflows/ci.yml)의 성공한 실행에서 `simulator-alpha-candidate` 아티팩트를 받으세요. 소스 압축 파일, 기존 보안 시험의 `verification-report.json`, 생활 위험 실험의 `household-verification-report.json`, 소스 커밋/트리와 증거 해시를 기록한 `manifest.json`, `SHA256SUMS`가 들어 있습니다. GitHub 로그인 여부에 따라 아티팩트 다운로드가 제한될 수 있습니다.
 
 ```bash
 # macOS
@@ -54,7 +57,7 @@ cd haetae-simulator-alpha
 ./haetae-demo start
 ```
 
-패키지는 모든 필수 시험과 복합 장애 시험 6회(40·80·100Hz 각각 2회 이상)가 통과하고 증거의 소스 커밋이 패키지와 일치할 때만 생성합니다. 동일한 커밋과 증거 입력의 소스 압축 파일은 같은 바이트를 만듭니다. Docker 이미지·Ubuntu/ROS 의존성 해석은 고정하지 않았으며, 아티팩트 서명과 바이너리 재현성은 보호용 릴리스의 남은 조건입니다. 추출한 소스를 수정했다면 `REVISION`을 지우고 버전이 `unknown`인 개발 실행으로 취급하세요.
+패키지는 두 프로필의 리포트가 모두 통과하고, 모든 필수 시험과 복합 장애 시험 6회(40·80·100Hz 각각 2회 이상)가 통과하고 증거의 소스 커밋이 패키지와 일치할 때만 생성합니다. 동일한 커밋과 증거 입력의 소스 압축 파일은 같은 바이트를 만듭니다. Docker 이미지·Ubuntu/ROS 의존성 해석은 고정하지 않았으며, 아티팩트 서명과 바이너리 재현성은 보호용 릴리스의 남은 조건입니다. 추출한 소스를 수정했다면 `REVISION`을 지우고 버전이 `unknown`인 개발 실행으로 취급하세요.
 
 ## 검증 범위
 

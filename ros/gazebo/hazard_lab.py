@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import multiprocessing
+import select
 from pathlib import Path
 import subprocess
 import threading
@@ -36,6 +37,7 @@ CASES = [
     ),
     ("fall", "추락 공간 접근", "inert", "fall", "fall:protected-volume"),
 ]
+PLAN_TTL_MS = 1000
 
 
 def lab_posture(urdf):
@@ -336,6 +338,7 @@ def accepted_plan_matches(points, action):
     rows = action.get("points", [])
     return (
         action.get("type") == "joint_trajectory"
+        and action.get("ttl_ms") == PLAN_TTL_MS
         and len(rows) == len(points)
         and all(
             row.get("time_from_start_ms") == millis
@@ -356,28 +359,56 @@ def expected_positions(points, elapsed):
 
 def plan(start, target):
     # Immutable tuples are used for both FK certification and submission.
-    end = (target, *start[1:])
-    return ((0, tuple(start)), (800, end), (1000, end))
+    end = (float(target), *map(float, start[1:]))
+    # Finish before the fixed 1s lease expires: otherwise expiry cancellation
+    # races the action server's normal completion/result delivery.
+    return ((0, tuple(map(float, start))), (800, end), (900, end))
 
 
-def judge(binary, request):
-    result = subprocess.run(
-        [binary, "hazard-judge"],
-        input=json.dumps(request, allow_nan=False) + "\n",
-        text=True,
-        capture_output=True,
-        timeout=2,
-        check=True,
-    )
-    value = json.loads(result.stdout)
-    if type(value.get("allowed")) is not bool or not isinstance(
-        value.get("reason"), str
-    ):
-        raise ValueError("invalid hazard decision")
-    return value
+def tracking_start_ms(decision):
+    # The gate decision expires at approval time + action TTL, not at the
+    # last waypoint. See Enforcer::process_proposal and Runtime::approve.
+    return decision["expires_ms"] - decision["action"]["ttl_ms"]
+
+
+class HazardJudge:
+    """One bounded JSONL judge process; no hot-path process creation."""
+
+    def __init__(self, binary):
+        self.process = subprocess.Popen(
+            [binary, "hazard-judge"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+
+    def decide(self, request):
+        self.process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
+        self.process.stdin.flush()
+        if not select.select([self.process.stdout], [], [], 2)[0]:
+            raise TimeoutError("hazard judge response missing")
+        value = json.loads(self.process.stdout.readline(4096))
+        if type(value.get("allowed")) is not bool or not isinstance(
+            value.get("reason"), str
+        ):
+            raise ValueError("invalid hazard decision")
+        return value
+
+    def close(self):
+        self.process.stdin.close()
+        try:
+            self.process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2)
+        self.process.stdout.close()
 
 
 def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
+    if not world.isolated:
+        raise ValueError("household lab requires the isolated signed graph")
     native = NativeFixtures()
     kinematics = Kinematics(urdf)
     rows = []
@@ -387,6 +418,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         "stage": 0,
         "title": "생활 위험 실험",
         "contents": [],
+        "item_kind": None,
     }
     timer = None
     tracking_timer = None
@@ -401,6 +433,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
     attachment_stop = threading.Event()
     attachment_thread = None
     completed = False
+    judge_engine = None
     motion_guard = {"active": False, "base": None, "yaw": None, "target": None}
     world.hazard_guard = lambda: not motion_guard["active"] or healthy()
 
@@ -427,6 +460,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             contents=active["contents"],
             observed_ms=min(item[1], target[1]),
             fixture_states=True,
+            item_kind=active["item_kind"],
+            same_visual_prop=case == "chemicals",
         )
 
     def healthy():
@@ -470,7 +505,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             world.joint.header.stamp.sec * 1000
             + world.joint.header.stamp.nanosec // 1_000_000
         )
-        start = accepted["expires_ms"] - tracking["points"][-1][0]
+        start = tracking_start_ms(accepted)
         if (
             stamp < start
             or stamp > accepted["expires_ms"]
@@ -595,7 +630,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         base, yaw = world.pose(), world.heading()
         target = native.sample(f"hazard_{active['case']}_target")[0]
         started_wall = time.monotonic()
-        verdict = judge(binary, checked)
+        verdict = judge_engine.decide(checked)
         if not verdict["allowed"]:
             raise AssertionError("positive control rejected: " + verdict["reason"])
         if max(abs(a - b) for a, b in zip(points[0][1], world.arm_positions())) > 0.01:
@@ -683,10 +718,18 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         }
 
     try:
+        judge_engine = HazardJudge(binary)
         timer = world.create_timer(0.08, publish)
         tracking_timer = world.create_timer(0.02, monitor_tracking)
         for index, (case, title, item, kind, expected) in enumerate(CASES, 1):
-            active.update(case=case, title=title, stage=index, path=[], contents=[])
+            active.update(
+                case=case,
+                title=title,
+                stage=index,
+                path=[],
+                contents=[],
+                item_kind=item,
+            )
             if attachment_thread:
                 attachment_stop.set()
                 attachment_thread.join(timeout=3)
@@ -747,21 +790,46 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             )
             contents = []
             if case == "chemicals":
+                active["item_kind"] = "bleach"
                 world.marker(
                     "첫 세정제 이동 검사",
                     detail="빈 시험 용기로 첫 성분을 이동합니다. 측정 완료 후에만 시험 이력을 기록합니다.",
                 )
-                first = execute(dangerous, "bleach")
+                # Keep each one-second chunk slow enough for the unchanged
+                # .05-rad tracking contract, including dispatch latency.
+                transfer_steps = []
+                for offset in (0.375, 0.75):
+                    transfer_steps.append(
+                        execute(
+                            plan(world.arm_positions(), start[0] + direction * offset),
+                            "bleach",
+                        )
+                    )
+                first = {**transfer_steps[-1], "steps": transfer_steps}
                 # The simulator fixture transaction is committed only after
                 # measured completion. No real fluid/chemical observation.
                 contents = ["bleach"]
                 active["contents"] = contents
-                retreat = plan(world.arm_positions(), start[0])
-                retreat_result = execute(retreat, "bleach", contents)
+                retreat_steps = []
+                for offset in (0.375, 0.0):
+                    retreat_steps.append(
+                        execute(
+                            plan(world.arm_positions(), start[0] + direction * offset),
+                            "bleach",
+                            contents,
+                        )
+                    )
+                retreat_result = {**retreat_steps[-1], "steps": retreat_steps}
+                review_scene(
+                    "첫 세정제 시험 이력 기록",
+                    "표백 성분 이동을 측정했습니다. 다음 시험은 동일한 병 모형의 주입 종류를 암모니아 성분으로 바꿉니다. 실제 액체 이동·혼합 시험은 아닙니다.",
+                    "두 번째 성분 계획 검사",
+                )
+                active["item_kind"] = "ammonia"
                 dangerous = plan(world.arm_positions(), start[0] + direction * 0.75)
             checked = request(item, dangerous, contents)
             active["path"] = checked["path"][::10] + [checked["path"][-1]]
-            verdict = judge(binary, checked)
+            verdict = judge_engine.decide(checked)
             if verdict["allowed"] or verdict["reason"] != expected:
                 raise AssertionError(f"{case}: expected {expected}, got {verdict}")
             before = world.arm_positions()
@@ -807,6 +875,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 row["first_transfer"] = first
                 row["retreat"] = retreat_result
                 row["retained_contents"] = contents
+                row["item_label_sequence"] = ["bleach", "ammonia"]
+                row["same_visual_prop"] = True
             rows.append(row)
             (root / "hazard-progress.json").write_text(
                 json.dumps(rows, ensure_ascii=False, indent=2)
@@ -826,7 +896,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             ("unknown_item", {"item": "unknown"}),
             ("missing_coverage", {"coverage_known": False}),
         ):
-            decision = judge(binary, {**checked, **change})
+            decision = judge_engine.decide({**checked, **change})
             if decision["allowed"]:
                 raise AssertionError(name + " unexpectedly allowed")
             fault_controls[name] = decision
@@ -847,7 +917,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             "fall_scope": "end_effector_keepout_only",
             "push_or_drop_prevention": False,
             "chemical_scope": "fixture_bleach_ammonia_sequence",
-            "clock_domain": "gazebo_sim_time",
+            "clock_domain": "gazebo_sim_time+wall_monotonic",
             "plan_hash_scope": "audit_metadata_local_adapter",
             "grasp_physics_validated": False,
         }
@@ -878,7 +948,19 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     "case": active["case"],
                     "failure_hold_observed": hold_observed,
                     "sim_ms": now(),
-                    "sensor": world.sensor_info,
+                    "sensor": {
+                        k: world.sensor_info.get(k)
+                        for k in (
+                            "source",
+                            "healthy",
+                            "reason",
+                            "stamp_ms",
+                            "age_ms",
+                            "returns",
+                            "frames",
+                            "classification",
+                        )
+                    },
                     "joint_age_wall_ms": (time.monotonic() - world.joint_received)
                     * 1000,
                     "odom_age_wall_ms": (time.monotonic() - world.odom_received) * 1000,
@@ -887,8 +969,25 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     ),
                     "target_stamp_ms": target[1] if target else None,
                     "native_error": native.failure,
+                    "tracking_max_error_rad": tracking["max_error"],
+                    "tracking_samples": tracking["samples"],
                     "motion_guard_active": motion_guard["active"],
-                    "gate_state": world.states[-1][1] if world.states else None,
+                    "gate_state": (
+                        {
+                            k: world.states[-1][1].get(k)
+                            for k in (
+                                "mode",
+                                "stop",
+                                "armed",
+                                "active",
+                                "arm_cancelling",
+                                "world_age_ms",
+                                "arm_controller_ready",
+                            )
+                        }
+                        if world.states
+                        else None
+                    ),
                     "recent_outcomes": [
                         {
                             "error": r.get("error"),
@@ -911,3 +1010,5 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         if attachment_thread:
             attachment_thread.join(timeout=3)
         native.close()
+        if judge_engine:
+            judge_engine.close()
