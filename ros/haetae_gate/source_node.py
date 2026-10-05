@@ -49,7 +49,10 @@ class SourceSigner(Node):
             self.create_subscription(TwistStamped, "/vla/cmd_vel",
                                      lambda msg: self.propose(lambda: base_action(msg, 200)), 1)
             self.create_subscription(JointTrajectory, "/vla/arm",
-                                     lambda msg: self.propose(lambda: arm_action(msg, self.joints, self.arm_fixed_ttl_ms), msg.header.frame_id), 1)
+                                     self.propose_arm, 1)
+
+    def propose_arm(self, msg: JointTrajectory):
+        self.propose(lambda: arm_action(msg, self.joints, self.arm_fixed_ttl_ms), msg.header.frame_id)
 
     def send(self, role, payload):
         envelope = self.signer.sign(role, payload)

@@ -11,6 +11,7 @@ import json
 import math
 import multiprocessing
 import select
+from typing import Callable, Literal, Optional, Union
 from pathlib import Path
 import subprocess
 import threading
@@ -170,7 +171,7 @@ class Kinematics:
         chain = []
         for joint in self.chain:
             origin = joint.find("origin")
-            segment = {key: [float(v) for v in origin.get(key, "0 0 0").split()]
+            segment: dict[str, object] = {key: [float(v) for v in origin.get(key, "0 0 0").split()]
                        if origin is not None else [0.0, 0.0, 0.0]
                        for key in ("xyz", "rpy")}
             segment.update(joint_index=None, axis=None)
@@ -462,7 +463,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
     semantic_context = {"item": None, "contents": [], "revision": 0,
                         "task_revision": 0, "facts": None, "task_id": None,
                         "base_pose": None, "base_yaw": None}
-    verified_denial = {"at": None}
+    verified_denial: dict[str, Optional[float]] = {"at": None}
     policy_binding = kinematics.household_policy(urdf)
     world.hazard_guard = lambda: not motion_guard["active"] or healthy()
 
@@ -706,7 +707,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         drain_until = now() + 150
         wait_for(lambda: now() >= drain_until, 2, processes, "rearm queue drains")
 
-    def reject_at_gate(points, item, contents=(), expected=None, binding_override=False):
+    def reject_at_gate(points, item, contents=(), expected=None,
+                       binding_override: Union[dict, Callable[[dict], dict], None, Literal[False]] = False):
         binding = current_binding(item, contents)
         rearm_for_test()
         if binding_override is not False:
