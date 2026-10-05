@@ -4,6 +4,7 @@ Independent root test fixtures own a real Rust enforcer and permit signer.
 Synthetic clear-world semantics remain trusted. No test signer runs in relay.
 """
 import copy
+import hashlib
 import json
 import math
 import os
@@ -19,7 +20,8 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "ros/haetae_gate"))
 sys.path.insert(0, str(REPO / "ros/haetae_sim"))
 from bridge import Bridge, require_fresh_actuation
-from controller_permits import PermitSigner, IDLE, base_digest, arm_digest
+from controller_permits import (PermitSigner, IDLE, SIM_ORDERING_BACKDATE_NS,
+                                base_digest, arm_digest)
 from signing import Signer
 from run_scenario import fixture
 from product_model import ARM_JOINTS, arm_policy
@@ -48,7 +50,8 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
     source = None
     bridge = None
     fixture_id = 0
-    signer = PermitSigner(roles.directories["gate"] / "controller.key")
+    signer = PermitSigner(roles.directories["gate"] / "controller.key",
+                          sim_backdate_ns=SIM_ORDERING_BACKDATE_NS)
     proposal_id = 0
     packet_id = 0
     reset_id = 0
@@ -254,11 +257,44 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                         fields[8], int(fields[4]), int(fields[5]), int(fields[6])-int(fields[4]))
                 elif case=="delay":time.sleep(.06)
                 prior = guard(target).get("rejected",0)
+                accepted_before = guard(target).get("accepted", 0)
                 pose, joints=world.pose(),world.arm_positions()
+                first_sent = time.monotonic_ns()
                 send(packet)
-                if case=="replay":send(copy.deepcopy(packet))
+                replay_admission = None
+                if case=="replay":
+                    # Rejection alone cannot prove replay protection: require
+                    # this exact packet's first admission before duplicating it.
+                    wait_for(lambda: guard(target).get("published_wall_ns", 0) >= first_sent
+                             and guard(target).get("nonce") == signer.challenges[target]
+                             and guard(target).get("accepted", 0) == accepted_before + 1
+                             and guard(target).get("rejected", 0) == prior
+                             and guard(target).get("holding") is False,
+                             1, processes, target + " replay first packet actually admitted")
+                    replay_admission = {"accepted_before": accepted_before,
+                        "accepted_after_first": guard(target)["accepted"],
+                        "rejected_before": prior, "rejected_after_first": guard(target)["rejected"],
+                        "first_sent_wall_ns": first_sent,
+                        "nonce": guard(target)["nonce"],
+                        "first_packet_sha256": hashlib.sha256(json.dumps(packet, sort_keys=True).encode()).hexdigest(),
+                        "first_admission_published_wall_ns": guard(target)["published_wall_ns"]}
+                    pose, joints = world.pose(), world.arm_positions()
+                    replay_sent = time.monotonic_ns()
+                    duplicate = copy.deepcopy(packet)
+                    replay_admission["replay_packet_sha256"] = hashlib.sha256(
+                        json.dumps(duplicate, sort_keys=True).encode()).hexdigest()
+                    send(duplicate)
+                    replay_admission["replay_sent_wall_ns"] = replay_sent
                 wait_for(lambda:guard(target).get("rejected",0)>prior and guard(target).get("holding") is True,
                     2,processes,target+" "+case+" consumed and rejected at controller")
+                if replay_admission is not None:
+                    replay_admission.update({"rejected_after_replay": guard(target)["rejected"],
+                        "accepted_after_replay": guard(target)["accepted"],
+                        "rejection_published_wall_ns": guard(target)["published_wall_ns"]})
+                    if (replay_admission["accepted_after_replay"] != accepted_before + 1 or
+                            guard(target).get("nonce") != replay_admission["nonce"] or
+                            replay_admission["rejection_published_wall_ns"] < replay_sent):
+                        raise AssertionError("replay did not produce a fresh rejection after first admission")
                 wait_for(stopped,3,processes,"negative control physically stopped")
                 until=time.monotonic()+.3
                 wait_for(lambda:time.monotonic()>=until,2,processes,"negative control observation")
@@ -290,6 +326,8 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                 results[target+"_"+case]={"ok":True,"controller_rejection_observed":True,
                     "drift":drift,"recovery_did_not_rearm":True,
                     "recovery_rejection_observed":True, "recovery_drift": recovery_drift}
+                if replay_admission is not None:
+                    results[target+"_"+case]["replay_admission"] = replay_admission
         result={"ok":True,"scope":"gazebo_exact_action_permits_with_compromised_relay_uid",
             "attacker_uid":UIDS["relay"],"issuer":"independent_real_rust_fixture",
             "checks":results,"trust":"root host simulator controller measured-world adapter and authorizer"}

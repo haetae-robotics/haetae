@@ -167,6 +167,13 @@ Larger clock skew still locks; frozen world and wall expiry still stop. Issuer
 admission/headroom checks include this backdate, so they reject earlier too.
 Other controller rates need a separately reviewed configuration; this is not a
 general distributed-clock synchronization guarantee.
+Zero-header arm goals still use the signed simulation origin against the
+controller's reset/stop cutoff. A goal issued too soon after reset can therefore
+be rejected; the backdate also leaves less than 40 ms nominal verifier admission
+margin when the controller is ahead. These cases stop rather than retry motion.
+Replay evidence requires the first packet to be admitted without a rejection,
+then an identical packet hash to produce a fresh rejection without another
+acceptance. A rejected first copy never qualifies as a replay test pass.
 
 ```bash
 ./haetae-demo verify

@@ -19,6 +19,26 @@ def within(value, maximum):
     return value is not None and value <= maximum
 
 
+def replay_admitted_then_rejected(value):
+    """A rejected first copy or a stale report is not replay evidence."""
+    row = mapping(value)
+    fields = ("accepted_before", "accepted_after_first", "accepted_after_replay",
+              "rejected_before", "rejected_after_first", "rejected_after_replay",
+              "first_sent_wall_ns", "first_admission_published_wall_ns",
+              "replay_sent_wall_ns", "rejection_published_wall_ns")
+    if any(type(row.get(key)) is not int or not 0 <= row[key] < 2**63 for key in fields):
+        return False
+    digest = row.get("first_packet_sha256")
+    return (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+            and digest == row.get("replay_packet_sha256")
+            and row["accepted_after_first"] == row["accepted_before"] + 1
+            and row["accepted_after_replay"] == row["accepted_after_first"]
+            and row["rejected_after_first"] == row["rejected_before"]
+            and row["rejected_after_replay"] > row["rejected_after_first"]
+            and row["first_sent_wall_ns"] <= row["first_admission_published_wall_ns"]
+            <= row["replay_sent_wall_ns"] <= row["rejection_published_wall_ns"])
+
+
 def report(result=None, revision="unknown", run_id="unknown", failed=False):
     if mapping(result).get("profile") == "household_hazards":
         return household_report(result,revision,run_id,failed)
@@ -118,7 +138,9 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
               mapping(permit_checks.get(target + "_" + case)).get("recovery_rejection_observed") is True and
               within(mapping(permit_checks.get(target + "_" + case)).get("recovery_drift"), .02) and
               within(mapping(permit_checks.get(target + "_" + case)).get("drift"), .02)
-              for target in ("base", "arm") for case in ("unsigned", "altered", "signature", "replay", "delay", "target")),
+              for target in ("base", "arm") for case in ("unsigned", "altered", "signature", "replay", "delay", "target")) and
+          all(replay_admitted_then_rejected(mapping(permit_checks.get(target + "_replay")).get("replay_admission"))
+              for target in ("base", "arm")),
           {"checks": len(permit_checks)})
     status = ("failed" if failed or (result and result.get("ok") is not True) or
               any(row["status"] == "failed" for row in checks) else

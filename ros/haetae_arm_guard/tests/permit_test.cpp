@@ -108,6 +108,9 @@ int main()
   check(current_goal_stamp(0, goal_grant, 1000000000, 1049999999), "zero header binds fresh signed grant");
   check(!current_goal_stamp(0, goal_grant, 1000000000, 1050000000), "zero header cannot refresh stale grant");
   check(!current_goal_stamp(0, goal_grant, 1000000001, 1000000000), "zero header cannot bypass stop cutoff");
+  goal_grant.sim = 1000000000 - 10000000 + 1000000;
+  check(!current_goal_stamp(0, goal_grant, 1000000000, 1001000000),
+    "backdated zero-header grant before reset cutoff stays rejected");
   check(!current_goal_stamp(0, Grant{}, 0, 1000000000), "zero header requires signed issue time");
   std::cout << "controller permit adversarial policy checks passed\n";
 }

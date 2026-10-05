@@ -15,6 +15,13 @@ class PublicReportTest(unittest.TestCase):
         cases.update({'base_positive':{'ok':True,'moved_m':.04},'arm_positive':{'ok':True,'moved_rad':.1},
                       'base_expiry':{'ok':True,'old_goal_did_not_resume':True,'expiry_hold_observed':True,'expiry_drift':0.},
                       'arm_expiry':{'ok':True,'old_goal_did_not_resume':True,'expiry_hold_observed':True,'expiry_drift':0.}})
+        for target in ('base', 'arm'):
+            cases[target + '_replay']['replay_admission'] = {
+                'accepted_before': 1, 'accepted_after_first': 2, 'accepted_after_replay': 2,
+                'rejected_before': 0, 'rejected_after_first': 0, 'rejected_after_replay': 1,
+                'first_sent_wall_ns': 100, 'first_admission_published_wall_ns': 110,
+                'replay_sent_wall_ns': 120, 'rejection_published_wall_ns': 130,
+                'first_packet_sha256': 'a' * 64, 'replay_packet_sha256': 'a' * 64}
         value={'controller_permits':{'ok':True,'scope':'gazebo_exact_action_permits_with_compromised_relay_uid',
                                     'attacker_uid':2005,'checks':cases,
                                     'relay_boundaries': {
@@ -30,6 +37,19 @@ class PublicReportTest(unittest.TestCase):
         def check():
             return next(row for row in report(value)['checks'] if row['id']=='controller_permits')['status']
         self.assertEqual(check(),'passed')
+        witness = cases['base_replay']['replay_admission']
+        for field, invalid in (('accepted_after_first', 1), ('accepted_after_replay', 3),
+                               ('rejected_after_first', 1), ('rejected_after_replay', 0),
+                               ('accepted_before', True), ('rejection_published_wall_ns', 115),
+                               ('first_admission_published_wall_ns', 90),
+                               ('replay_packet_sha256', 'b' * 64)):
+            original = witness[field]
+            witness[field] = invalid
+            self.assertEqual(check(), 'failed', field)
+            witness[field] = original
+        cases['base_replay'].pop('replay_admission')
+        self.assertEqual(check(), 'failed')
+        cases['base_replay']['replay_admission'] = witness
         denied = value['controller_permits']['relay_boundaries']['denied_services']
         denied['/controller_manager/switch_controller'] = False
         self.assertEqual(check(),'failed')
