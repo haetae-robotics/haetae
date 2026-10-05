@@ -41,6 +41,9 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
     signer = PermitSigner(roles.directories["gate"] / "controller.key")
     proposal_id = 0
     packet_id = 0
+    reset_id = 0
+    resetter = None
+    reset_log = None
     results = {}
     def now():
         return world.get_clock().now().nanoseconds // 1_000_000
@@ -119,10 +122,16 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
             "--key", str(session / "log.key"), "--trust", str(session / "trust.json"), "--root-pubkey", public])
         proposal_id = 0
     def reset():
+        nonlocal reset_id
         new_issuer()
-        for controller in ("diff_drive_base_controller", "joint_trajectory_controller"):
-            for state in ("inactive", "active"):
-                command([sys.executable, str(REPO / "ros/gazebo/controller_reset.py"), controller, state], root, env=env)
+        reset_id += 1
+        resetter.stdin.write((json.dumps(reset_id) + "\n").encode())
+        resetter.stdin.flush()
+        marker = json.dumps({"reset_complete": reset_id})
+        wait_for(lambda: marker in (root / "controller_reset.log").read_text(),
+                 15, processes, "bounded trusted controller maintenance reset")
+        with (root / "setup.log").open("a") as audit:
+            audit.write("$ trusted controller maintenance reset " + str(reset_id) + "\n" + marker + "\n")
         until = time.monotonic()+.1
         wait_for(lambda: time.monotonic() >= until, 2, processes, "fresh activation telemetry")
         for target in ("base", "arm"):
@@ -137,6 +146,8 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
     def stopped():
         return abs(world.speed()) < .03 and all(abs(world.joint.velocity[list(world.joint.name).index(j)]) < .03 for j in ARM_JOINTS)
     try:
+        resetter, reset_log = start([sys.executable, str(REPO / "ros/gazebo/controller_reset.py"), "--stdio"],
+            root, "controller_reset", processes, env, input_pipe=True)
         # Distinct physical positive controls, through the relay's permitted DDS routes.
         reset()
         before = world.pose()
@@ -229,3 +240,8 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                     stop(process, force=True)
             finally:
                 log.close()
+                process = processes.pop("controller_reset", None)
+                if process is not None:
+                    stop(process, force=True)
+                if reset_log is not None:
+                    reset_log.close()
