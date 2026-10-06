@@ -66,8 +66,10 @@ Settling proves **kinematics only**, never a task effect.
 An explicit STOP/rearm or stale observation during `awaiting_stop` interrupts
 the record; consumers must wait for `motion_pending: false` before rearming.
 The signed ROS adapter mints no further positive permits during the last
-controller admission reserve of an already admitted arm goal. Existing permits
-keep their original expiry, and Rust's expiry/cancel and measured stop checks
+controller admission reserve of an already admitted arm goal. A timely reply
+can cross the deadline: this path still mints nothing, and the expired final
+controller holds while Rust's next tick cancels. The request must have begun
+before original expiry. Existing permits keep their original expiry, and Rust's expiry/cancel and measured stop checks
 remain required. World or round-trip staleness still interrupts immediately.
 
 ## Persistence, bounds and clocks

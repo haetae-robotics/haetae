@@ -206,7 +206,7 @@ class HaetaeGate(Node):
         age = max(sim_age + self.permits.sim_backdate_ns, wall_age)
         return (min(sim_age, wall_age) >= 0 and age < 50_000_000
                 and self.permit_world_remaining_ns - age > 50_000_000
-                and self.permit_remaining_ns - max(sim_age, wall_age) > 0
+                and self.permit_remaining_ns > 0
                 and self.permit_remaining_ns - age <= 50_000_000)
 
     def _execute_arm(self, points):

@@ -154,14 +154,42 @@ class NodeBoundaryTest(unittest.TestCase):
         # deadline is still two ms away. Publish no permit in this interval.
         self.assertTrue(g._arm_renewal_retiring(g.step))
         clock.value = .008
+        self.assertTrue(g._arm_renewal_retiring(g.step))
+        # The prior status can cross expiry in a timely round trip. Retirement
+        # mints nothing; the controller has already expired and Rust's next
+        # tick owns cancellation. No request that began expired qualifies.
+        g.permit_remaining_ns = 0
         self.assertFalse(g._arm_renewal_retiring(g.step))
+
+    def test_timely_round_trip_crossing_expiry_retires_without_minting_or_rejecting(self):
+        g = self.retiring_arm()
+        g.permits.sim_backdate_ns = 10_000_000
+        clock.value = .054  # Two ms left when the original Rust request starts.
+        commands, states = [], []
+        g._publish_command = lambda *args: commands.append(args)
+        g.state_pub = SimpleNamespace(publish=lambda msg: states.append(json.loads(msg.data)))
+        g.outcome_pub = g.decision_pub = SimpleNamespace(publish=lambda msg: None)
+        g.arm_joints = []
+        g._publish = lambda step: Gate._publish(g, step)
+        g.permit_world = SimpleNamespace(observe=lambda *args: None,
+                                        remaining=lambda *args: 200_000_000)
+        g._permit = lambda *args: self.fail('expired retirement must mint nothing')
+        def response():
+            clock.value += .004
+            return g.step
+        g._receive(response)
+        self.assertFalse(commands)
+        self.assertFalse(g.heartbeats)
+        self.assertFalse(g.requests)
+        self.assertFalse(g.aborts)
+        self.assertEqual(states[-1]['active_expires_ms'], 1056)
 
     def test_retirement_cannot_hide_new_commands_staleness_or_controller_loss(self):
         g = self.retiring_arm()
         self.assertTrue(g._arm_renewal_retiring(g.step))
         for field, value in (('permit_reset', True), ('permit_stop', True),
                              ('arm_goal_future', object()), ('permit_world_remaining_ns', 56_000_000),
-                             ('permit_remaining_ns', 56_000_001), ('permit_remaining_ns', 6_000_000)):
+                             ('permit_remaining_ns', 56_000_001), ('permit_remaining_ns', 0)):
             old = getattr(g, field)
             setattr(g, field, value)
             self.assertFalse(g._arm_renewal_retiring(g.step), field)
