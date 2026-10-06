@@ -1243,6 +1243,10 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     "recent_controller_states": [state for _, state in world.guard_states[-100:]],
                     "failure_hold_observed": hold_observed,
                     "sim_ms": now(),
+                    "joint_stamp_ms": (world.joint.header.stamp.sec * 1000
+                        + world.joint.header.stamp.nanosec // 1_000_000) if world.joint else None,
+                    "odom_stamp_ms": (world.odom.header.stamp.sec * 1000
+                        + world.odom.header.stamp.nanosec // 1_000_000) if world.odom else None,
                     "sensor": {
                         k: world.sensor_info.get(k)
                         for k in (

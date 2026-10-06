@@ -94,6 +94,11 @@ reply and wait for a non-cancelling World acknowledgement before treating them
 as durable. Process close does not emit a Cancel reply; the independent final
 controller watchdog must stop it, and restart still requires measured recovery.
 Interrupted reservations persisted before execution remain the recovery guard.
+Every advancing household World acknowledgement can therefore incur file and
+directory fsync latency. Slow storage can revoke or interrupt motion; target-host
+storage latency is unqualified here and no hard realtime guarantee is made.
+Semantic observation time later than the outer World stamp is rejected before
+it can advance the durable floor. Original measurement timestamps are retained.
 
 Existing/unparseable, oversized, wrong-version, inconsistent or pin-mismatched
 protected state fails startup without replacing the state. Offline `state set`

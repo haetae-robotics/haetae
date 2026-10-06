@@ -775,6 +775,37 @@ fn durable_floor_rejects_rollback_and_changed_equal_revision_without_restoring_w
 }
 
 #[test]
+fn future_semantic_stamp_cannot_poison_durable_floor_or_restart() {
+    let fixture = Fixture::new();
+    let mut session = fixture.spawn("future-floor-before.jsonl");
+    session.prepare(world(1000));
+    let mut future = world(1100);
+    future["semantic"]["observed_ms"] = json!(u64::MAX);
+    future["semantic"]["revision"] = json!(2);
+    history_rejected(
+        &session.send(1100, Role::World, 2, future, WORLD_SEED),
+        "history:future-observation",
+    );
+    assert_eq!(
+        state_file(&fixture)["history"]["floor"]["observed_ms"],
+        1000
+    );
+    assert_eq!(state_file(&fixture)["history"]["floor"]["revision"], 1);
+    session.close();
+    fixture.reset_normal();
+    let mut restored = fixture.spawn("future-floor-after.jsonl");
+    let fresh = restored.send(1100, Role::World, 3, world(1100), WORLD_SEED);
+    assert!(fresh["outcome"]["world_updated"].is_object(), "{fresh}");
+    assert_eq!(
+        state_file(&fixture)["history"]["floor"]["observed_ms"],
+        1100
+    );
+    restored.send(1100, Role::Vla, 2, stop(2, 1100), VLA_SEED);
+    let positive = restored.send(1100, Role::Vla, 3, trajectory(3, 1100, 0.1), VLA_SEED);
+    assert!(positive["arm"]["execute"].is_object(), "{positive}");
+}
+
+#[test]
 fn corrupted_protected_history_fails_startup_and_is_not_overwritten() {
     let fixture = Fixture::new();
     let mut session = fixture.spawn("corrupt-before.jsonl");

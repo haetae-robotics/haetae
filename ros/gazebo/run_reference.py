@@ -112,8 +112,10 @@ class GazeboWorld(Node):
             "/haetae_input/world" if isolated else "/haetae_gate/world", 1)
         self.vla_pub = None if isolated else self.create_publisher(TwistStamped, "/vla/cmd_vel", 1)
         self.arm_pub = None if isolated else self.create_publisher(JointTrajectory, "/vla/arm", 1)
-        self.create_subscription(Odometry, "/diff_drive_base_controller/odom", self._odom, 10)
-        self.create_subscription(JointState, "/joint_states", self._joint, 10)
+        # State fusion consumes the latest measurement, not a backlog whose
+        # callbacks look new while their original simulation stamps are old.
+        self.create_subscription(Odometry, "/diff_drive_base_controller/odom", self._odom, 1)
+        self.create_subscription(JointState, "/joint_states", self._joint, 1)
         self.create_subscription(TwistStamped, BASE_CONTROLLER_TOPIC, self._command, 10)
         self.create_subscription(String, "/haetae_gate/state", self._state, 10)
         self.create_subscription(String, "/haetae_gate/outcome", self._outcome, 10)

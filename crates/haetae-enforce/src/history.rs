@@ -236,6 +236,9 @@ impl History {
         {
             return Err("history:pin-mismatch".into());
         }
+        if next.observed_ms > world.stamp_ms {
+            return Err("history:future-observation".into());
+        }
         if let Some(old) = &self.floor {
             if next.revision < old.revision
                 || next.task_revision < old.task_revision
