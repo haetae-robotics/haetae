@@ -649,6 +649,17 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             ],
         }
 
+    def fresh_request(item, points, contents=()):
+        # A newly delivered callback can still contain an old simulation stamp.
+        # Wait for the oldest original observation before speculative judging;
+        # never restamp evidence or retry a dispatched actuator proposal.
+        def ready():
+            checked = request(item, points, contents)
+            age = checked["now_ms"] - checked["observed_ms"]
+            return checked if 0 <= age < 75 else False
+
+        return wait_for(ready, 3, processes, "fresh original household observation stamps")
+
     def set_semantic_context(item, contents=(), new_step=False):
         # Only this root-owned fixture transaction can set material/device
         # facts. The untrusted proposal writer receives references only.
@@ -825,7 +836,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     or not world.controllers_unlocked()):
                 raise RuntimeError("household preflight lost explicit arm authority")
             binding = current_binding(item, contents)
-            checked = request(item, points, contents)
+            checked = fresh_request(item, points, contents)
             base, yaw = world.pose(), world.heading()
             target = native.sample(f"hazard_{active['case']}_target")[0]
             started_wall = time.monotonic()
@@ -1080,7 +1091,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 )
                 active["item_kind"] = "ammonia"
                 dangerous = plan(world.arm_positions(), start[0] + direction * 0.75)
-            checked = request(item, dangerous, contents)
+            checked = fresh_request(item, dangerous, contents)
             active["path"] = checked["path"][::10] + [checked["path"][-1]]
             verdict = judge_engine.decide(checked)
             if verdict["allowed"] or verdict["reason"] != expected:

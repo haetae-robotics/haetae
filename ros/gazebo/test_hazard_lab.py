@@ -23,6 +23,34 @@ from public_report import report, failed_household_result
 
 
 class WorldPublicationTest(unittest.TestCase):
+    def test_speculative_judge_waits_for_original_simulation_stamps(self):
+        tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
+        lab = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_lab")
+        method = next(n for n in lab.body if isinstance(n, ast.FunctionDef) and n.name == "fresh_request")
+        samples = iter([{"now_ms": 1000, "observed_ms": 800},
+                        {"now_ms": 1000, "observed_ms": 1001},
+                        {"now_ms": 1000, "observed_ms": 925},
+                        {"now_ms": 1000, "observed_ms": 926}])
+        seen = []
+        def request(*args):
+            sample = next(samples)
+            seen.append(sample.copy())
+            return sample
+        def wait(check, timeout, processes, description):
+            self.assertEqual(timeout, 3)
+            for _ in range(4):
+                checked = check()
+                if checked:
+                    return checked
+            raise TimeoutError(description)
+        scope = {"request": request, "wait_for": wait, "processes": {}}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "actual-household-freshness", "exec"), scope)
+        self.assertEqual(scope["fresh_request"]("knife", []), seen[-1])
+        self.assertEqual([row["observed_ms"] for row in seen], [800, 1001, 925, 926])
+        scope["request"] = lambda *args: {"now_ms": 1000, "observed_ms": 800}
+        with self.assertRaises(TimeoutError):
+            scope["fresh_request"]("knife", [])
+
     def test_first_fixture_cannot_dispatch_repositioning_before_setup(self):
         tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
         check = next(n for n in ast.walk(tree) if isinstance(n, ast.If)
