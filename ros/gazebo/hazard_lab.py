@@ -226,6 +226,14 @@ class Kinematics:
         result.append(self.point(points[-1][1], pose, yaw))
         return result
 
+    def project_path(self, base_path, pose, yaw):
+        # Pure FK is prepared once in the robot frame. Only this inexpensive
+        # rigid transform depends on the latest measured base pose.
+        cosine, sine = math.cos(yaw), math.sin(yaw)
+        return [{"x": pose[0] + cosine * point["x"] - sine * point["y"],
+                 "y": pose[1] + sine * point["x"] + cosine * point["y"],
+                 "z": point["z"]} for point in base_path]
+
 
 def native_fixture_driver(commands, acknowledgements, stop):
     # Gazebo's blocking Python transport call can hold the GIL. A spawned
@@ -592,7 +600,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 native.failure = str(exc)
                 return
 
-    def request(item, points, contents=()):
+    def request(item, points, contents=(), *, base_path=None):
         case = active["case"]
         sample = native.sample(f"hazard_{case}_target")
         item_sample = native.sample(f"hazard_{case}_item")
@@ -607,7 +615,9 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         if abs(world.speed()) >= 0.01:
             raise RuntimeError("base must be stationary")
         position, stamp = sample[:2]
-        path = kinematics.path(points, world.pose(), world.heading())
+        path = (kinematics.path(points, world.pose(), world.heading())
+                if base_path is None else
+                kinematics.project_path(base_path, world.pose(), world.heading()))
         joint_stamp = (
             world.joint.header.stamp.sec * 1000
             + world.joint.header.stamp.nanosec // 1_000_000
@@ -650,13 +660,17 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         }
 
     def fresh_request(item, points, contents=()):
+        # Hundreds of full FK evaluations can consume the freshness window on
+        # a slow host. Prepare only immutable proposal geometry before reading
+        # observations; do not cache measurements, facts or their timestamps.
+        base_path = kinematics.path(points, (0.0, 0.0), 0.0)
         # A newly delivered callback can still contain an old simulation stamp.
         # Wait for the oldest original observation before speculative judging;
         # never restamp evidence or retry a dispatched actuator proposal.
         checked = None
         def ready():
             nonlocal checked
-            checked = request(item, points, contents)
+            checked = request(item, points, contents, base_path=base_path)
             age = checked["now_ms"] - checked["observed_ms"]
             return 0 <= age < 75
 

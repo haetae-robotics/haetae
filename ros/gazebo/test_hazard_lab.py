@@ -32,7 +32,10 @@ class WorldPublicationTest(unittest.TestCase):
                         {"now_ms": 1000, "observed_ms": 925},
                         {"now_ms": 1000, "observed_ms": 926}])
         seen = []
-        def request(*args):
+        base_path = [{"x": .1, "y": .2, "z": .3}]
+        prepare = mock.Mock(return_value=base_path)
+        def request(*args, **kwargs):
+            self.assertIs(kwargs["base_path"], base_path)
             sample = next(samples)
             seen.append(sample.copy())
             return sample
@@ -44,13 +47,56 @@ class WorldPublicationTest(unittest.TestCase):
                     # The production wait_for returns a wall-clock timestamp.
                     return 10.0
             raise TimeoutError(description)
-        scope = {"request": request, "wait_for": wait, "processes": {}}
+        scope = {"request": request, "wait_for": wait, "processes": {},
+                 "kinematics": SimpleNamespace(path=prepare)}
         exec(compile(ast.Module(body=[method], type_ignores=[]), "actual-household-freshness", "exec"), scope)
         self.assertEqual(scope["fresh_request"]("knife", []), seen[-1])
+        prepare.assert_called_once_with([], (0.0, 0.0), 0.0)
         self.assertEqual([row["observed_ms"] for row in seen], [800, 1001, 925, 926])
-        scope["request"] = lambda *args: {"now_ms": 1000, "observed_ms": 800}
+        scope["request"] = lambda *args, **kwargs: {"now_ms": 1000, "observed_ms": 800}
         with self.assertRaises(TimeoutError):
             scope["fresh_request"]("knife", [])
+
+    def test_slow_fk_finishes_before_original_observations_are_sampled(self):
+        tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
+        lab = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_lab")
+        methods = [n for n in lab.body if isinstance(n, ast.FunctionDef)
+                   and n.name in ("request", "fresh_request")]
+        clock = {"ms": 1000}
+        point = {"x": .1, "y": .2, "z": .3}
+        stamp = SimpleNamespace(sec=1, nanosec=0)
+        world = SimpleNamespace(joint=SimpleNamespace(header=SimpleNamespace(stamp=stamp)),
+            odom=SimpleNamespace(header=SimpleNamespace(stamp=stamp)),
+            joint_received=1., odom_received=1., pose=lambda: (5., 6.),
+            heading=lambda: .4, speed=lambda: 0., arm_positions=lambda: [0.] * 4)
+        def sample(_):
+            # Model advancing measured callbacks during slow, pure FK work.
+            stamp.sec, stamp.nanosec = divmod(clock["ms"], 1000)
+            stamp.nanosec *= 1_000_000
+            world.joint_received = world.odom_received = clock["ms"] / 1000
+            return point, clock["ms"], clock["ms"] / 1000
+        def slow_path(*_):
+            clock["ms"] += 120  # More than the unchanged 75ms freshness window.
+            return [point.copy()]
+        prepare = mock.Mock(side_effect=slow_path)
+        project = mock.Mock(return_value=[point.copy()])
+        def wait(check, *_):
+            for _ in range(4):
+                if check():
+                    return 10.0
+            raise TimeoutError("expensive FK repeatedly aged the original samples")
+        scope = {"world": world, "native": SimpleNamespace(sample=sample, failure=None),
+            "active": {"case": "human", "stage": 1}, "CASES": __import__("hazard_lab").CASES,
+            "kinematics": SimpleNamespace(path=prepare, project_path=project,
+                point=lambda *_: point.copy()), "fresh_sample": fresh_sample,
+            "now": lambda: clock["ms"], "time": SimpleNamespace(monotonic=lambda: clock["ms"] / 1000),
+            "wait_for": wait, "processes": {}}
+        exec(compile(ast.Module(body=methods, type_ignores=[]), "actual-slow-fk-observation-order", "exec"), scope)
+        checked = scope["fresh_request"]("knife", [])
+        prepare.assert_called_once_with([], (0.0, 0.0), 0.0)
+        project.assert_called_once_with([point], (5., 6.), .4)
+        self.assertEqual(checked["observed_ms"], 1120)
+        self.assertEqual(checked["now_ms"], 1120)
 
     def test_first_fixture_cannot_dispatch_repositioning_before_setup(self):
         tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
@@ -291,6 +337,15 @@ class HazardAdapterTest(unittest.TestCase):
             max(math.dist(a.values(), b.values()) for a, b in zip(path, path[1:])),
             0.00061,
         )
+        base_path = k.path(points, (0., 0.), 0.)
+        original = copy.deepcopy(base_path)
+        for pose, yaw in (((5., 6.), .7), ((-2., 3.), -1.2)):
+            projected = k.project_path(base_path, pose, yaw)
+            direct = k.path(points, pose, yaw)
+            self.assertEqual(len(projected), len(direct))
+            self.assertLess(max(math.dist(a.values(), b.values())
+                                for a, b in zip(projected, direct)), 1e-12)
+        self.assertEqual(base_path, original)
 
     def test_manufacturer_chain_margin_and_fixture_envelopes(self):
         root_path = Path(__file__).resolve().parents[2]
