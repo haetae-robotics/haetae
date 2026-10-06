@@ -556,3 +556,28 @@ fn fk(policy: &HouseholdPolicy, joints: &[f64], pose: Point2, yaw: f64) -> Point
         z: matrix[2][3],
     }
 }
+
+/// Add retained container facts for execution without changing signed input.
+/// An omitted remembered container is unknown until freshly observed again.
+pub fn overlay_containers(world: &WorldSnapshot, retained: &[Region]) -> WorldSnapshot {
+    let mut effective = world.clone();
+    let Some(scene) = effective.semantic.as_mut() else {
+        return effective;
+    };
+    for stored in retained {
+        if let Some(current) = scene.regions.iter_mut().find(|r| r.id == stored.id) {
+            for kind in &stored.contents {
+                if !current.contents.contains(kind) {
+                    current.contents.push(*kind);
+                }
+            }
+            current.contents_known &= stored.contents_known;
+        } else {
+            let mut missing = stored.clone();
+            missing.state = State::Unknown;
+            missing.contents_known = false;
+            scene.regions.push(missing);
+        }
+    }
+    effective
+}

@@ -107,6 +107,7 @@ pub struct Runtime {
     /// A missing semantic observation stops protected execution but must not
     /// erase the revision floor and permit a later rollback.
     semantic_floor: Option<SemanticSnapshot>,
+    container_history: Vec<haetae_core::hazard::Region>,
     sacho: Sacho,
     dedup: Dedup,
     recorder: Option<Recorder>,
@@ -125,6 +126,8 @@ pub struct Runtime {
 struct ProposalRecord<'a> {
     proposal: &'a ActionProposal,
     world: &'a Option<WorldSnapshot>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    container_history: &'a Vec<haetae_core::hazard::Region>,
 }
 
 /// `"fault"` record payload (w2-contract §5).
@@ -179,6 +182,7 @@ impl Runtime {
             gate: Gate::with_mode(policy, cfg.start_mode)?,
             world: initial_world,
             semantic_floor,
+            container_history: Vec::new(),
             sacho: Sacho::new(cfg.sacho_capacity),
             dedup: Dedup::new(cfg.dedup_capacity),
             recorder: cfg.recorder.map(Recorder::new),
@@ -268,6 +272,7 @@ impl Runtime {
                 let payload = serde_json::to_value(ProposalRecord {
                     proposal: &p,
                     world: &self.world,
+                    container_history: &self.container_history,
                 });
                 self.record(recv_ms, "proposal", payload);
                 let d = self.judge(&p, recv_ms);
@@ -415,14 +420,25 @@ impl Runtime {
                 None => self.stop_without_world(p),
             };
         }
-        let Some(world) = &self.world else {
+        let Some(world) = self.effective_world() else {
             return self.synthetic_bul(p, "missing:world");
         };
         // Insert before judging, so even a denied proposal claims its id.
         if self.dedup.check_and_insert((p.source, p.id)) {
             return self.synthetic_bul(p, "replay:proposal");
         }
-        self.gate.judge_at(p, world, recv_ms)
+        self.gate.judge_at(p, &world, recv_ms)
+    }
+
+    /// Trusted enforcer history, never a field accepted from proposals/worlds.
+    pub fn set_container_history(&mut self, regions: Vec<haetae_core::hazard::Region>) {
+        self.container_history = regions;
+    }
+
+    pub fn effective_world(&self) -> Option<WorldSnapshot> {
+        self.world
+            .as_ref()
+            .map(|world| haetae_core::household::overlay_containers(world, &self.container_history))
     }
 
     /// Whether a world snapshot may replace the current one. Rejected worlds

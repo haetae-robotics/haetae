@@ -4,7 +4,9 @@ Status: simulator evaluation, non-safety-rated. This increment makes the
 household checks mandatory in the central Rust execution path when a trusted
 policy contains `household`. It does not qualify a robot for physical protection.
 The milestone list below separates the later controller, state-history,
-geometry and hardware work.
+geometry and hardware work. [M2a durable history](household-history.md) now
+preserves observed facts and pure-motion consumption; verified material effects
+and full task semantics remain deferred.
 
 ## Protected scope
 
@@ -117,8 +119,8 @@ twist and all four joint samples in policy order for protected motion.
 | Field | Source, unit and limit |
 | --- | --- |
 | `schema_version` | Trusted observer; exactly `1`. |
-| `revision`, `task_revision` | Positive `u64` observer revisions. Safety facts change only with a newer scene revision. Revisions are context bindings, not a durable task/effect ledger. |
-| `task_id`, `step_id`, `robot_id`, `tool_id`, `item_id` | Trusted observer IDs under the same 64-byte syntax. Robot/tool must match root policy. Stable physical identity and effect provenance require later M2 work. |
+| `revision`, `task_revision` | Positive `u64` observer revisions. Safety facts change only with a newer scene revision. Revisions bind context and the M2a durable observation floor/task epoch. They are not verified material effects. |
+| `task_id`, `step_id`, `robot_id`, `tool_id`, `item_id` | Trusted observer IDs under the same 64-byte syntax. Robot/tool must match root policy. IDs assert a stable generation at the trusted observer. M2a retains known kinds; physical identity and effect provenance remain unqualified. |
 | `model_sha256` | Observer model identity; exact root-policy digest match. |
 | `observed_ms` | Original trusted observation time in the same runtime clock domain as outer `stamp_ms` and stdio `t`. Re-signing or publishing a new world does not renew this original stamp. |
 | `confidence` | Finite [0,1]; executing requires ≥0.9. A signature authenticates the observer, not the confidence claim's empirical calibration. |

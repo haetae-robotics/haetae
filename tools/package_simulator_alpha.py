@@ -46,7 +46,7 @@ def package(result_path, out, household_result=None):
             raise ValueError("household evidence must match the packaged commit and profile")
         household_public = report(household_raw, revision, "ci_household")
         if household_public["status"] != "passed":
-            raise ValueError("household evidence must pass all six cases and controls")
+            raise ValueError("household evidence must pass all six cases, controls and durable history")
         household_bytes = (json.dumps(household_public, ensure_ascii=False, indent=2) + "\n").encode()
     prefix = "haetae-simulator-alpha/"
     source = subprocess.check_output(["git", "archive", "--format=tar", "--prefix=" + prefix, revision], cwd=REPO)

@@ -402,6 +402,8 @@ class HazardAdapterTest(unittest.TestCase):
             "accepted_waypoints_match": True,
             "max_joint_tracking_error_rad": 0.02,
             "tracking_samples": 20,
+            "history_motion_settled": True,
+            "material_effects_committed": 0,
         }
         rows = []
         for identifier, _, _, _, reason in __import__("hazard_lab").CASES:
@@ -435,6 +437,13 @@ class HazardAdapterTest(unittest.TestCase):
                     ("missing_coverage", "perception:coverage-unknown"),
                 )
             },
+            "history_controls": {
+                "consumed_step": {"blocked": True, "reason": "history:consumed-step",
+                    "settled_positive_control": True, "fresh_counter_signed_probe": True, "denied_drift_rad": 0.001},
+                "retained_contents": {"raw_contents_empty": True, "retained_contaminants": 1,
+                    "reason": "household:chemicals:incompatible", "signed_gate_rejection_observed": True,
+                    "settled_positive_control": True, "denied_drift_rad": 0.001}},
+            "material_effects_committed": 0,
             "mandatory_gate_controls": {
                 key: {"allowed": False, "reason": reason,
                       "signed_gate_rejection_observed": True, "denied_drift_rad": 0.001}
@@ -452,6 +461,12 @@ class HazardAdapterTest(unittest.TestCase):
         ):
             changed = copy.deepcopy(result)
             changed["hazard_checks"][0][field] = bad
+            self.assertEqual(report(changed)["status"], "failed")
+        for name, field, bad in (("consumed_step", "fresh_counter_signed_probe", False),
+                                 ("retained_contents", "raw_contents_empty", False),
+                                 ("retained_contents", "retained_contaminants", 0)):
+            changed = copy.deepcopy(result)
+            changed["history_controls"][name][field] = bad
             self.assertEqual(report(changed)["status"], "failed")
         changed = copy.deepcopy(result)
         del changed["hazard_checks"][4]["retreat"]
@@ -478,7 +493,7 @@ class HazardAdapterTest(unittest.TestCase):
                 "measured_motion_rad": 0.3,
                 "plan_sha256": "a" * 64,
                 "signed_arm_acceptance_observed": True,
-                "accepted_waypoints_match": True,
+                "accepted_waypoints_match": True, "history_motion_settled": True, "material_effects_committed": 0,
                 "max_joint_tracking_error_rad": 0.01,
                 "tracking_samples": 20,
             }

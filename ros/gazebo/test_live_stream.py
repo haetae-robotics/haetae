@@ -31,7 +31,7 @@ class LiveStreamTest(unittest.TestCase):
                "mandatory_semantic_gate": True, "signed_gate_rejection_observed": True,
                "reason": "human:protected-volume", "denied_drift_rad": .001,
                "measured_motion_rad": .3, "plan_sha256": "a" * 64,
-               "signed_arm_acceptance_observed": True, "accepted_waypoints_match": True,
+               "signed_arm_acceptance_observed": True, "accepted_waypoints_match": True, "history_motion_settled": True, "material_effects_committed": 0,
                "max_joint_tracking_error_rad": .01, "tracking_samples": 20}
         hub.fail({"kind": "error"}, {"profile": "household_hazards", "ok": False,
                  "hazard_checks": [row, {"id": "heat", "blocked": False}]})

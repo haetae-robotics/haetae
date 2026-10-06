@@ -251,7 +251,8 @@ Root, kernel, simulator, controller process/binary, pinned public configuration,
 trusted observation source and Rust owner/signer remain trusted. The relay may
 drop traffic or cause a stop; availability is not promised. A compromised
 authorizer can sign dangerous commands. Signed observations authenticate source,
-not physical truth. Full arm/tool geometry, persistent household effects,
+not physical truth. [M2a history](household-history.md) preserves observations and pure-motion steps;
+verified persistent household effects and full arm/tool geometry,
 separate-device clock/challenge protocols, real motor stop measurements and
 hardware qualification remain separate work. No new protective release claim
 is made by this reference.
