@@ -146,6 +146,16 @@ class NodeBoundaryTest(unittest.TestCase):
         self.assertEqual(states[-1]['active_expires_ms'], 1056)
         self.assertEqual(states[-1]['active'], g.step['status']['active'])
 
+    def test_retirement_covers_conservative_backdate_tail_without_extending_expiry(self):
+        g = self.retiring_arm()
+        g.permits.sim_backdate_ns = 10_000_000
+        g.permit_remaining_ns = 8_000_000
+        # The signed simulation grant has already ended; the original Rust
+        # deadline is still two ms away. Publish no permit in this interval.
+        self.assertTrue(g._arm_renewal_retiring(g.step))
+        clock.value = .008
+        self.assertFalse(g._arm_renewal_retiring(g.step))
+
     def test_retirement_cannot_hide_new_commands_staleness_or_controller_loss(self):
         g = self.retiring_arm()
         self.assertTrue(g._arm_renewal_retiring(g.step))
