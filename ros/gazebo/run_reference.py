@@ -3,7 +3,7 @@
 
 This is a physics-backed reference test, not a robot safety certification.
 Person occupancy comes from the native Gazebo GPU lidar; robot feedback,
-Gazebo Transport and ros2_control are trusted. The four-joint controller checks an independent 250 ms gateway lease.
+Gazebo Transport and ros2_control are trusted. The four-joint controller checks independent permits lasting at most 200 ms.
 """
 
 import argparse
@@ -25,7 +25,7 @@ from xml.etree import ElementTree
 import rclpy
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.signals import SignalHandlerOptions
@@ -35,6 +35,8 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
 from run_scenario import fixture, public  # noqa: E402
+from arm_barrier import (gazebo_rearm_ready, activated_guards_ready, accepted_world_ready,
+                         arm_fault_owner_ready)  # noqa: E402
 from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
@@ -69,6 +71,11 @@ def interrupt_run(signum, frame):
 
 
 class GazeboWorld(Node):
+    def controllers_unlocked(self):
+        return (bool(self.base_guard_states) and bool(self.guard_states) and
+                not self.base_guard_states[-1][1].get("holding", True) and
+                not self.guard_states[-1][1].get("holding", True))
+
     def __init__(self, live=None, isolated=False):
         super().__init__("haetae_gazebo_world", parameter_overrides=[
             Parameter("use_sim_time", Parameter.Type.BOOL, True)],
@@ -80,6 +87,7 @@ class GazeboWorld(Node):
         self.joint = None
         self.odom_received = 0.0
         self.joint_received = 0.0
+        self.joint_measurements = deque(maxlen=512)
         self.perception = Perception()
         self.native = None
         self.sensor_info = {}
@@ -93,8 +101,10 @@ class GazeboWorld(Node):
         self.outcomes = []
         self.commands = []
         self.guard_states = []
+        self.base_guard_states = []
         self.attack_world_received = 0
         self.world_count = 0
+        self.published_world_stamp = None
         self.hazard_guard = None
         self.semantic_snapshot = None
         self.semantic_last = None
@@ -107,6 +117,8 @@ class GazeboWorld(Node):
         self.create_subscription(TwistStamped, BASE_CONTROLLER_TOPIC, self._command, 10)
         self.create_subscription(String, "/haetae_gate/state", self._state, 10)
         self.create_subscription(String, "/haetae_gate/outcome", self._outcome, 10)
+        self.create_subscription(String, "/diff_drive_base_controller/guard_state",
+            lambda msg: self.base_guard_states.append((time.monotonic(), json.loads(msg.data))), 10)
         self.create_subscription(String, "/haetae_input/world" if isolated else "/haetae_gate/world", self._observe_world_attack, 10)
         self.create_subscription(String, "/joint_trajectory_controller/guard_state",
                                  lambda msg: self.guard_states.append((time.monotonic(), json.loads(msg.data))), 10)
@@ -133,6 +145,7 @@ class GazeboWorld(Node):
         decision = value.get("decision", {})
         if decision:
             self._emit("decision", verdict=decision.get("verdict"),
+                       proposal_id=decision.get("proposal_id"),
                        fired=decision.get("fired", []),
                        action=decision.get("action", {}).get("type")
                        if decision.get("action") else None)
@@ -149,9 +162,14 @@ class GazeboWorld(Node):
         self.odom_received = time.monotonic()
 
     def _joint(self, msg):
+        self.joint_measurements.append((time.monotonic(), msg))
         if all(name in msg.name for name in ARM_JOINTS):
             self.joint = msg
             self.joint_received = time.monotonic()
+            # Do not leave a new fused observation waiting for the next
+            # periodic tick. Only advancing healthy samples use this path;
+            # the existing timer still delivers health/semantic changes.
+            self._publish_world(only_advanced=True)
 
     def _command(self, msg):
         now = time.monotonic()
@@ -216,7 +234,7 @@ class GazeboWorld(Node):
         with self.human_lock:
             self.human = self.human_walk = self.human_motion = None
 
-    def _publish_world(self):
+    def _publish_world(self, *, only_advanced=False):
         now = time.monotonic()
         stamp = self.get_clock().now().nanoseconds // 1_000_000
         if (not stamp or self.odom is None or self.joint is None or
@@ -241,6 +259,9 @@ class GazeboWorld(Node):
         # a new world. Joint/odom freshness was checked above independently.
         if sensor["healthy"]:
             stamp = min(stamp, odom_stamp, sensor["stamp_ms"])
+        if only_advanced and (not sensor["healthy"] or
+                (self.published_world_stamp is not None and stamp <= self.published_world_stamp)):
+            return
         with self.human_lock:
             human_motion = self.human_motion
             present = self.human is not None
@@ -268,6 +289,7 @@ class GazeboWorld(Node):
         if self.hazard_guard is None or self.hazard_guard():
             self.world_pub.publish(String(data=json.dumps(payload)))
             self.world_count += 1
+            self.published_world_stamp = stamp
         # Unknown coverage is an explicit negative observation, never a safe
         # empty scene. The root-signed perception-unknown rule revokes motion
         # immediately; mechanical/signing disappearance still ages out.
@@ -357,6 +379,7 @@ def exercise_sensor_fault(world, processes, case, stop_report, roles=None):
     world.states.clear()
     world.outcomes.clear()
     wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and
+             world.controllers_unlocked() and
              sum(1 for _, row in world.outcomes if row.get("decision", {}).get("verdict") == "yun"
                  and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
              8, processes, "sensor fixture explicit rearm", action=lambda: world.propose_base(0.0))
@@ -459,15 +482,130 @@ def sealed_incident_snapshot(log_path, snapshot_path, *, root=None, expected_uid
     return True
 
 
-def exercise_arm_fault(world, processes, case):
+def prepare_arm_fault(world, processes, roles=None):
+    """Bounded OFF-only preparation; returns before any arm goal is sent."""
+    nonces = {target: samples[-1][1].get("nonce") if samples else None
+              for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))}
+    started_at = time.monotonic()
+    deadline = started_at + 5
+    previous_stamp = max((updated["stamp_ms"] for _, row in world.outcomes
+        if isinstance(updated := row.get("world_updated"), dict)
+        and type(updated.get("stamp_ms")) is int), default=-1)
+    attempts = []
+    timeout_observations = []
+    def routes():
+        # Graph counts are diagnostic only, never proof of delivery/acceptance.
+        try:
+            return {topic: {"publishers": world.count_publishers(topic),
+                            "subscriptions": world.count_subscribers(topic)}
+                    for topic in ("/haetae_gate/signed/vla", "/haetae_gate/signed/world")}
+        except Exception as exc:
+            return {"unavailable": type(exc).__name__}
+    world.arm_preparation_diagnostics = None
+    def prerequisite_ready():
+        return (accepted_world_ready(world.states, world.outcomes,
+                started_at, time.monotonic(), previous_stamp)
+                and all(samples and samples[-1][1].get("nonce") == nonces[target]
+                    for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))))
+    try:
+        # A discovered world subscription is not proof that the restarted
+        # owner has accepted a world. Spend the existing OFF-only deadline on
+        # that prerequisite before consuming either explicit reset attempt.
+        wait_for(prerequisite_ready, deadline - time.monotonic(),
+                 processes, "owner accepted fresh world before fixture reset")
+    except TimeoutError:
+        world.arm_preparation_diagnostics = {"attempts": [], "timeout_observations": [],
+            "routes_at_failure": routes(),
+            "outcomes": [(at, row) for at, row in list(world.outcomes) if at >= started_at],
+            "states": [(at, row) for at, row in list(world.states) if at >= started_at]}
+        raise
+    for attempt in range(2 if roles else 1):
+        if (time.monotonic() >= deadline or any(not samples or
+                samples[-1][1].get("nonce") != nonces[target] for target, samples in
+                (("arm", world.guard_states), ("base", world.base_guard_states)))):
+            break
+        try:
+            # State is published before outcome on a world step. A later tick
+            # supplies the subsequent state, so this readiness hint can be
+            # transiently false. Poll within the same deadline; never consume
+            # an extra OFF attempt or retry a dispatched motion.
+            wait_for(prerequisite_ready, deadline - time.monotonic(),
+                     processes, "owner fresh world before OFF request")
+        except TimeoutError:
+            break
+        if time.monotonic() >= deadline or any(not samples or
+                samples[-1][1].get("nonce") != nonces[target] for target, samples in
+                (("arm", world.guard_states), ("base", world.base_guard_states))):
+            break
+        # In the isolated profile each parsed proposal increments both this
+        # durable VLA reservation and proposal_id once, before DDS publication.
+        # No other proposal producer runs during this stopped fixture setup.
+        before = (roles.counter("vla") if roles else max((
+            row.get("decision", {}).get("proposal_id", 0) for _, row in world.outcomes), default=0))
+        proposal_id = before + 1
+        route_counts = routes()
+        sent = time.monotonic()
+        world.propose_base(0.0)
+        attempts.append({"attempt": attempt + 1, "sent_wall": sent, "proposal_id": proposal_id,
+                         "counter_before": before, "routes_at_send": route_counts,
+                         "owner_vla_at_send": {"state_received_wall": world.states[-1][0],
+                             **{key: world.states[-1][1].get(key) for key in
+                                ("signed_vla_writers_matched", "signed_vla_callbacks")}}})
+        try:
+            # One pending request at a time, at most two OFF-only requests.
+            # A lost volatile DDS delivery at gate discovery can use the second
+            # request. Exact final ID and same signed writer order drain the
+            # first request before any positive goal; no retry follows dispatch.
+            wait_for(lambda: gazebo_rearm_ready(world, sent, time.monotonic(), ARM_JOINTS,
+                      nonces, proposal_id), min(1 if roles and attempt == 0 else 5, deadline - time.monotonic()),
+                     processes, "fresh explicit arm fault fixture reset")
+            world._emit("arm_fault_preparation", attempts=attempts,
+                        accepted_proposal_id=proposal_id, expected_nonces=nonces)
+            return {"attempts": attempts, "accepted_proposal_id": proposal_id}
+        except TimeoutError:
+            after = roles.counter("vla") if roles else None
+            attempts[-1]["counter_after"] = after
+            attempts[-1]["routes_at_timeout"] = routes()
+            timeout_observations.append({"proposal_id": proposal_id,
+                "outcomes": [(at, row) for at, row in list(world.outcomes) if at >= sent],
+                "states": [(at, row) for at, row in list(world.states) if at >= sent],
+                "arm_guards": [(at, row) for at, row in list(world.guard_states) if at >= sent],
+                "base_guards": [(at, row) for at, row in list(world.base_guard_states) if at >= sent]})
+            if roles and after != proposal_id:
+                break  # Missing/competing source parse is not proof of DDS loss.
+    world.arm_preparation_diagnostics = {"attempts": attempts, "timeout_observations": timeout_observations,
+        "routes_at_failure": routes(),
+        "outcomes": [(at, row) for at, row in list(world.outcomes) if at >= started_at],
+        "states": [(at, row) for at, row in list(world.states) if at >= started_at]}
+    raise TimeoutError("fresh explicit arm fault fixture reset: " + json.dumps({
+        "attempts": attempts, "expected_nonces": nonces,
+        "state": world.states[-1] if world.states else None,
+        "outcome": world.outcomes[-1] if world.outcomes else None,
+        "arm_guard": world.guard_states[-1] if world.guard_states else None,
+        "base_guard": world.base_guard_states[-1] if world.base_guard_states else None,
+        "joint_received": world.joint_received, "odom_received": world.odom_received,
+        "base_speed": world.speed()}))
+
+
+def exercise_arm_fault(world, processes, case, roles=None):
     """Fault injection is confined to this test harness, never the gate."""
-    time.sleep(0.3)  # Drain the rearm stop proposals before submitting motion.
-    wait_for(lambda: world.guard_states and not world.guard_states[-1][1]["holding"],
-             5, processes, "independent controller lease opens")
+    preparation = prepare_arm_fault(world, processes, roles)
     initial = world.arm_positions()
     world.marker("팔 독립 정지 시험", case=case)
+    dispatched_at = time.monotonic()
     world.propose_arm(initial[0] + (-0.5 if initial[0] > 0.1 else 0.5))
-    wait_for(lambda: abs(world.primary_joint() - initial[0]) > 0.10, 5, processes,
+    peak_velocity = 0.0
+    def moving_control():
+        nonlocal peak_velocity
+        for stamp, sample in list(world.joint_measurements):
+            if stamp >= dispatched_at:
+                for name, value in zip(sample.name, sample.velocity):
+                    if name in ARM_JOINTS:
+                        peak_velocity = max(peak_velocity, abs(value))
+        if peak_velocity > 1.0 + 1e-6:
+            raise AssertionError("arm positive control exceeded measured velocity policy")
+        return abs(world.primary_joint() - initial[0]) > 0.10
+    wait_for(moving_control, 5, processes,
              "arm moving before injected fault")
     wait_for(lambda: world.guard_states and not world.guard_states[-1][1]["holding"] and
         0 <= time.monotonic() - world.guard_states[-1][1].get("lease_received_wall_ns", 0) / 1e9 <= .1,
@@ -512,6 +650,8 @@ def exercise_arm_fault(world, processes, case):
             if max(abs(a-b) for a,b in zip(positions, world.arm_positions())) > 0.02:
                 raise AssertionError("heartbeat recovery revived the expired trajectory")
         return {"ok": True, "case": case, "controller": "independent_arm_lease",
+                "preparation": preparation,
+                "positive_peak_velocity_rad_s": peak_velocity,
                 "joint_names": list(ARM_JOINTS), "held_positions_rad": positions,
                 "post_stop_drift_rad": drift,
                 "pre_fault_lease_age_wall_ms": round((fault_wall - pre_fault_lease["lease_received_wall_ns"] / 1e9) * 1000, 1),
@@ -532,10 +672,19 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         secure_graph=False, step_through=False, arm_fault=None, compound_repeat=0, output=None, household_hazards=False):
     root.mkdir(parents=True, exist_ok=True)
     fixture(root, binary, arm=True, arm_policy=arm_policy(), person_distance=PERSON_DISTANCE_M)
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    controller_seed = os.urandom(32)
+    with open(root / "controller.key", "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as key_file:
+        key_file.write(controller_seed.hex())
+    controller_public = Ed25519PrivateKey.from_private_bytes(controller_seed).public_key().public_bytes(
+        Encoding.Raw, PublicFormat.Raw).hex()
     params_path = root / "params.yaml"
     params = json.loads(params_path.read_text())
     params["haetae_gate"]["ros__parameters"].update({"use_sim_time": True,
-        "heartbeat_topic": "/haetae_gate/heartbeat"})
+        "heartbeat_topic": "/haetae_authorized/heartbeat",
+        "arm_action": "/haetae_gateway/follow_joint_trajectory",
+        "controller_key_path": str(root / "controller.key")})
     params_path.write_text(json.dumps(params))
     studio = ElementTree.parse(HERE / "studio.sdf")
     add_native_scene(studio.getroot().find("world"))
@@ -544,7 +693,10 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         add_fixtures(studio.getroot().find("world"))
     studio_path = root / "sensor-studio.sdf"
     studio.write(studio_path, encoding="UTF-8", xml_declaration=True)
-    controllers = HERE / "controllers.yaml"
+    # Root-provisioned public pin; never put the private seed in the URDF or export.
+    controllers = root / "controllers.yaml"
+    controllers.write_text((HERE / "controllers.yaml").read_text().replace(
+        "    type: haetae_arm_guard/", "    permit_public_key: " + controller_public + "\n    type: haetae_arm_guard/"))
     model = root / "reference_bot.urdf"
     model.write_text(resolve_meshes(command(["xacro", str(HERE / "rosbot_xl.urdf.xacro"),
                               "controllers_file:=" + str(controllers),
@@ -685,7 +837,11 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                        root, "robot_state_publisher", processes, gazebo_env)
         logs.append(log)
         world = GazeboWorld(live, isolated=secure_graph)
-        executor = MultiThreadedExecutor(num_threads=3)
+        # These observation callbacks share the default mutually exclusive
+        # group. Run them directly in the spin thread instead of dispatching
+        # already serialized work through a worker pool. Scenario waits and
+        # native sensor/pose transport run on their existing separate threads.
+        executor = SingleThreadedExecutor()
         executor.add_node(world)
         thread = threading.Thread(target=executor.spin, daemon=True)
         thread.start()
@@ -721,9 +877,13 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             world.proposal_pipe = driver.stdin
             logs.append(log)
 
+        _, log = start([sys.executable, str(REPO / "ros/haetae_gate/relay.py"),
+                       "--ros-args", "-p", "use_sim_time:=true"],
+                       root, "relay", processes, role_env("relay"), UIDS["relay"] if roles else None)
+        logs.append(log)
         _, log = start([sys.executable, str(REPO / "ros/haetae_gate/node.py"),
                         "--ros-args", "--params-file", str(params_path),
-                        "-r", "/cmd_vel:=" + BASE_CONTROLLER_TOPIC],
+                        "-r", "/cmd_vel:=/haetae_authorized/cmd_vel"],
                        root, "gate", processes, role_env("gate"), UIDS["gate"] if roles else None)
         logs.append(log)
         wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
@@ -751,13 +911,15 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         # restart an old armed-state sample cannot confirm a new rearm.
         world.states.clear()
         world.outcomes.clear()
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"]
+        if not arm_fault:
+            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"]
+                 and world.controllers_unlocked()
                  and sum(1 for _, row in world.outcomes
                          if row.get("decision", {}).get("verdict") == "yun"
                          and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
-                 8, processes, "fresh accepted base rearm", action=lambda: world.propose_base(0.0))
+                     8, processes, "fresh accepted base rearm", action=lambda: world.propose_base(0.0))
         if arm_fault:
-            result = exercise_arm_fault(world, processes, arm_fault)
+            result = exercise_arm_fault(world, processes, arm_fault, roles)
             if roles:
                 checkpoint_evidence(root, gate_directory / "sillok.jsonl", root / "sillok.jsonl", UIDS["gate"])
             (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -835,7 +997,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         time.sleep(0.3)
 
         world.propose_base(0.0)
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                  5, processes, "arm rearm", action=lambda: world.propose_base(0.0))
         prepare_scene("다음은 허용 범위를 넘는 팔 명령입니다. 팔이 움직이지 않는지 확인하세요.")
         bad_at = time.monotonic()
@@ -850,7 +1012,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         review_scene("팔 명령 거부 장면", "허용 범위를 넘는 명령을 거부했고 팔 관절이 움직이지 않았습니다.",
                      "움직이는 팔 중단 시험")
         world.propose_base(0.0)
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                  5, processes, "arm rearm after denial", action=lambda: world.propose_base(0.0))
         time.sleep(0.3)
         prepare_scene("이번에는 정상 팔 동작 중 사람 근접 보고를 넣습니다. 팔 움직임과 취소 결과를 확인하세요.")
@@ -909,7 +1071,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
         attacks = {}
         if attack_probes and secure_graph:
             world.propose_base(0.0)
-            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                      5, processes, "base rearm before attacker",
                      action=lambda: world.propose_base(0.0))
             prepare_scene("공격자 노드가 바퀴에 직접 명령을 보내고 사람 정보를 위조합니다. 아래 공격 카드에서 결과를 확인하세요.")
@@ -943,7 +1105,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
 
         time.sleep(0.3)
         world.propose_base(0.0)
-        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
+        wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and world.controllers_unlocked(),
                  5, processes, "base rearm before kill", action=lambda: world.propose_base(0.0))
         prepare_scene("로봇을 다시 움직인 뒤 해태 프로세스를 종료합니다. 명령이 끊겼을 때 바퀴가 멈추는지 확인하세요.")
         world.marker("두 번째 바퀴 이동")
@@ -975,7 +1137,9 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                     person_distance=PERSON_DISTANCE_M)
             fault_params = json.loads((fault_root / "params.yaml").read_text())
             fault_params["haetae_gate"]["ros__parameters"].update({
-                "use_sim_time": True, "heartbeat_topic": "/haetae_gate/heartbeat"})
+                "use_sim_time": True, "heartbeat_topic": "/haetae_authorized/heartbeat",
+                "arm_action": "/haetae_gateway/follow_joint_trajectory",
+                "controller_key_path": str(root / "controller.key")})
             (fault_root / "params.yaml").write_text(json.dumps(fault_params))
             if roles:
                 fault_gate = roles.configure_gate(fault_root)
@@ -984,17 +1148,48 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                 fault_gate = fault_root
                 fault_params_path = fault_root / "params.yaml"
             world.states.clear()
+            world.outcomes.clear()
+            previous_nonces = {target: samples[-1][1].get("nonce") if samples else None
+                for target, samples in (("arm", world.guard_states), ("base", world.base_guard_states))}
+            # Explicit root test reset, at measured stop. New activation nonces
+            # prevent a restarted authorizer's sequence from reviving old work.
+            for controller in ("diff_drive_base_controller", "joint_trajectory_controller"):
+                for state in ("inactive", "active"):
+                    command([sys.executable, str(HERE / "controller_reset.py"), controller, state], root, env=gazebo_env)
+            reset_at = time.monotonic()
+            world.guard_states.clear()
+            world.base_guard_states.clear()
+            wait_for(lambda: activated_guards_ready(world, reset_at, time.monotonic(), previous_nonces),
+                     5, processes, "fresh rotated controller activation challenges")
             _, log = start([sys.executable, str(REPO / "ros/haetae_gate/node.py"),
                             "--ros-args", "--params-file", str(fault_params_path),
-                            "-r", "/cmd_vel:=" + BASE_CONTROLLER_TOPIC],
+                            "-r", "/cmd_vel:=/haetae_authorized/cmd_vel"],
                            fault_root, "gate", processes, role_env("gate"), UIDS["gate"] if roles else None)
             logs.append(log)
-            wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
-                 and world.states[-1][1].get("arm_controller_ready"),
-                     10, processes, "new isolated arm fault fixture")
-            wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"],
-                     5, processes, "fault fixture rearm", action=lambda: world.propose_base(0.0))
-            arm_fault_results[case] = exercise_arm_fault(world, processes, case)
+            # A normal state and a discovered graph do not show that this new
+            # owner has matched the long-lived signed VLA writer. Use the
+            # existing startup wait; keep the later OFF-only 5 s unchanged.
+            world.arm_preparation_diagnostics = None
+            fault_stage = "owner_startup"
+            try:
+                wait_for(lambda: arm_fault_owner_ready(world.states, roles is not None),
+                         10, processes, "new isolated arm fault fixture")
+                fault_stage = "arm_fault"
+                arm_fault_results[case] = exercise_arm_fault(world, processes, case, roles)
+            except Exception:
+                # Keep the original qualification failure. Capture this fault
+                # session, not the old ordinary gate's log, before cleanup.
+                try:
+                    diagnostics = getattr(world, "arm_preparation_diagnostics", None)
+                    if diagnostics is None:
+                        diagnostics = {"stage": fault_stage, "attempts": [],
+                            "states": list(world.states), "outcomes": list(world.outcomes)}
+                    (fault_root / "preparation-diagnostics.json").write_text(json.dumps(diagnostics, indent=2))
+                    if roles:
+                        checkpoint_evidence(root, fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl", UIDS["gate"])
+                except Exception as evidence_exc:
+                    print("Arm fault diagnostic capture failed: " + type(evidence_exc).__name__, file=sys.stderr)
+                raise
             if roles:
                 checkpoint_evidence(root, fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl", UIDS["gate"])
             (fault_root / "result.json").write_text(json.dumps(arm_fault_results[case], indent=2) + "\n")
@@ -1038,7 +1233,15 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
             for name in ("replay", "signature"):
                 world._emit("attack_result", attack=name, **attacks[name])
             (root / "attack-result.json").write_text(json.dumps(attacks, indent=2) + "\n")
+        controller_permits = None
+        if roles and attack_probes:
+            from controller_probes import exercise as exercise_controller_permits
+            if live:
+                world.marker("최종 제어기 허가 검사", detail="승인된 명령을 중간 전달자가 바꾸거나 다시 보내도 바퀴와 팔 제어기가 차단하는지 확인합니다.")
+            controller_permits = exercise_controller_permits(world, root, binary, roles, processes,
+                start, stop, command, wait_for, role_env("sim"))
         result = {"ok": all(row["blocked"] for row in attacks.values()),
+                  "controller_permits": controller_permits,
                   "source_revision": os.environ.get("HAETAE_REVISION", "unknown"),
                   "transport_isolation": transport_evidence,
                   "robot_model": MODEL_NAME,

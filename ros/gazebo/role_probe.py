@@ -7,6 +7,9 @@ import rclpy
 from geometry_msgs.msg import TwistStamped
 from trajectory_msgs.msg import JointTrajectory
 from control_msgs.action import FollowJointTrajectory
+from controller_manager_msgs.srv import (LoadController, SwitchController,
+    UnloadController, ConfigureController, CleanupController, ReloadControllerLibraries)
+from rcl_interfaces.srv import SetParameters, SetParametersAtomically
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from std_msgs.msg import String, UInt64
@@ -22,6 +25,11 @@ def main():
         # An authorized diagnostic route proves DDS matching without adding
         # a second live actuator writer and correctly tripping the Hold latch.
         allowed = node.create_publisher(String, "/haetae_gate/state", 1)
+    elif role == "relay":
+        forbidden = ["/haetae_gate/signed/world", "/haetae_gate/signed/fault", "/haetae_gate/signed/vla",
+                     "/haetae_authorized/cmd_vel", "/haetae_authorized/heartbeat",
+                     "/diff_drive_base_controller/guard_state", "/joint_trajectory_controller/guard_state"]
+        allowed = node.create_publisher(String, "/haetae_gate/heartbeat", 1)
     elif role in ("vla", "proposal"):
         forbidden = ["/haetae_input/world", "/haetae_input/fault", "/haetae_gate/signed/world",
                      "/haetae_gate/signed/fault", "/haetae_gate/heartbeat",
@@ -37,6 +45,23 @@ def main():
                      "/joint_trajectory_controller/joint_trajectory", "/haetae_gate/signed/vla"]
         allowed = node.create_publisher(String, "/haetae_input/world", 1)
     denied = {}
+    denied_services = {}
+    if role == "relay":
+        for service, kind in (("/controller_manager/switch_controller", SwitchController),
+                              ("/controller_manager/load_controller", LoadController),
+                              ("/controller_manager/unload_controller", UnloadController),
+                              ("/controller_manager/configure_controller", ConfigureController),
+                              ("/controller_manager/cleanup_controller", CleanupController),
+                              ("/controller_manager/reload_controller_libraries", ReloadControllerLibraries),
+                              ("/diff_drive_base_controller/set_parameters", SetParameters),
+                              ("/joint_trajectory_controller/set_parameters", SetParameters),
+                              ("/diff_drive_base_controller/set_parameters_atomically", SetParametersAtomically),
+                              ("/joint_trajectory_controller/set_parameters_atomically", SetParametersAtomically)):
+            try:
+                node.create_client(kind, service)
+                denied_services[service] = False
+            except Exception:
+                denied_services[service] = True
     for topic in forbidden:
         try:
             kind = (UInt64 if topic.endswith("heartbeat") else TwistStamped if topic.endswith("cmd_vel")
@@ -45,7 +70,7 @@ def main():
             denied[topic] = False
         except Exception:
             denied[topic] = True
-    if role != "gate":
+    if role not in ("gate", "relay"):
         try:
             ActionClient(node, FollowJointTrajectory, "/joint_trajectory_controller/follow_joint_trajectory")
             denied["arm_action"] = False
@@ -55,11 +80,12 @@ def main():
     while allowed.get_subscription_count() == 0 and time.monotonic() < deadline:
         rclpy.spin_once(node, timeout_sec=0.05)
     result = {"role": role, "denied_writers": denied,
+              "denied_services": denied_services,
               "authorized_writer_matched": allowed.get_subscription_count() > 0}
     print(json.dumps(result))
     node.destroy_node()
     rclpy.try_shutdown()
-    if not all(denied.values()) or not result["authorized_writer_matched"]:
+    if not all(denied.values()) or not all(denied_services.values()) or not result["authorized_writer_matched"]:
         raise SystemExit(1)
 
 

@@ -6,6 +6,7 @@ software contract test, not evidence that a real arm controller stops.
 """
 
 import json
+import argparse
 import inspect
 import os
 from pathlib import Path
@@ -20,12 +21,13 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import TwistStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from run_scenario import fixture, public
+from arm_barrier import rearm_ready
 
 
 class ArmWorld(Node):
@@ -141,7 +143,7 @@ def kill_gate(gate):
     raise AssertionError("orphaned Rust gate did not exit")
 
 
-def main(binary):
+def main(binary, out=None):
     binary = str(Path(binary).resolve())
     shared = Path("/dev/shm")
     with tempfile.TemporaryDirectory(dir=shared if shared.is_dir() and os.access(shared, os.W_OK)
@@ -151,9 +153,14 @@ def main(binary):
         rclpy.init()
         world = ArmWorld()
         server = ReferenceArm(world)
-        executor = MultiThreadedExecutor(num_threads=4)
-        executor.add_node(world)
+        # Keep the trusted 20 Hz observer out of the action server's blocking
+        # execute worker pool. Cancellation still runs alongside execution.
+        world_executor = SingleThreadedExecutor()
+        world_executor.add_node(world)
+        executor = MultiThreadedExecutor(num_threads=2)
         executor.add_node(server)
+        world_thread = threading.Thread(target=world_executor.spin, daemon=True)
+        world_thread.start()
         thread = threading.Thread(target=executor.spin, daemon=True)
         thread.start()
         script = Path(__file__).resolve().parents[1] / "haetae_gate/node.py"
@@ -164,10 +171,10 @@ def main(binary):
                 def arm_source():
                     sent = time.monotonic()
                     world.propose()
-                    until(lambda: world.states and world.states[-1][0] >= sent
-                          and "vla" in world.states[-1][1]["armed"]
-                          and any(t >= sent and "decision" in value
-                                  for t, value in world.outcomes),
+                    # Zero preparation messages and the later motion use the
+                    # same reliable publisher. Wait for a causal fresh stop /
+                    # newer idle state, without a fixed world-expiry-sized gap.
+                    until(lambda: rearm_ready(world.states, world.outcomes, sent),
                           gate, action=lambda: world.propose())
 
                 def settled_after(reset_at):
@@ -241,15 +248,37 @@ def main(binary):
                                   "kill_deadman_ms": round((deadman-killed)*1000, 1),
                                   "last_heartbeat_deadman_ms": round((deadman-heartbeat)*1000, 1)}))
             finally:
+                failure = sys.exc_info()[1]
                 kill_gate(gate)
                 executor.shutdown()
+                world_executor.shutdown()
                 world.destroy_node()
                 server.destroy_node()
                 rclpy.shutdown()
                 thread.join(timeout=2)
+                world_thread.join(timeout=2)
+                if out is not None:
+                    out = Path(out)
+                    out.mkdir(parents=True, exist_ok=True)
+                    # Explicit public allowlist: never export params, private
+                    # fixture credentials, or the temporary directory wholesale.
+                    for name in ("gate.stderr", "sillok.jsonl"):
+                        path = root / name
+                        if path.is_file() and path.stat().st_size <= 32 * 1024 * 1024:
+                            (out / name).write_bytes(path.read_bytes())
+                    (out / "diagnostics.json").write_text(json.dumps({
+                        "ok": failure is None, "error": str(failure) if failure else None,
+                        "source_revision": os.environ.get("HAETAE_REVISION", "unknown"),
+                        "states": world.states[-400:], "outcomes": world.outcomes[-400:],
+                        "accepted": server.accepted, "stops": server.stops,
+                    }, indent=2))
                 if (root / "gate.stderr").stat().st_size:
                     print((root / "gate.stderr").read_text(), file=sys.stderr)
 
 
 if __name__ == "__main__":
-    main(os.path.abspath(sys.argv[1]))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary")
+    parser.add_argument("--out", type=Path)
+    args = parser.parse_args()
+    main(os.path.abspath(args.binary), args.out)

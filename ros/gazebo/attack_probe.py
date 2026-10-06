@@ -50,7 +50,7 @@ def prepare_gazebo_security(root):
     keystore = root / "keystore"
     _checked(["ros2", "security", "create_keystore", str(keystore)])
     policy = REPO / "ros/gazebo/gazebo.policy.xml"
-    for enclave in ("/haetae/sim", "/haetae/world", "/haetae/gate", "/haetae/vla", "/haetae/vla_signer"):
+    for enclave in ("/haetae/sim", "/haetae/world", "/haetae/gate", "/haetae/vla", "/haetae/vla_signer", "/haetae/relay"):
         _checked(["ros2", "security", "create_enclave", str(keystore), enclave])
         _checked(["ros2", "security", "create_permission", str(keystore), enclave,
                   str(policy)])

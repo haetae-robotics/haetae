@@ -26,7 +26,7 @@ class EvidenceBoundaryTest(unittest.TestCase):
             with patch('safe_evidence.os.fstat', side_effect=rotate_then_stat):
                 with self.assertRaises(ValueError):
                     read_evidence(root, source)
-            self.assertEqual(calls, 3)
+            self.assertEqual(calls, 8)
             calls = 0
             def rotate_once(fd):
                 return rotate_then_stat(fd) if calls == 0 else original_stat(fd)

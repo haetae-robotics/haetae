@@ -1,5 +1,6 @@
 // Reference-only position controller. This is not a hardware safety function.
 #include "haetae_arm_guard/lease.hpp"
+#include "haetae_arm_guard/payload.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -8,7 +9,6 @@
 #include <pluginlib/class_list_macros.hpp>
 #include <rclcpp_action/create_server.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <std_msgs/msg/u_int64.hpp>
 
 namespace haetae_arm_guard
 {
@@ -18,13 +18,18 @@ class LeaseTrajectoryController : public joint_trajectory_controller::JointTraje
   using Return = controller_interface::CallbackReturn;
   using Trajectory = trajectory_msgs::msg::JointTrajectory;
   realtime_tools::RealtimeBuffer<Lease> lease_;
+  PermitGuard permit_;
+  std::string active_digest_ = idle_digest, pending_token_;
+  std::string admitted_digest_ = idle_digest;
+  uint64_t pending_goal_sequence_ = 0, admitted_goal_sequence_ = 0;
   std::atomic<uint64_t> last_stamp_{0};
   std::atomic<int64_t> cutoff_ms_{0}, updated_ms_{0};
   std::atomic<int64_t> stop_wall_ns_{0};
   std::atomic<bool> holding_{true};
+  std::atomic<bool> reset_requested_{false};
   bool was_holding_ = true;
   std::vector<double> guard_hold_;
-  rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr heartbeat_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr heartbeat_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guard_state_;
   rclcpp::TimerBase::SharedPtr state_timer_;
 
@@ -36,15 +41,35 @@ class LeaseTrajectoryController : public joint_trajectory_controller::JointTraje
 
   bool alive_nonrt()
   {
-    return fresh(*lease_.readFromNonRT(), get_node()->now().nanoseconds() / 1000000, wall_ns());
+    return permit_.fresh(get_node()->now().nanoseconds(), wall_ns());
   }
 
   bool current_goal(const Trajectory & trajectory)
   {
-    const auto stamp = rclcpp::Time(trajectory.header.stamp).nanoseconds() / 1000000;
-    const auto now = get_node()->now().nanoseconds() / 1000000;
-    return stamp > 0 && stamp >= cutoff_ms_.load() && stamp <= now + 20 &&
-           now - stamp <= 50 && !holding_.load() && alive_nonrt();
+    return current_goal_stamp(rclcpp::Time(trajectory.header.stamp).nanoseconds(),
+      permit_.grant(), cutoff_ms_.load() * 1000000, get_node()->now().nanoseconds()) &&
+      !holding_.load() && alive_nonrt();
+  }
+
+  void publish_guard_state()
+  {
+    if (!guard_state_) {return;}
+        const auto lease = *lease_.readFromNonRT();
+        std_msgs::msg::String msg;
+        msg.data = std::string("{\"holding\":") + (holding_.load() ? "true" : "false") +
+          ",\"stamp_ms\":" + std::to_string(updated_ms_.load()) +
+          ",\"cutoff_ms\":" + std::to_string(cutoff_ms_.load()) + "}";
+        msg.data.pop_back();
+        msg.data += ",\"nonce\":\"" + permit_.nonce() + "\",\"stop_wall_ns\":" + std::to_string(stop_wall_ns_.load()) +
+          ",\"active_digest\":\"" + admitted_digest_ + "\",\"published_wall_ns\":" + std::to_string(wall_ns()) +
+          ",\"goal_sequence\":" + std::to_string(admitted_goal_sequence_) +
+          ",\"accepted\":" + std::to_string(permit_.accepted()) +
+          ",\"rejected\":" + std::to_string(permit_.rejected()) +
+          ",\"rejected_motion\":" + std::to_string(permit_.rejected_motion()) +
+          ",\"reason\":\"" + permit_.reason() + "\"" +
+          ",\"lease_sent_ms\":" + std::to_string(lease.sent_ms) +
+          ",\"lease_received_wall_ns\":" + std::to_string(lease.received_ns) + "}";
+        guard_state_->publish(msg);
   }
 
 public:
@@ -59,12 +84,30 @@ public:
       RCLCPP_ERROR(get_node()->get_logger(), "Guard requires full position/velocity feedback and position commands");
       return Return::ERROR;
     }
-    heartbeat_ = get_node()->create_subscription<std_msgs::msg::UInt64>(
+    get_node()->declare_parameter<std::string>("permit_public_key", "");
+    try {permit_.configure(get_node()->get_parameter("permit_public_key").as_string(), "arm");}
+    catch (const std::exception & e) {RCLCPP_ERROR(get_node()->get_logger(), "%s", e.what()); return Return::ERROR;}
+    heartbeat_ = get_node()->create_subscription<std_msgs::msg::String>(
       "/haetae_gate/heartbeat", rclcpp::QoS(1).best_effort(),
-      [this](std_msgs::msg::UInt64::ConstSharedPtr msg) {
-        if (!admissible(msg->data, last_stamp_.load(), get_node()->now().nanoseconds() / 1000000)) {return;}
-        last_stamp_.store(msg->data);
-        lease_.writeFromNonRT(Lease{msg->data, wall_ns()});
+      [this](std_msgs::msg::String::ConstSharedPtr msg) {
+        const bool reset = msg->data.rfind("v1:arm-reset:", 0) == 0;
+        const bool stop = msg->data.rfind("v1:arm-stop:", 0) == 0;
+        if (permit_.accept(msg->data, reset ? "reset" : stop ? "stop" : "lease",
+          reset || stop ? idle_digest : active_digest_, get_node()->now().nanoseconds(), wall_ns(), reset, stop)) {
+          if (reset || stop) {
+            active_digest_ = idle_digest; admitted_digest_ = idle_digest;
+            pending_goal_sequence_ = 0; admitted_goal_sequence_ = 0;
+            pending_token_.clear(); holding_.store(true);
+            if (reset) {reset_requested_.store(true);}
+          }
+          const auto grant = permit_.grant();
+          lease_.writeFromNonRT(Lease{grant.sim / 1000000, static_cast<int64_t>(grant.wall)});
+          if (reset || stop) {publish_guard_state();}
+        } else {
+          RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
+            "Controller %s rejected: %s %s", reset ? "reset" : stop ? "stop" : "lease",
+            permit_.reason().c_str(), permit_.diagnostic().c_str());
+        }
       });
     // Replace both inherited ingress paths; stale/closed goals never enter the
     // base controller. Recheck acceptance after the asynchronous handshake.
@@ -72,40 +115,77 @@ public:
     action_server_ = rclcpp_action::create_server<FollowJTrajAction>(get_node(),
       "~/follow_joint_trajectory",
       [this](const rclcpp_action::GoalUUID & id, std::shared_ptr<const FollowJTrajAction::Goal> goal) {
-        return current_goal(goal->trajectory) ? Base::goal_received_callback(id, goal) :
-               rclcpp_action::GoalResponse::REJECT;
+        try {
+          // Extra tolerance/multi-DOF fields are unsupported, never unsigned extensions.
+          if (!goal->path_tolerance.empty() || !goal->goal_tolerance.empty() ||
+            !goal->component_path_tolerance.empty() || !goal->component_goal_tolerance.empty() ||
+            goal->goal_time_tolerance.sec != 0 || goal->goal_time_tolerance.nanosec != 0 ||
+            !goal->multi_dof_trajectory.joint_names.empty() || !goal->multi_dof_trajectory.points.empty() ||
+            holding_.load() || !alive_nonrt()) {
+            RCLCPP_WARN(get_node()->get_logger(), "Controller goal shape/lease rejected");
+            permit_.reject(); return rclcpp_action::GoalResponse::REJECT;
+          }
+          auto digest = arm_digest(goal->trajectory);
+          const bool admitted = permit_.accept(goal->trajectory.header.frame_id, "goal", digest,
+            get_node()->now().nanoseconds(), wall_ns());
+          if (!admitted) {
+            RCLCPP_WARN(get_node()->get_logger(), "Controller goal permit rejected: %s %s",
+              permit_.reason().c_str(), permit_.diagnostic().c_str());
+            return rclcpp_action::GoalResponse::REJECT;
+          }
+          if (!current_goal(goal->trajectory)) {
+            const auto grant = permit_.grant();
+            const bool alive = alive_nonrt();
+            RCLCPP_WARN(get_node()->get_logger(),
+              "Controller current goal rejected: issued_sim_ns=%llu now_sim_ns=%lld cutoff_ms=%lld holding=%d alive=%d",
+              static_cast<unsigned long long>(grant.sim),
+              static_cast<long long>(get_node()->now().nanoseconds()),
+              static_cast<long long>(cutoff_ms_.load()), holding_.load() ? 1 : 0, alive ? 1 : 0);
+            permit_.reject();
+            return rclcpp_action::GoalResponse::REJECT;
+          }
+          const auto answer = Base::goal_received_callback(id, goal);
+          if (answer == rclcpp_action::GoalResponse::REJECT) {permit_.reject();}
+          else {
+            active_digest_ = digest; pending_token_ = goal->trajectory.header.frame_id;
+            pending_goal_sequence_ = permit_.grant().seq;
+          }
+          return answer;
+        } catch (const std::exception &) {permit_.reject(); return rclcpp_action::GoalResponse::REJECT;}
       },
       [this](std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowJTrajAction>> goal) {
         return Base::goal_cancelled_callback(goal);
       },
       [this](std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowJTrajAction>> goal) {
-        if (!current_goal(goal->get_goal()->trajectory)) {
+        if (pending_token_ != goal->get_goal()->trajectory.header.frame_id ||
+          !current_goal(goal->get_goal()->trajectory)) {
           auto result_msg = std::make_shared<FollowJTrajAction::Result>();
           result_msg->error_code = FollowJTrajAction::Result::INVALID_GOAL;
           result_msg->error_string = "Gateway lease expired before goal acceptance";
+          permit_.reject();
+          active_digest_ = idle_digest; admitted_digest_ = idle_digest; pending_token_.clear();
+          pending_goal_sequence_ = 0; admitted_goal_sequence_ = 0;
+          holding_.store(true);
           goal->abort(result_msg);
           return;
         }
         Base::goal_accepted_callback(goal);
+        admitted_digest_ = active_digest_;
+        admitted_goal_sequence_ = pending_goal_sequence_;
+        // Publish immediately: first renewal must not wait for a periodic
+        // telemetry tick on top of action/DDS admission latency.
+        publish_guard_state();
       });
     joint_command_subscriber_.reset();
     joint_command_subscriber_ = get_node()->create_subscription<Trajectory>(
-      "~/joint_trajectory", rclcpp::QoS(1), [this](Trajectory::SharedPtr msg) {
-        if (current_goal(*msg)) {Base::topic_callback(msg);}
+      "~/joint_trajectory", rclcpp::QoS(1), [this](Trajectory::SharedPtr) {
+        // This reference exposes the fully checked action path only.
+        permit_.reject();
       });
     guard_state_ = get_node()->create_publisher<std_msgs::msg::String>(
       "~/guard_state", rclcpp::QoS(1).transient_local());
     state_timer_ = get_node()->create_wall_timer(std::chrono::milliseconds(50), [this]() {
-        const auto lease = *lease_.readFromNonRT();
-        std_msgs::msg::String msg;
-        msg.data = std::string("{\"holding\":") + (holding_.load() ? "true" : "false") +
-          ",\"stamp_ms\":" + std::to_string(updated_ms_.load()) +
-          ",\"cutoff_ms\":" + std::to_string(cutoff_ms_.load()) + "}";
-        msg.data.pop_back();
-        msg.data += ",\"stop_wall_ns\":" + std::to_string(stop_wall_ns_.load()) +
-          ",\"lease_sent_ms\":" + std::to_string(lease.sent_ms) +
-          ",\"lease_received_wall_ns\":" + std::to_string(lease.received_ns) + "}";
-        guard_state_->publish(msg);
+        publish_guard_state();
       });
     return Return::SUCCESS;
   }
@@ -115,6 +195,11 @@ public:
     auto result = Base::on_activate(state);
     if (result == Return::SUCCESS) {
       lease_.initRT(Lease{});
+      permit_.activate();
+      active_digest_ = idle_digest;
+      admitted_digest_ = idle_digest;
+      pending_goal_sequence_ = 0; admitted_goal_sequence_ = 0;
+      pending_token_.clear();
       last_stamp_.store(0);
       cutoff_ms_.store(get_node()->now().nanoseconds() / 1000000);
       holding_.store(true);
@@ -132,7 +217,20 @@ public:
     read_state_from_state_interfaces(state_current_);
     const bool feedback_ok = std::all_of(state_current_.positions.begin(),
       state_current_.positions.end(), [](double value) {return std::isfinite(value);});
-    const bool allowed = feedback_ok && fresh(*lease_.readFromRT(), stamp, wall_ns());
+    const bool allowed = feedback_ok && permit_.fresh(time.nanoseconds(), wall_ns());
+    if (reset_requested_.exchange(false)) {
+      const auto goal = *rt_active_goal_.readFromRT();
+      if (goal) {
+        auto result = std::make_shared<FollowJTrajAction::Result>();
+        result->error_code = FollowJTrajAction::Result::PATH_TOLERANCE_VIOLATED;
+        goal->setAborted(result);
+        rt_active_goal_.writeFromNonRT(RealtimeGoalHandlePtr());
+      }
+      rt_has_pending_goal_ = false;
+      current_trajectory_->update(set_hold_position());
+      was_holding_ = true;
+      cutoff_ms_.store(stamp);
+    }
     if (allowed) {
       if (was_holding_) {
         // Ingress remains closed until recovery has discarded queued work.

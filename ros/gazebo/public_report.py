@@ -19,6 +19,47 @@ def within(value, maximum):
     return value is not None and value <= maximum
 
 
+def replay_admitted_then_rejected(value):
+    """A rejected first copy or a stale report is not replay evidence."""
+    row = mapping(value)
+    fields = ("accepted_before", "accepted_after_first", "accepted_after_replay",
+              "rejected_before", "rejected_after_first", "rejected_after_replay",
+              "first_sent_wall_ns", "first_admission_published_wall_ns",
+              "replay_sent_wall_ns", "rejection_published_wall_ns")
+    if any(type(row.get(key)) is not int or not 0 <= row[key] < 2**63 for key in fields):
+        return False
+    digest = row.get("first_packet_sha256")
+    return (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+            and digest == row.get("replay_packet_sha256")
+            and row.get("first_admission_reason") == "accepted"
+            and row.get("replay_rejection_reason") == "sequence"
+            and row["accepted_after_first"] == row["accepted_before"] + 1
+            and row["accepted_after_replay"] == row["accepted_after_first"]
+            and row["rejected_after_first"] == row["rejected_before"]
+            and row["rejected_after_replay"] > row["rejected_after_first"]
+            and row["first_sent_wall_ns"] <= row["first_admission_published_wall_ns"]
+            <= row["replay_sent_wall_ns"] <= row["rejection_published_wall_ns"])
+
+
+def negative_permit_rejected(value, case):
+    """An expired reset or generic lock is not a policy-specific rejection."""
+    row = mapping(value)
+    fields = ("accepted_before", "accepted_after", "rejected_before", "rejected_after",
+              "before_published_wall_ns", "sent_wall_ns", "rejection_published_wall_ns", "lease_wall_end_ns")
+    if any(type(row.get(key)) is not int or not 0 <= row[key] < 2**63 for key in fields):
+        return False
+    nonce = row.get("nonce_before")
+    return (isinstance(nonce, str) and re.fullmatch(r"[0-9a-f]{32}", nonce) is not None
+            and nonce == row.get("nonce_after") and row.get("holding_before") is False
+            and row.get("reason_before") == "accepted"
+            and row.get("rejection_reason") == {"unsigned": "binding", "altered": "binding",
+                "signature": "signature", "replay": "sequence", "delay": "freshness", "target": "binding"}.get(case)
+            and row["accepted_after"] == row["accepted_before"]
+            and row["rejected_after"] == row["rejected_before"] + 1
+            and 0 <= row["sent_wall_ns"] - row["before_published_wall_ns"] < 50_000_000
+            and row["sent_wall_ns"] <= row["rejection_published_wall_ns"] < row["lease_wall_end_ns"])
+
+
 def report(result=None, revision="unknown", run_id="unknown", failed=False):
     if mapping(result).get("profile") == "household_hazards":
         return household_report(result,revision,run_id,failed)
@@ -51,7 +92,7 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
               all(mapping(principals.get(uid)).get(flag) is True for flag in flags) and
               all(mapping(mapping(principals.get(uid)).get("denied")).get(kind) is True
                   for kind in ("tcp", "unix", "ipv6", "packet"))
-              for uid in ("2001", "2002", "2003", "2004", "65534")))
+              for uid in ("2001", "2002", "2003", "2004", "2005", "65534")))
     attacks = mapping(result.get("attack_probes"))
     for name, title in (("direct", "ROS 바퀴 직접 명령 차단"), ("world", "ROS 사람 정보 위조 차단"),
                         ("replay", "명령 재전송 거부 · 별도 실행기"), ("signature", "서명 변조 거부 · 별도 실행기")):
@@ -86,6 +127,43 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
     check("base_deadman", "게이트 종료 뒤 측정된 바퀴 정지", "gate_kill_to_base_stop_wall_ms" in result,
           within(result.get("gate_kill_to_base_stop_wall_ms"), 3000),
           {"stopped_observation_wall_ms": result.get("gate_kill_to_base_stop_wall_ms")})
+    permits = mapping(result.get("controller_permits"))
+    permit_checks = mapping(permits.get("checks"))
+    boundaries = mapping(permits.get("relay_boundaries"))
+    signer_denied = mapping(boundaries.get("signer_credentials_unreadable"))
+    services_denied = mapping(boundaries.get("denied_services"))
+    expected = {"base_positive", "arm_positive", "base_expiry", "arm_expiry"} | {
+        target + "_" + case for target in ("base", "arm")
+        for case in ("unsigned", "altered", "signature", "replay", "delay", "target")}
+    check("controller_permits", "바퀴·팔 제어기의 동작별 허가 검사 · 침해된 전달자 계정", bool(permits),
+          permits.get("ok") is True and permits.get("attacker_uid") == 2005 and
+          permits.get("scope") == "gazebo_exact_action_permits_with_compromised_relay_uid" and
+          all(signer_denied.get(name) is True for name in
+              ("controller.key", "log.key", "keystore/enclaves/haetae/gate/key.pem")) and
+          all(services_denied.get(name) is True for name in
+              ("/controller_manager/switch_controller", "/controller_manager/load_controller",
+               "/controller_manager/unload_controller", "/controller_manager/configure_controller",
+               "/controller_manager/cleanup_controller", "/controller_manager/reload_controller_libraries",
+               "/diff_drive_base_controller/set_parameters", "/joint_trajectory_controller/set_parameters",
+               "/diff_drive_base_controller/set_parameters_atomically",
+               "/joint_trajectory_controller/set_parameters_atomically")) and
+          set(permit_checks) == expected and all(mapping(row).get("ok") is True for row in permit_checks.values()) and
+          (number(mapping(permit_checks.get("base_positive")).get("moved_m")) or 0) > .03 and
+          (number(mapping(permit_checks.get("arm_positive")).get("moved_rad")) or 0) > .08 and
+          all(mapping(permit_checks.get(target + "_expiry")).get("old_goal_did_not_resume") is True and
+              mapping(permit_checks.get(target + "_expiry")).get("expiry_hold_observed") is True and
+              within(mapping(permit_checks.get(target + "_expiry")).get("expiry_drift"), .02)
+              for target in ("base", "arm")) and
+          all(mapping(permit_checks.get(target + "_" + case)).get("controller_rejection_observed") is True and
+              negative_permit_rejected(mapping(permit_checks.get(target + "_" + case)).get("negative_admission"), case) and
+              mapping(permit_checks.get(target + "_" + case)).get("recovery_did_not_rearm") is True and
+              mapping(permit_checks.get(target + "_" + case)).get("recovery_rejection_observed") is True and
+              within(mapping(permit_checks.get(target + "_" + case)).get("recovery_drift"), .02) and
+              within(mapping(permit_checks.get(target + "_" + case)).get("drift"), .02)
+              for target in ("base", "arm") for case in ("unsigned", "altered", "signature", "replay", "delay", "target")) and
+          all(replay_admitted_then_rejected(mapping(permit_checks.get(target + "_replay")).get("replay_admission"))
+              for target in ("base", "arm")),
+          {"checks": len(permit_checks)})
     status = ("failed" if failed or (result and result.get("ok") is not True) or
               any(row["status"] == "failed" for row in checks) else
               "passed" if all(row["status"] == "passed" for row in checks) else "incomplete" if completed else "pending")
@@ -93,7 +171,7 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
             "source_revision": revision if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision) else "unknown",
             "run_id": run_id if isinstance(run_id, str) and re.fullmatch(r"[a-z0-9_-]{1,64}", run_id) else "unknown",
             "notice": "시뮬레이터 평가용 알파입니다. 실물 로봇의 침해 방지·안전 인증을 입증하지 않습니다.",
-            "trust": "신뢰된 root·호스트·시뮬레이터·인지 입력·컨트롤러와 게이트의 정당한 제어 권한은 보호 범위 밖입니다.",
+            "trust": "root·호스트·시뮬레이터·인지 입력·컨트롤러·승인 서비스는 신뢰합니다. 중간 전달자 계정의 명령 변조는 별도로 시험합니다.",
             "evidence": "이 리포트는 로컬 실행의 서명되지 않은 요약입니다. 원본 로그와 CI 증거는 별도로 확인하세요.",
             "checks": checks}
 
@@ -169,7 +247,7 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
     return {"schema_version":1,"scope":"household_hazard_mandatory_gate_simulation","status":"failed" if failed or result.get("ok") is not True or any(row["status"]=="failed" for row in checks) else "passed" if passed else "incomplete",
             "source_revision":revision if isinstance(revision,str) and re.fullmatch(r"[a-f0-9]{40}",revision) else "unknown",
             "run_id":run_id if isinstance(run_id,str) and re.fullmatch(r"[a-z0-9_-]{1,64}",run_id) else "unknown","checks":checks,
-            "notice":"중앙 Rust 게이트의 필수 생활 위험 검사 실험입니다. 최종 제어기 승인 검증·실물 보호·인지·파지·화학 반응·사람 밀기 방지는 미검증입니다.",
+            "notice":"중앙 Rust 게이트의 필수 생활 위험 검사 실험입니다. 가상 팔 제어기는 동작별 허가를 검사합니다. 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 미검증입니다.",
             "trust":"root 소유 시험 어댑터와 주입된 물체·기기 상태를 신뢰합니다. 좌표와 관절은 Gazebo 측정입니다.",
             "evidence":"서명되지 않은 로컬 요약입니다. 기존 침투 방어·독립 정지 시험은 이 프로필에서 통과로 집계하지 않습니다."}
 

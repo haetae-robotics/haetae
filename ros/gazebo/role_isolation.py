@@ -17,8 +17,8 @@ from safe_evidence import read_evidence, write_checkpoint
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-UIDS = {"gate": 2001, "world": 2002, "vla": 2003, "proposal": 2004}
-ENCLAVES = {"gate": "gate", "world": "world", "vla": "vla_signer", "proposal": "vla"}
+UIDS = {"gate": 2001, "world": 2002, "vla": 2003, "proposal": 2004, "relay": 2005}
+ENCLAVES = {"gate": "gate", "world": "world", "vla": "vla_signer", "proposal": "vla", "relay": "relay"}
 
 
 def fresh_fixture(root):
@@ -72,7 +72,7 @@ class Roles:
             (directory / "logs").mkdir()
             (directory / "runtime").mkdir()
             shutil.copy2(root / "trust.json", directory / "trust.json")
-            key_roles = ("world", "fault") if role == "world" else ("vla",) if role == "vla" else ("log",) if role == "gate" else ()
+            key_roles = ("world", "fault") if role == "world" else ("vla",) if role == "vla" else ("log", "controller") if role == "gate" else ()
             for key in key_roles:
                 shutil.copy2(root / (key + ".key"), directory / (key + ".key"))
             private_tree(directory, uid)
@@ -80,7 +80,7 @@ class Roles:
             os.chown(directory, 0, 0)
             directory.chmod(0o711)
         self.configure_gate(root)
-        for key in ("world", "fault", "vla", "log"):
+        for key in ("world", "fault", "vla", "log", "controller"):
             (root / (key + ".key")).unlink()
 
     def environment(self, role, base):
@@ -106,7 +106,9 @@ class Roles:
                   "trust_path": str(directory / "trust.json"),
                   "key_path": str(directory / "log.key"),
                   "sillok_path": str(directory / "sillok.jsonl"),
-                  "use_sim_time": True, "heartbeat_topic": "/haetae_gate/heartbeat"})
+                  "use_sim_time": True, "heartbeat_topic": "/haetae_authorized/heartbeat",
+                  "arm_action": "/haetae_gateway/follow_joint_trajectory",
+                  "controller_key_path": str(self.directories["gate"] / "controller.key")})
         (directory / "params.yaml").write_text(json.dumps(params))
         private_tree(directory, UIDS["gate"])
         return directory
@@ -146,7 +148,7 @@ class Roles:
         forbidden = [str(self.directories["world"] / key) for key in (
             "world.key", "fault.key", "keystore/enclaves/haetae/world/key.pem")]
         result = {}
-        for role in ("gate", "vla", "proposal"):
+        for role in ("gate", "vla", "proposal", "relay"):
             code = "import json,sys; denied=[]\nfor p in sys.argv[1:]:\n try: open(p,'rb').read(); denied.append(False)\n except PermissionError: denied.append(True)\nprint(json.dumps(denied))"
             probe = subprocess.run([sys.executable, "-c", code, *forbidden], user=UIDS[role],
                                    group=UIDS[role], extra_groups=[], capture_output=True, text=True,
@@ -166,6 +168,13 @@ class Roles:
                 raise AssertionError(role + " could read another principal's private credentials")
             result[role] = {"uid": UIDS[role], "perception_credentials_unreadable": denied,
                             "other_principal_credentials_unreadable": cross_denied}
+            if role == "relay":
+                # These reads are already included in the cross-principal
+                # probe. Name the signing credentials explicitly in evidence.
+                signer_paths = {name: str(self.directories["gate"] / name) for name in
+                                ("controller.key", "log.key", "keystore/enclaves/haetae/gate/key.pem")}
+                result[role]["signer_credentials_unreadable"] = {
+                    name: cross_denied[other_keys.index(path)] for name, path in signer_paths.items()}
         return result
 
     def probe_graph_boundaries(self, base):

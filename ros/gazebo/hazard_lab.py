@@ -358,6 +358,33 @@ def ordinary_completion(state):
     )
 
 
+def setup_reset_ready(world, sim_ms, wall):
+    """Fresh measured idle baseline for the one-shot household fixture setup."""
+    if (not world.states or world.joint is None or not world.sensor_info.get("healthy")
+            or not 0 <= wall - world.states[-1][0] < 0.1
+            or not 0 <= wall - world.odom_received < 0.1
+            or not 0 <= wall - world.joint_received < 0.1):
+        return False
+    state, semantic = world.states[-1][1], world.semantic_last
+    if (state.get("mode") != "normal" or state.get("recorder_ok") is not True
+            or state.get("state_ok") is not True or state.get("active") is not None
+            or state.get("arm_cancelling") or not state.get("arm_controller_ready")
+            or type(state.get("world_age_ms")) not in (int, float)
+            or not 0 <= state["world_age_ms"] < 75
+            or not semantic or semantic.get("coverage_known") is not True
+            or semantic.get("confidence") != 1
+            or not 0 <= sim_ms - semantic["observed_ms"] < 75
+            or state.get("semantic_revision") != semantic["revision"]
+            or state.get("semantic_task_revision") != semantic["task_revision"]):
+        return False
+    velocities = dict(zip(world.joint.name, world.joint.velocity))
+    speed = world.speed()
+    return (math.isfinite(speed) and abs(speed) < 0.03
+            and all(name in velocities and math.isfinite(velocities[name])
+                    and abs(velocities[name]) < 0.03
+                    for name in ("joint1", "joint2", "joint3", "joint4")))
+
+
 def accepted_plan_matches(points, action):
     rows = action.get("points", [])
     return (
@@ -464,6 +491,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                         "task_revision": 0, "facts": None, "task_id": None,
                         "base_pose": None, "base_yaw": None}
     verified_denial: dict[str, Optional[float]] = {"at": None}
+    arm_dispatch = {"sent": False, "initialized": False}
     policy_binding = kinematics.household_policy(urdf)
     world.hazard_guard = lambda: not motion_guard["active"] or healthy()
 
@@ -681,6 +709,29 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                   "model_sha256", "tool_id", "item_id")
         return {**{key: snapshot[key] for key in fields}, "world_revision": snapshot["revision"]}
 
+    def initialize_for_test(item, contents):
+        # Explicit fixture-maintenance reset before the first arm proposal.
+        # It cannot recover a failed dispatched motion or a tested denial.
+        if arm_dispatch["sent"] or arm_dispatch["initialized"] or verified_denial["at"] is not None:
+            raise RuntimeError("household setup reset is only available before the first arm proposal")
+        arm_dispatch["initialized"] = True
+        current_binding(item, contents)
+        wait_for(lambda: setup_reset_ready(world, now(), time.monotonic()),
+                 3, processes, "fresh measured idle household setup baseline")
+        reset_at = time.monotonic()
+
+        def explicit_stop():
+            if setup_reset_ready(world, now(), time.monotonic()):
+                world.propose_base(0.0)
+
+        wait_for(lambda: setup_reset_ready(world, now(), time.monotonic())
+                 and "vla" in world.states[-1][1].get("armed", [])
+                 and world.controllers_unlocked()
+                 and sum(t >= reset_at and row.get("decision", {}).get("verdict") == "yun"
+                         and row.get("decision", {}).get("action", {}).get("type") == "stop"
+                         for t, row in world.outcomes) >= 2,
+                 3, processes, "one-shot explicit household setup reset", action=explicit_stop)
+
     def rearm_for_test():
         def ready_for_explicit_test_rearm():
             if not world.states:
@@ -698,6 +749,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                  "completed motion or verified expected rejection before explicit test rearm")
         rearm_at = time.monotonic()
         wait_for(lambda: world.states and "vla" in world.states[-1][1].get("armed", [])
+                 and world.controllers_unlocked()
                  and sum(t >= rearm_at and row.get("decision", {}).get("verdict") == "yun"
                          and row.get("decision", {}).get("action", {}).get("type") == "stop"
                          for t, row in world.outcomes) >= 2,
@@ -717,6 +769,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             binding = binding_override(binding) if callable(binding_override) else binding_override
         before = world.arm_positions()
         submitted_at = time.monotonic()
+        arm_dispatch["sent"] = True
         world.propose_arm_plan(points, semantic=binding)
 
         def rejection():
@@ -743,29 +796,42 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         # test explicitly requests a new lease only after ordinary completion;
         # a stale/denied/revoked/faulted gate is never automatically rearmed.
         rearm_for_test()
-        binding = current_binding(item, contents)
-        # Local preflight is diagnostic only. The signed policy also requires
-        # Rust to derive/check the exact trajectory at central execution.
-        checked = request(item, points, contents)
-        base, yaw = world.pose(), world.heading()
-        target = native.sample(f"hazard_{active['case']}_target")[0]
-        started_wall = time.monotonic()
-        verdict = judge_engine.decide(checked)
-        if not verdict["allowed"]:
-            raise AssertionError("positive control rejected: " + verdict["reason"])
-        if max(abs(a - b) for a, b in zip(points[0][1], world.arm_positions())) > 0.01:
-            raise AssertionError("joint plan changed before dispatch")
-        after = native.sample(f"hazard_{active['case']}_target")
-        if (
-            time.monotonic() - started_wall > 0.05
-            or not fresh_sample(after, now(), time.monotonic())
-            or now() - checked["observed_ms"] > 200
-            or not stationary(base, world.pose(), yaw, world.heading(), world.speed())
-            or math.dist(after[0].values(), target.values()) > 0.002
-        ):
-            raise RuntimeError(
-                "hazard verdict expired or scene changed before dispatch"
-            )
+        # A stale local preflight is discarded before any actuator proposal.
+        # Reacquire its observations/binding/verdict, boundedly, while the
+        # already explicit rearm remains valid. Never retry a dispatched goal
+        # or automatically rearm a denied/expired owner.
+        preflight = []
+        for attempt in range(3):
+            state = world.states[-1][1] if world.states else {}
+            if (state.get("mode") != "normal" or "vla" not in state.get("armed", [])
+                    or state.get("active") is not None or state.get("arm_cancelling")
+                    or not world.controllers_unlocked()):
+                raise RuntimeError("household preflight lost explicit arm authority")
+            binding = current_binding(item, contents)
+            checked = request(item, points, contents)
+            base, yaw = world.pose(), world.heading()
+            target = native.sample(f"hazard_{active['case']}_target")[0]
+            started_wall = time.monotonic()
+            verdict = judge_engine.decide(checked)
+            if not verdict["allowed"]:
+                raise AssertionError("positive control rejected: " + verdict["reason"])
+            after = native.sample(f"hazard_{active['case']}_target")
+            if (max(abs(a-b) for a,b in zip(points[0][1], world.arm_positions())) > 0.01
+                    or not stationary(base, world.pose(), yaw, world.heading(), world.speed())
+                    or after is None or math.dist(after[0].values(), target.values()) > 0.002):
+                raise RuntimeError("household scene changed before dispatch")
+            observed_wall = time.monotonic()
+            stale = (observed_wall-started_wall > 0.05
+                     or not fresh_sample(after, now(), observed_wall)
+                     or now()-checked["observed_ms"] > 200)
+            preflight.append({"attempt": attempt+1, "stale": stale,
+                              "judge_wall_ms": (observed_wall-started_wall)*1000,
+                              "observation_age_sim_ms": now()-checked["observed_ms"]})
+            if not stale:
+                break
+            (root / "hazard-preflight.json").write_text(json.dumps(preflight, indent=2))
+        else:
+            raise RuntimeError("household preflight freshness unavailable after three fresh checks")
         before = world.primary_joint()
         accepted_after = time.monotonic()
         motion_guard.update(active=True, base=base, yaw=yaw, target=target)
@@ -780,7 +846,10 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         )
         if time.monotonic() - started_wall > 0.05:
             raise RuntimeError("hazard dispatch preparation exceeded 50 ms")
+        rejected_before = world.guard_states[-1][1]["rejected_motion"]
+        arm_dispatch["sent"] = True
         world.propose_arm_plan(points, semantic=binding)
+        (root / "hazard-preflight.json").write_text(json.dumps(preflight, indent=2))
         goal = points[-1][1][0]
         wait_for(
             lambda: abs(world.primary_joint() - goal) < 0.02
@@ -808,6 +877,12 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             processes,
             "signed arm gate finishes cancellation and settling",
         )
+        completed_wall = time.monotonic_ns()
+        wait_for(lambda: world.guard_states and
+                 world.guard_states[-1][1].get("published_wall_ns", 0) >= completed_wall + 120_000_000,
+                 2, processes, "fresh controller telemetry after normal completion")
+        if world.guard_states[-1][1]["rejected_motion"] != rejected_before:
+            raise AssertionError("normal arm completion triggered a motion permit rejection")
         if not healthy():
             raise AssertionError("hazard scene changed during execution")
         motion_guard["active"] = False
@@ -873,7 +948,10 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 processes,
                 "parked native hazard fixtures",
             )
-            if abs(world.primary_joint()) > 0.1:
+            initial_joint = world.primary_joint()
+            if index == 1 and (not math.isfinite(initial_joint) or abs(initial_joint) > 0.1):
+                raise RuntimeError("household fixture profile requires initial joint1 within 0.1 rad")
+            if abs(initial_joint) > 0.1:
                 world.marker(
                     "다음 장면 준비",
                     detail="위험 표적을 치운 뒤 팔을 시작 위치로 돌립니다.",
@@ -956,6 +1034,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             verdict = judge_engine.decide(checked)
             if verdict["allowed"] or verdict["reason"] != expected:
                 raise AssertionError(f"{case}: expected {expected}, got {verdict}")
+            if index == 1 and not arm_dispatch["sent"]:
+                initialize_for_test(item, contents)
             gate_denial = reject_at_gate(dangerous, item, contents, "household:" + expected)
             drift = gate_denial["denied_drift_rad"]
             world._emit(
@@ -1077,6 +1157,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             json.dumps(
                 {
                     "case": active["case"],
+                    "recent_controller_states": [state for _, state in world.guard_states[-100:]],
                     "failure_hold_observed": hold_observed,
                     "sim_ms": now(),
                     "sensor": {

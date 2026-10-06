@@ -39,10 +39,15 @@ def run(binary, port, scenario, seconds, ready_file=None):
         started = time.monotonic()
         ready = False
         fault_shown = False
+        last_run_at = None
         while time.monotonic() - started < seconds + 1:
             # Polling does not renew output/arming. Acquire the challenge just
             # before the fresh gate round-trip rather than before inter-cycle sleep.
             if link.exchange("STATUS") not in ("ARMED", "ON"):
+                print(json.dumps({"event": "device_lease_expired", "status": "LOCKED",
+                                  "host_gap_ms": ((time.monotonic() - last_run_at) * 1000
+                                                  if last_run_at is not None else None),
+                                  "automatic_rearm": False}), flush=True)
                 raise LinkError("device lease locked; explicit new run required")
             fault = scenario if scenario != "allow" and time.monotonic() - started >= seconds else None
             if fault and not fault_shown:
@@ -55,7 +60,9 @@ def run(binary, port, scenario, seconds, ready_file=None):
                 link.exchange("STOP")
                 print("차단: LED OFF, 재시작은 새 run 명령으로만 가능합니다.", flush=True)
                 return
+            run_at = time.monotonic()
             link.exchange("RUN", timeout=gate.remaining())
+            last_run_at = run_at
             gate.remaining()  # A late ACK is an error, never a successful fresh run.
             if not ready:
                 ready = True

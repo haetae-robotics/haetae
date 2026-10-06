@@ -89,7 +89,7 @@ def probe_transport(world, guard, processes, wait_for):
             sender.sendto(b"root", denied.getsockname())
         if denied.recv(100) != b"root":
             raise AssertionError("root network positive control failed")
-        for uid in (2001, 2002, 2003, 2004, 65534):
+        for uid in (2001, 2002, 2003, 2004, 2005, 65534):
             basic = _child("sockets", (allowed.getsockname()[1], denied.getsockname()[1]), uid)
             if basic.returncode:
                 raise AssertionError("sandbox probe failed: " + basic.stderr[-1000:])

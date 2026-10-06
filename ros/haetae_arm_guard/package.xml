@@ -8,5 +8,6 @@
   <depend>controller_interface</depend><depend>joint_trajectory_controller</depend>
   <depend>pluginlib</depend><depend>rclcpp</depend><depend>rclcpp_action</depend>
   <depend>std_msgs</depend><depend>trajectory_msgs</depend>
+  <depend>diff_drive_controller</depend><depend>geometry_msgs</depend><depend>openssl</depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>

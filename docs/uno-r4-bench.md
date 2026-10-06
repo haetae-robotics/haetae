@@ -93,3 +93,19 @@ HELLO/ARM/RUN을 만들 수 있고 재부팅 전후 전체 transcript 재전송�
 모터 드라이버의 독립 enable 차단을 설계한다. 이 bench 통과는 실물 침투 방어,
 모터 정지, 안전 인증의 통과가 아니다.
 [통신 규약](uno-r4-protocol.md)과 [보호용 공개 조건](security-release.md)을 참고한다.
+## Software runner scheduling loss
+
+The board-free bench records a sustained allow run separately from measured
+`host-scheduling-loss`. A non-real-time host can miss the independent 200ms
+device lease. That path passes only the fail-closed property: prior measured ON,
+lease OFF within the 200..300ms process observation band, a LOCKED status and
+host gap of at least 200ms, failing host exit, and no subsequent ON/rearm.
+It is not a normal availability success or a physical timing qualification.
+The aggregate report sets `availability_degraded: true` whenever a case has
+this classification, even when its fail-closed checks pass.
+The Rust-kill case requires an observed `stop` event; a lease timeout cannot
+pass that STOP-delivery check. The signed-controller socket uses bounded bulk
+reads and complete writes against each frame's original monotonic deadline.
+Failures retain the last four request/gate/sign/response stage timestamps.
+Its operational request/acknowledgment
+budget remains 50 ms; a socket timeout still fails the named scenario.

@@ -25,6 +25,7 @@
             <topic>/joint_state_broadcaster/transition_event</topic>
             <topic>/diff_drive_base_controller/transition_event</topic>
             <topic>/diagnostics</topic>
+            <topic>/diff_drive_base_controller/guard_state</topic>
           </topics>
           <topics subscribe="ALLOW">
             <topic>/clock</topic>
@@ -84,6 +85,7 @@
             <topic>/haetae_input/world</topic>
             <topic>/haetae_input/fault</topic>
             <topic>/joint_trajectory_controller/guard_state</topic>
+            <topic>/diff_drive_base_controller/guard_state</topic>
             <topic>/ros_discovery_info</topic>
             <topic>/parameter_events</topic>
           </topics>
@@ -106,8 +108,8 @@
       <profiles>
         <profile ns="/" node="*">
           <topics publish="ALLOW">
-            <topic>/diff_drive_base_controller/cmd_vel</topic>
-            <topic>/haetae_gate/heartbeat</topic>
+            <topic>/haetae_authorized/cmd_vel</topic>
+            <topic>/haetae_authorized/heartbeat</topic>
             <topic>/haetae_gate/state</topic>
             <topic>/haetae_gate/outcome</topic>
             <topic>/haetae_gate/decision</topic>
@@ -122,6 +124,8 @@
             <topic>/haetae_gate/signed/vla</topic>
             <topic>/ros_discovery_info</topic>
             <topic>/parameter_events</topic>
+            <topic>/diff_drive_base_controller/guard_state</topic>
+            <topic>/joint_trajectory_controller/guard_state</topic>
           </topics>
           <services reply="ALLOW">
             <service>~/describe_parameters</service>
@@ -136,7 +140,7 @@
             <service>~/set_logger_levels</service>
           </services>
           <actions call="ALLOW">
-            <action>/joint_trajectory_controller/follow_joint_trajectory</action>
+            <action>/haetae_gateway/follow_joint_trajectory</action>
           </actions>
         </profile>
       </profiles>
@@ -198,6 +202,41 @@
             <service>~/query_state</service>
             <service>~/get_logger_levels</service>
             <service>~/set_logger_levels</service>
+          </services>
+        </profile>
+      </profiles>
+    </enclave>
+    <enclave path="/haetae/relay">
+      <profiles>
+        <profile ns="/" node="*">
+          <topics publish="ALLOW">
+            <topic>/diff_drive_base_controller/cmd_vel</topic>
+            <topic>/haetae_gate/heartbeat</topic>
+            <topic>/rosout</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>/clock</topic>
+            <topic>/haetae_authorized/cmd_vel</topic>
+            <topic>/haetae_authorized/heartbeat</topic>
+            <topic>/ros_discovery_info</topic>
+            <topic>/parameter_events</topic>
+          </topics>
+          <actions call="ALLOW">
+            <action>/joint_trajectory_controller/follow_joint_trajectory</action>
+          </actions>
+          <actions execute="ALLOW">
+            <action>/haetae_gateway/follow_joint_trajectory</action>
+          </actions>
+          <services reply="ALLOW">
+            <service>~/describe_parameters</service>
+            <service>~/get_parameter_types</service>
+            <service>~/get_parameters</service>
+            <service>~/list_parameters</service>
+            <service>~/set_parameters</service>
+            <service>~/set_parameters_atomically</service>
+            <service>~/get_type_description</service>
           </services>
         </profile>
       </profiles>

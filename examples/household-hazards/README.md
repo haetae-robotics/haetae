@@ -30,12 +30,14 @@ In this profile only, the trusted VLA signer is configured with a fixed
 1000 ms arm lease. Each trajectory finishes at 900 ms, leaving time for the
 action result before lease expiry; ramp motion ends at 800 ms. The legacy
 signer still derives the lease from the final waypoint. Core limits and the
-independent 250 ms controller watchdog remain unchanged.
+core tracking limits remain unchanged. The separate M3 controller permit lease is
+at most 200 ms, bounded by original world/proposal validity.
 
 ## Trust and execution
 
 The root provisioner, ROS/Gazebo observation, semantic fixture labels, Rust
-enforcer, signed gateway and controller are trusted. The household profile
+enforcer/permit authorizer and controller are trusted. A separate relay has no
+permit key and cannot change the approved motion. The household profile
 pins mandatory checks in the root-signed policy. Every non-stop action must
 carry matching semantic references and pass the central Rust check; nonzero
 base commands and unsupported operations are denied in this stationary-arm
@@ -67,19 +69,19 @@ must produce the matching accepted motion. The adapter explicitly sends a
 new signed zero for each fixed test after measured completion or a verified
 expected rejection; sensor/fault recovery alone cannot rearm movement.
 
-The current controller does not verify a Rust authorization proof. A
-compromised gateway, host, trusted perception or controller remains outside
-this M1 protection claim. Independent controller permit checking, persistent
-effect history, whole-arm geometry and physical qualification remain later
-milestones. This is not a production robot safety function.
+The [M3 Gazebo controllers](../../docs/gazebo-controller-permits.md) verify
+exact-action permits from the isolated Rust owner. Host, trusted perception,
+authorizer and controller remain trusted. Persistent effect history, whole-arm
+geometry and physical qualification remain later milestones. This is not a
+production robot safety function.
 
 Both simulation and wall-clock observation freshness are required. Odometry,
 joint and target observations contribute their original stamps. Immediately
 after judging, the adapter checks a 50 ms dispatch budget, 200 ms original
 observation age, unchanged target/base pose and measured joint start. During
 allowed motion, target/base observation failure stops refreshing the existing
-world stream; its original 200 ms expiry and independent 250 ms controller
-lease remain in force. This is fixture-pose/base monitoring. Rust rechecks
+world stream; its original 200 ms expiry and independent, at most 200 ms controller
+permit lease remain in force. This is fixture-pose/base monitoring. Rust rechecks
 fresh trusted semantic facts against the remaining path and cancels unsafe
 motion, but the lab does not continuously infer evolving material/device
 state from sensors.

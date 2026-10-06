@@ -14,6 +14,7 @@ from hazard_lab import (
     stationary,
     plan,
     ordinary_completion,
+    setup_reset_ready,
     accepted_plan_matches,
     expected_positions,
     tracking_start_ms,
@@ -22,6 +23,86 @@ from public_report import report, failed_household_result
 
 
 class WorldPublicationTest(unittest.TestCase):
+    def test_first_fixture_cannot_dispatch_repositioning_before_setup(self):
+        tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
+        check = next(n for n in ast.walk(tree) if isinstance(n, ast.If)
+                     and any(isinstance(child, ast.Constant) and child.value ==
+                             "household fixture profile requires initial joint1 within 0.1 rad"
+                             for child in ast.walk(n)))
+        code = compile(ast.Module(body=[check], type_ignores=[]), "actual-initial-posture-gate", "exec")
+        for joint in (0., .1, -.1):
+            exec(code, {"index": 1, "initial_joint": joint, "math": math})
+        for joint in (.10001, -.10001, float("nan"), float("inf")):
+            with self.assertRaises(RuntimeError):
+                exec(code, {"index": 1, "initial_joint": joint, "math": math})
+        exec(code, {"index": 2, "initial_joint": .2, "math": math})
+
+    def setup_world(self):
+        semantic = {"observed_ms": 995, "revision": 2, "task_revision": 1,
+                    "coverage_known": True, "confidence": 1}
+        state = {"mode": "normal", "stop": "denied", "armed": [], "active": None,
+                 "recorder_ok": True, "state_ok": True, "arm_cancelling": False,
+                 "arm_controller_ready": True, "world_age_ms": 5,
+                 "semantic_revision": 2, "semantic_task_revision": 1}
+        return SimpleNamespace(states=[(9.95, state)], sensor_info={"healthy": True},
+            semantic_last=semantic, odom_received=9.95, joint_received=9.95,
+            joint=SimpleNamespace(name=["joint1", "joint2", "joint3", "joint4"], velocity=[0.] * 4),
+            speed=lambda: 0., outcomes=[], controllers_unlocked=lambda: True)
+
+    def test_setup_reset_requires_fresh_accepted_world_and_every_actuator_stopped(self):
+        world = self.setup_world()
+        self.assertTrue(setup_reset_ready(world, 1000, 10.))
+        self.assertFalse(ordinary_completion(world.states[-1][1]))
+        for key, value in (("active", {"id": 1}), ("arm_cancelling", True),
+                           ("recorder_ok", False), ("state_ok", False), ("mode", "hazard"),
+                           ("world_age_ms", 75), ("semantic_revision", 3)):
+            invalid = self.setup_world()
+            invalid.states[-1][1][key] = value
+            self.assertFalse(setup_reset_ready(invalid, 1000, 10.))
+        for key in ("odom_received", "joint_received"):
+            invalid = self.setup_world()
+            setattr(invalid, key, 9.89)
+            self.assertFalse(setup_reset_ready(invalid, 1000, 10.))
+        for velocities in ([0., 0., .04, 0.], [0.] * 3, [0., 0., float("nan"), 0.]):
+            invalid = self.setup_world()
+            invalid.joint.velocity = velocities
+            self.assertFalse(setup_reset_ready(invalid, 1000, 10.))
+        world.semantic_last["observed_ms"] = 900
+        self.assertFalse(setup_reset_ready(world, 1000, 10.))
+
+    def test_initial_explicit_setup_reset_cannot_run_after_an_arm_dispatch_or_denial(self):
+        tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
+        lab = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_lab")
+        method = next(n for n in lab.body if isinstance(n, ast.FunctionDef) and n.name == "initialize_for_test")
+        world = self.setup_world()
+        stops = []
+        def stop(value):
+            stops.append(value)
+            world.states[-1][1].update(stop="no_command", armed=["vla"])
+            world.outcomes.append((10., {"decision": {"verdict": "yun", "action": {"type": "stop"}}}))
+        world.propose_base = stop
+        def wait(check, *args, action=None):
+            for _ in range(4):
+                if check():
+                    return True
+                if action:
+                    action()
+            raise TimeoutError("unqualified setup must not reset")
+        scope = {"world": world, "arm_dispatch": {"sent": False, "initialized": False},
+                 "verified_denial": {"at": None}, "current_binding": lambda *_: {},
+                 "setup_reset_ready": setup_reset_ready, "now": lambda: 1000, "wait_for": wait,
+                 "processes": {}, "time": SimpleNamespace(monotonic=lambda: 10.)}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "actual-household-setup", "exec"), scope)
+        scope["initialize_for_test"]("knife", [])
+        self.assertEqual(stops, [0., 0.])
+        for flag, denial in (({"sent": True, "initialized": False}, None),
+                             ({"sent": False, "initialized": True}, None),
+                             ({"sent": False, "initialized": False}, 9.)):
+            scope["arm_dispatch"], scope["verified_denial"]["at"] = flag, denial
+            with self.assertRaises(RuntimeError):
+                scope["initialize_for_test"]("knife", [])
+        self.assertEqual(stops, [0., 0.])
+
     def test_hazard_rejection_binds_after_explicit_rearm_queue_drains(self):
         # Exercise the actual fixture dispatcher against an observer revision
         # that changes while the explicit STOP/rearm queue drains.
@@ -50,6 +131,7 @@ class WorldPublicationTest(unittest.TestCase):
                  "world": world, "current_binding": lambda *_: {"world_revision": revision["value"]},
                  "rearm_for_test": rearm, "wait_for": wait, "processes": {},
                  "verified_denial": {"at": None},
+                 "arm_dispatch": {"sent": False, "initialized": False},
                  "time": SimpleNamespace(monotonic=lambda: 10, sleep=lambda _: None)}
         exec(compile(ast.Module(body=[method], type_ignores=[]), "hazard_lab.py", "exec"), scope)
         result = scope["reject_at_gate"]([], "inert", expected="household:human")
@@ -105,6 +187,60 @@ class WorldPublicationTest(unittest.TestCase):
         world.odom_received = time.monotonic()
         world.joint.header = SimpleNamespace(stamp=SimpleNamespace(sec=0, nanosec=700_000_000))
         publish(world)
+        self.assertEqual(world.world_pub.publish.call_count, 3)
+
+    def test_advancing_observation_keeps_source_stamp_and_periodic_negative_updates(self):
+        tree = ast.parse(Path(__file__).with_name("run_reference.py").read_text())
+        node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "GazeboWorld")
+        method = next(n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "_publish_world")
+        import threading
+        clock = SimpleNamespace(nanoseconds=1_100_000_000)
+        sensor = {"healthy": True, "stamp_ms": 1040}
+        scope = {"time": SimpleNamespace(monotonic=lambda: 10), "math": math, "json": json,
+                 "ARM_JOINTS": [], "MODEL_NAME": "fixture", "String": SimpleNamespace}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "run_reference.py", "exec"), scope)
+        world = SimpleNamespace(
+            get_clock=lambda: SimpleNamespace(now=lambda: clock),
+            odom=SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=70_000_000)),
+                twist=SimpleNamespace(twist=SimpleNamespace(angular=SimpleNamespace(z=0)))),
+            joint=SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=80_000_000))),
+            odom_received=10, joint_received=10, heading=lambda: 0, measured_joints=lambda: [],
+            pose=lambda: (5, 5), speed=lambda: 0, primary_joint=lambda: 0,
+            perception=SimpleNamespace(snapshot=lambda *_: ([], int(sensor["healthy"]), dict(sensor))),
+            human_lock=threading.Lock(), human_motion=None, human=None, native=None,
+            semantic_snapshot=lambda stamp: {"observed_ms": stamp}, semantic_last=None,
+            world_pub=mock.Mock(), world_count=0, published_world_stamp=None,
+            hazard_guard=None, _emit=mock.Mock())
+        publish = scope["_publish_world"]
+        publish(world, only_advanced=True)
+        payload = json.loads(world.world_pub.publish.call_args.args[0].data)
+        self.assertEqual(payload["stamp_ms"], 1040)  # Oldest source, not current clock/joint.
+        self.assertEqual(payload["semantic"]["observed_ms"], 1040)
+        clock.nanoseconds += 10_000_000
+        publish(world, only_advanced=True)
+        sensor["stamp_ms"] = 1030
+        publish(world, only_advanced=True)
+        self.assertEqual(world.world_pub.publish.call_count, 1)  # No repeated/frozen refresh.
+        sensor["stamp_ms"] = 1050
+        world.hazard_guard = lambda: False
+        publish(world, only_advanced=True)
+        self.assertEqual(world.published_world_stamp, 1040)
+        world.hazard_guard = None
+        publish(world, only_advanced=True)
+        self.assertEqual(world.world_pub.publish.call_count, 2)
+        self.assertEqual(world.published_world_stamp, 1050)
+        # A negative/semantic observation at the same old source stamp still
+        # reaches the root on the periodic path; extra event suppression must
+        # not suppress the existing timer's revocation behavior.
+        world.semantic_snapshot = lambda _: None
+        sensor["healthy"] = False
+        publish(world, only_advanced=True)
+        self.assertEqual(world.world_pub.publish.call_count, 2)
+        publish(world)
+        payload = json.loads(world.world_pub.publish.call_args.args[0].data)
+        self.assertEqual(payload["confidence"], 0)
+        self.assertIsNone(payload["semantic"])
+        self.assertEqual(payload["stamp_ms"], 1080)  # Original joint observation, no restamp.
         self.assertEqual(world.world_pub.publish.call_count, 3)
 
 

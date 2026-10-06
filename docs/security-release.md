@@ -57,8 +57,9 @@ base. A compromised bridge or privileged host can still command the robot.
   pinned policy model. It rejects missing/mismatched references, unsafe paths,
   unsupported operations and nonzero base motion in its stationary scope.
   Active motion is rechecked against fresh trusted facts and remaining path.
-  This M1 layer has no controller-side authorization proof: a compromised
-  gateway retains actuator authority. Whole-arm coverage, persistent effect
+  Separate M3 Gazebo controllers verify exact-action permits from an isolated
+  Rust owner/signer through an untrusted relay. This same-host reference is not
+  a physical controller authorization result. Whole-arm coverage, persistent effect
   history and physical qualification are not implemented. See
   [household gate contract](household-gate.md).
 
@@ -68,7 +69,7 @@ base. A compromised bridge or privileged host can still command the robot.
   controller and a four-joint OpenMANIPULATOR-X trajectory controller on the
   manufacturer ROSbot XL model under physics, including
   base timeout after gate death. The reference arm uses the
-  `haetae_arm_guard/LeaseTrajectoryController` plugin: a 250 ms lease checked
+  `haetae_arm_guard/LeaseTrajectoryController` plugin: an at most 200 ms exact-action permit lease checked
   against simulator and monotonic wall clocks holds measured positions and
   discards the old trajectory on gateway loss. Gazebo kill, Rust stall and
   delayed gateway tests run in CI. This does not measure hardware stopping or
@@ -108,10 +109,10 @@ base. A compromised bridge or privileged host can still command the robot.
   in the bridge and do not provide key isolation. `--secure-graph` Gazebo instead
   uses external role signers and a signed-only gateway. Source counters are
   exclusively locked and durably reserved before publishing; source restart
-  continues increasing them. The gateway still has actuation and audit authority:
-  compromising it can command the controller directly or misuse its heartbeat.
-  This stage prevents perception impersonation by that UID, not arbitrary
-  malicious actuator behavior. Root, perception, simulator and controller
+  continues increasing them. The Rust owner/authorizer owns audit and permit keys;
+  a separate UID 2005 relay owns only its restricted DDS credentials. The
+  [M3 controllers](gazebo-controller-permits.md) verify exact action/renewal
+  signatures, while the authorizer remains trusted. Root, perception, simulator and controller
   compromise remain outside the claim. Native Gazebo injection is blocked only for the sandboxed non-root reference roles; unrestricted host/root processes remain trusted.
 - A counter checkpoint is fsynced before any nonzero base or arm execute
   output. Zero and arm cancel output go first so a stop does not wait for
@@ -191,7 +192,7 @@ and `no_new_privs` prevent a role exec from acquiring root file capabilities.
 This boundary assumes root launches roles without inherited network descriptors.
 It is not a general OS sandbox or a resource exhaustion defense.
 
-`transport-isolation.json` records all four role UIDs and the restricted external
+`transport-isolation.json` records all five role UIDs and the restricted external
 attacker UID 65534. Each must retain allowed UDP delivery, fail TCP/UNIX/IPv6/packet
 socket creation, retain restrictions after exec, fail delivery to a root UDP
 receiver outside DDS ports, and fail an actual Gazebo pose request. The same
@@ -199,7 +200,8 @@ request by root must alter the real lidar calibration return before restoration;
 root delivery to the forbidden receiver must succeed. Existing DDS matched-writer
 and approved robot motion controls must also pass. This covers these container
 principals, not a remote Gazebo deployment, root, host, trusted perception or a
-compromised gateway's legitimate ROS actuation authority.
+compromised authorizer's signing authority. Compromised-relay ROS command
+admission is covered separately by the M3 controller fixtures.
 
 A timely positive response that crosses the original proposal/world expiry is
 discarded before output. The bridge sends zero and requests arm cancellation
@@ -227,9 +229,9 @@ or more still trigger the fatal stop path. No freshness budget is increased.
 
 The authenticated stdio adapter accepts signed source input plus local `tick`,
 `reject`, and upward-only `hold` (`{"k":"hold","t":...}`). Only the trusted
-local gateway owns that pipe. `hold` records a gateway authority fault; signed
+local authorizer owns that pipe. `hold` records an authority fault; signed
 stop/move input cannot lower the resulting mode. It confers no world or fault
-signing key on the gateway.
+source signing key on the authorizer.
 
 Nonzero base velocity requires measured linear and angular twist. Joint
 trajectories require Normal mode and joint-policy limits; Caution cancels them.

@@ -7,8 +7,10 @@ receives Haetae's `/cmd_vel`; its joint trajectory controller receives Haetae's
 publisher. The default product model is **Husarion ROSbot XL with ROBOTIS
 OpenMANIPULATOR-X**, using standard rubber wheels and four monitored arm joints.
 Haetae has no 3D arm collision policy.
-The runner remaps Haetae's `/cmd_vel` publisher directly to the controller's
-`/diff_drive_base_controller/cmd_vel` input; it adds no forwarding node.
+The Rust owner signs exact commands onto `/haetae_authorized/cmd_vel` and a
+separate untrusted relay forwards them to `/diff_drive_base_controller/cmd_vel`.
+The wheel and arm controllers verify the pinned signatures themselves. See
+[controller permit contract](gazebo-controller-permits.md).
 
 The test checks approved base motion, a human-triggered zero command and base
 stop, out-of-bounds arm denial, arm action cancellation, a sealed incident log,
@@ -17,7 +19,8 @@ person geometry is native Gazebo geometry. A GPU lidar measures its surface;
 the controlled-bay occupancy adapter conservatively treats obstacles as people.
 This is not a camera classifier or a real perception sensor. The
 reference arm uses `haetae_arm_guard/LeaseTrajectoryController`, a position-only
-ros2_control plugin with an independent 250 ms gateway lease. It checks both
+ros2_control plugin with exact-action permits and an independent, at most 200 ms
+authorization lease. It checks both
 simulator time and monotonic wall time, rejects replayed, delayed and far-future
 heartbeats, holds measured joint positions on expiry, and discards the old
 trajectory. Heartbeat recovery alone cannot resume it. This guard still depends
@@ -42,7 +45,7 @@ The [CI job](../.github/workflows/ci.yml) uses the same package set:
 sudo apt-get update
 sudo apt-get install -y python3-cryptography ros-jazzy-rmw-fastrtps-cpp xvfb libgl1-mesa-dri \
   ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
-  ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
+  libssl-dev ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro
 source /opt/ros/jazzy/setup.bash
 colcon --log-base /tmp/guard-log build --base-paths ros/haetae_arm_guard ros/haetae_scene \
   --merge-install --build-base /tmp/guard-build --install-base /tmp/haetae-guard
@@ -165,18 +168,20 @@ neither unauthorized message reached the receiving topic and the robot stayed
 still. The attacker runs as an unprivileged OS user with a keystore containing
 only its VLA enclave; the trusted processes use a separate owner-only
 keystore. Fast DDS uses UDPv4 here so those different users can exchange DDS
-traffic without relying on shared-memory permissions. The secured Linux container runs the gateway as UID 2001, the world/fault
+traffic without relying on shared-memory permissions. The secured Linux container runs the Rust owner/permit authorizer as UID 2001, the world/fault
 signer as UID 2002, and the VLA signer as UID 2003 and the proposal writer as UID 2004. Each has only
-its private role keystore and permitted signing keys. The gateway has an audit
-key but no source signing keys, and accepts role-bound signed topic inputs.
+its private role keystore and permitted signing keys. The authorizer has audit
+and permit keys but no source signing keys, and accepts role-bound signed topic inputs.
+The separate relay is UID 2005; it has no signing keys or controller-manager
+authority and only forwards public signed packets and action traffic.
 Fresh unpredictable per-run keys replace the legacy demo seeds. Source counters
 are durably reserved before publication and exclusively locked across restart.
 The scenario provisioner and physics process remain trusted root processes.
 `principal-isolation.json` records failed OS reads of perception credentials;
 `role-permissions.json` records denied DDS writers/action clients and matched
-authorized writers. The gateway's legitimate controller/heartbeat authority is
-still trusted: a compromised gateway can actuate, even though it cannot forge
-perception inputs. Gazebo Transport is outside the ROS ACL; the secured container adds a kernel network boundary for non-root roles. See the
+authorized writers. The Rust owner/authorizer remains trusted; the compromised
+relay cannot authorize different motion or extend authority by restamping.
+`controller-permits.json` records the separate final-controller attack fixtures. Gazebo Transport is outside the ROS ACL; the secured container adds a kernel network boundary for non-root roles. See the
 [Fast DDS transport options](https://fast-dds.docs.eprosima.com/en/2.14.x/fastdds/env_vars/env_vars.html#fastdds-builtin-transports).
 
 The page also shows an exact signed-command replay and a changed signed world
@@ -342,8 +347,8 @@ request denials, forbidden UDP receiver observations and per-role inherited
 restriction checks. The root pose request must change the real scan and then be
 restored before any movement starts. This is a boundary for the sandboxed
 container roles. Root/host/simulator compromise, process resource exhaustion,
-remote Gazebo services and malicious use of a gateway's legitimate controller
-permission remain outside it. See [security scope](security-release.md).
+remote Gazebo services and malicious use of the authorizer's signing authority
+remain outside it. Relay command misuse is tested separately at M3 controllers. See [security scope](security-release.md).
 
 ## Repeated compound faults
 

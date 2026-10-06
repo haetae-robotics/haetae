@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-cryptography python3-seccomp iptables iproute2 ros-jazzy-rmw-fastrtps-cpp \
     xvfb x11vnc openbox novnc websockify libgl1-mesa-dri \
     ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-ros2-controllers \
-    ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro \
+    libssl-dev ros-jazzy-controller-manager ros-jazzy-robot-state-publisher ros-jazzy-xacro \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 COPY ros/ ./ros/

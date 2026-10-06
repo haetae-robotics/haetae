@@ -29,6 +29,7 @@ def exercise_compound(world, roles, processes, wait_for, repeats, evidence_path,
         world.states.clear()
         world.outcomes.clear()
         wait_for(lambda: world.states and "vla" in world.states[-1][1]["armed"] and
+                 world.controllers_unlocked() and
                  sum(1 for _, row in world.outcomes if row.get("decision", {}).get("verdict") == "yun"
                      and row.get("decision", {}).get("action", {}).get("type") == "stop") >= 2,
                  8, processes, "compound explicit rearm", action=lambda: world.propose_base(0.0))
