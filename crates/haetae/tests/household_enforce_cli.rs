@@ -684,58 +684,73 @@ fn crash_and_mode_reset_preserve_pending_motion_and_require_stop_evidence_and_ne
 
 #[test]
 fn remembered_bleach_survives_crash_empty_claim_and_reset_and_blocks_ammonia() {
-    let fixture = Fixture::new();
-    let mut observed = world(1000);
-    observed["semantic"]["regions"] = json!([{
-        "id":"vessel-1","kind":"container","state":"active",
-        "bounds":{"min":{"x":5.18,"y":4.99,"z":-0.02},"max":{"x":5.22,"y":5.03,"z":0.02}},
-        "contents":["bleach"],"contents_known":true
-    }]);
-    let mut first = fixture.spawn("facts-before-crash.jsonl");
-    first.prepare(observed.clone());
-    // An acknowledged non-cancelling world has its facts durably committed.
-    assert_eq!(
-        state_file(&fixture)["history"]["containers"]["vessel-1"]["contents"],
-        json!(["bleach"])
-    );
-    first.child.kill().unwrap();
-    first.child.wait().unwrap();
-    fixture.reset_normal();
-    let mut next = fixture.spawn("facts-after-crash.jsonl");
-    observed["stamp_ms"] = json!(1100);
-    observed["semantic"]["observed_ms"] = json!(1100);
-    observed["semantic"]["revision"] = json!(2);
-    observed["semantic"]["task_revision"] = json!(2);
-    observed["semantic"]["item_id"] = json!("ammonia-object");
-    observed["semantic"]["item"] = json!("ammonia");
-    observed["semantic"]["regions"][0]["contents"] = json!([]);
-    next.send(1100, Role::World, 2, observed.clone(), WORLD_SEED);
-    next.send(1100, Role::Vla, 2, stop(2, 1100), VLA_SEED);
-    let mut proposal = trajectory(3, 1100, 0.1);
-    for (field, value) in [
-        ("world_revision", json!(2)),
-        ("task_revision", json!(2)),
-        ("item_id", json!("ammonia-object")),
-    ] {
-        proposal["semantic"][field] = value;
+    for initial_observed_ms in [1000, 750] {
+        let fixture = Fixture::new();
+        let mut observed = world(1000);
+        observed["semantic"]["observed_ms"] = json!(initial_observed_ms);
+        observed["semantic"]["regions"] = json!([{
+            "id":"vessel-1","kind":"container","state":"active",
+            "bounds":{"min":{"x":5.18,"y":4.99,"z":-0.02},"max":{"x":5.22,"y":5.03,"z":0.02}},
+            "contents":["bleach"],"contents_known":true
+        }]);
+        let mut first = fixture.spawn("facts-before-crash.jsonl");
+        first.prepare(observed.clone());
+        let counter_offset = if initial_observed_ms < 1000 {
+            assert_household_denied(
+                &first.send(1000, Role::Vla, 2, trajectory(2, 1000, 0.1), VLA_SEED),
+                "household:stale-world",
+            );
+            1
+        } else {
+            0
+        };
+        // An acknowledged non-cancelling world has its facts durably committed.
+        assert_eq!(
+            state_file(&fixture)["history"]["containers"]["vessel-1"]["contents"],
+            json!(["bleach"])
+        );
+        first.child.kill().unwrap();
+        first.child.wait().unwrap();
+        fixture.reset_normal();
+        let mut next = fixture.spawn("facts-after-crash.jsonl");
+        observed["stamp_ms"] = json!(1100);
+        observed["semantic"]["observed_ms"] = json!(1100);
+        observed["semantic"]["revision"] = json!(2);
+        observed["semantic"]["task_revision"] = json!(2);
+        observed["semantic"]["item_id"] = json!("ammonia-object");
+        observed["semantic"]["item"] = json!("ammonia");
+        observed["semantic"]["regions"][0]["contents"] = json!([]);
+        next.send(1100, Role::World, 2, observed.clone(), WORLD_SEED);
+        next.send(1100, Role::Vla, 2 + counter_offset, stop(2, 1100), VLA_SEED);
+        let mut proposal = trajectory(3, 1100, 0.1);
+        for (field, value) in [
+            ("world_revision", json!(2)),
+            ("task_revision", json!(2)),
+            ("item_id", json!("ammonia-object")),
+        ] {
+            proposal["semantic"][field] = value;
+        }
+        assert_household_denied(
+            &next.send(1100, Role::Vla, 3 + counter_offset, proposal, VLA_SEED),
+            "household:chemicals:incompatible",
+        );
+        // Positive non-touching route: same material and retained contaminant.
+        observed["stamp_ms"] = json!(1150);
+        observed["semantic"]["observed_ms"] = json!(1150);
+        observed["semantic"]["revision"] = json!(3);
+        observed["semantic"]["regions"][0]["bounds"] =
+            json!({"min":{"x":7,"y":7,"z":0},"max":{"x":7.1,"y":7.1,"z":0.1}});
+        next.send(1150, Role::World, 3, observed, WORLD_SEED);
+        next.send(1150, Role::Vla, 4 + counter_offset, stop(4, 1150), VLA_SEED);
+        let mut safe = trajectory(5, 1150, 0.1);
+        safe["semantic"]["world_revision"] = json!(3);
+        safe["semantic"]["task_revision"] = json!(2);
+        safe["semantic"]["item_id"] = json!("ammonia-object");
+        assert!(
+            next.send(1150, Role::Vla, 5 + counter_offset, safe, VLA_SEED)["arm"]["execute"]
+                .is_object()
+        );
     }
-    assert_household_denied(
-        &next.send(1100, Role::Vla, 3, proposal, VLA_SEED),
-        "household:chemicals:incompatible",
-    );
-    // Positive non-touching route: same material and retained contaminant.
-    observed["stamp_ms"] = json!(1150);
-    observed["semantic"]["observed_ms"] = json!(1150);
-    observed["semantic"]["revision"] = json!(3);
-    observed["semantic"]["regions"][0]["bounds"] =
-        json!({"min":{"x":7,"y":7,"z":0},"max":{"x":7.1,"y":7.1,"z":0.1}});
-    next.send(1150, Role::World, 3, observed, WORLD_SEED);
-    next.send(1150, Role::Vla, 4, stop(4, 1150), VLA_SEED);
-    let mut safe = trajectory(5, 1150, 0.1);
-    safe["semantic"]["world_revision"] = json!(3);
-    safe["semantic"]["task_revision"] = json!(2);
-    safe["semantic"]["item_id"] = json!("ammonia-object");
-    assert!(next.send(1150, Role::Vla, 5, safe, VLA_SEED)["arm"]["execute"].is_object());
 }
 
 #[test]

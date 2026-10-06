@@ -304,13 +304,12 @@ impl History {
             return;
         };
         self.floor = Some(scene.clone());
-        if !scene.coverage_known
-            || scene.confidence < 0.9
-            || scene.observed_ms > now_ms
-            || now_ms - scene.observed_ms > 200
-        {
+        if !scene.coverage_known || scene.confidence < 0.9 || scene.observed_ms > now_ms {
             return;
         }
+        // Historical credible facts can restrict future motion even when too
+        // old to authorize current motion or resolve sensor uncertainty.
+        let fresh = now_ms - scene.observed_ms <= 200;
         if scene.item != ItemKind::Unknown {
             self.items.insert(scene.item_id.clone(), scene.item);
         }
@@ -334,6 +333,12 @@ impl History {
                 // Keep known contaminants; sensor uncertainty itself is not a
                 // material effect. Fresh trusted coverage may resolve occlusion.
                 retained.contents_known = observed.contents_known;
+                if !fresh {
+                    retained.bounds = previous.bounds;
+                }
+            }
+            if !fresh {
+                retained.contents_known = false;
             }
             retained.contents.retain(|kind| *kind != ItemKind::Unknown);
             retained.contents.sort_by_key(|kind| *kind as u8);

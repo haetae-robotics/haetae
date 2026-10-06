@@ -18,6 +18,9 @@ A compromised observer can rename/misidentify objects and remains outside scope.
 
 The authorizer retains the union of **known observed** container contents. An
 observation claiming an empty container cannot erase previously observed bleach.
+Covered, confidence-at-least-0.9 historical assertions remain in this union even
+when too old for motion. Stale samples cannot refresh bounds or resolve unknown
+contents; low-confidence or coverage-unknown claims are not confirmed history.
 Fresh trusted coverage may resolve temporary sensor uncertainty; unknown input
 never grants execution. No trajectory outcome adds/removes material contents.
 There is no decontamination, empty-container, pour-success or effect-commit API.
