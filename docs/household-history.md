@@ -71,12 +71,19 @@ can cross the deadline: this path still mints nothing, and the expired final
 controller holds while Rust's next tick cancels. The request must have begun
 before original expiry. Existing permits keep their original expiry, and Rust's expiry/cancel and measured stop checks
 remain required. World or round-trip staleness still interrupts immediately.
+Trusted controller telemetry may already report `expired` and holding, with
+the same admitted digest and goal sequence. This only permits state-only
+retirement; stop/startup/rejected holding states cannot enter it, and holding
+controllers cannot receive positive lease renewal. Both the Rust world-age
+margin and the observer's dual-clock margin must exceed the admission reserve;
+the proposal expiry must be the binding deadline.
 
 ## Persistence, bounds and clocks
 
 History-bearing state uses `v: 2`; non-household legacy state stays `v: 1`.
 The first v1-to-v2 initialization records `history-initialized` and starts with
 no historical facts. It does not reconstruct facts from earlier software.
+The initialization reason also retains first-boot/restart/unclean-restart cause.
 Mode, role epoch/counters, observation floor, contaminants and motion reservation
 share one atomic rename/file-and-directory-sync transaction. Positive output
 is discarded if that checkpoint fails. A non-cancelling household World reply

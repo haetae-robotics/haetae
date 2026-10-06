@@ -197,17 +197,23 @@ class HaetaeGate(Node):
         status = step.get("status") or {}
         active = status.get("active") or {}
         if (active.get("action", {}).get("type") != "joint_trajectory"
-                or self.permits.active_arm == IDLE or self.permits.admitted_arm_holding
+                or self.permits.active_arm == IDLE
+                or (self.permits.admitted_arm_holding and not self.permits.admitted_arm_expired)
                 or self.permits.admitted_arm != self.permits.active_arm
                 or self.permits.admitted_goal_sequence != self.permits.goal_sequence):
             return False
+        expires, world_age = status.get("active_expires_ms"), status.get("world_age_ms")
+        if type(expires) is not int or type(world_age) is not int or world_age < 0:
+            return False
+        proposal_remaining = expires * 1_000_000 - self.permit_sim_ns
         sim_age = self._now() * 1_000_000 - self.permit_sim_ns
         wall_age = time.monotonic_ns() - self.permit_wall_ns
         age = max(sim_age + self.permits.sim_backdate_ns, wall_age)
         return (min(sim_age, wall_age) >= 0 and age < 50_000_000
                 and self.permit_world_remaining_ns - age > 50_000_000
-                and self.permit_remaining_ns > 0
-                and self.permit_remaining_ns - age <= 50_000_000)
+                and (self.world_max_age_ms - world_age) * 1_000_000 - age > 50_000_000
+                and proposal_remaining > 0 and self.permit_remaining_ns == proposal_remaining
+                and proposal_remaining - age <= 50_000_000)
 
     def _execute_arm(self, points):
         if self.arm_goal_future is not None or self.arm_goal is not None:

@@ -85,10 +85,10 @@ impl StateStore {
         store.write(
             store.current,
             true,
-            if history_initialized {
-                "history-initialized"
+            &if history_initialized {
+                format!("history-initialized:{startup_reason}")
             } else {
-                startup_reason
+                startup_reason.into()
             },
             "haetae",
             now_ms,
@@ -131,7 +131,18 @@ impl StateStore {
             v: if history.is_some() { 2 } else { 1 },
             mode,
             running: true,
-            reason: "execution-checkpoint".into(),
+            reason: if history.is_some() {
+                "execution-checkpoint"
+            } else if mode != self.current {
+                if epoch != self.auth_epoch || counters != self.counters {
+                    "mode-raised:auth-checkpoint"
+                } else {
+                    "mode-raised"
+                }
+            } else {
+                "auth-checkpoint"
+            }
+            .into(),
             set_by: "haetae".into(),
             ts_ms: now_ms,
             auth_epoch: epoch,

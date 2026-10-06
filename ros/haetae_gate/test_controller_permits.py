@@ -26,6 +26,23 @@ def arm():
 
 
 class ControllerPermitTest(unittest.TestCase):
+    def test_expiry_telemetry_preserves_identity_only_for_no_permit_retirement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fixture.key'
+            path.write_text('00' * 32)
+            signer = PermitSigner(path)
+            row = {'nonce': 'a' * 32, 'active_digest': 'b' * 64,
+                   'goal_sequence': 3, 'holding': True, 'reason': 'expired'}
+            signer.observe('arm', row)
+            self.assertTrue(signer.admitted_arm_expired)
+            self.assertTrue(signer.admitted_arm_holding)
+            self.assertEqual((signer.admitted_arm, signer.admitted_goal_sequence), ('b' * 64, 3))
+            for reason in ('stop', 'startup', 'rejected', None):
+                signer.observe('arm', {**row, 'reason': reason})
+                self.assertFalse(signer.admitted_arm_expired)
+            signer.observe('arm', {**row, 'holding': False})
+            self.assertFalse(signer.admitted_arm_expired)
+
     def test_trusted_holding_state_suppresses_idle_renewal(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'fixture.key'

@@ -117,6 +117,7 @@ class NodeBoundaryTest(unittest.TestCase):
         g.arm_goal_future = None
         g.permits = SimpleNamespace(sim_backdate_ns=0, challenges={"arm": "b" * 32},
             active_arm="a" * 64, admitted_arm="a" * 64, admitted_arm_holding=False,
+            admitted_arm_expired=False,
             goal_sequence=3, admitted_goal_sequence=3)
         g.permit_reset = g.permit_stop = False
         g.permit_sim_ns, g.permit_wall_ns = 1_000_000_000, 0
@@ -150,6 +151,7 @@ class NodeBoundaryTest(unittest.TestCase):
         g = self.retiring_arm()
         g.permits.sim_backdate_ns = 10_000_000
         g.permit_remaining_ns = 8_000_000
+        g.step['status']['active_expires_ms'] = 1008
         # The signed simulation grant has already ended; the original Rust
         # deadline is still two ms away. Publish no permit in this interval.
         self.assertTrue(g._arm_renewal_retiring(g.step))
@@ -206,6 +208,22 @@ class NodeBoundaryTest(unittest.TestCase):
         for when in (-.001, .05):
             clock.value = when
             self.assertFalse(g._arm_renewal_retiring(g.step))
+
+    def test_retirement_requires_proposal_binding_and_both_world_budgets(self):
+        g = self.retiring_arm()
+        for age in (150, 199, -1, None, True):
+            g.step['status']['world_age_ms'] = age
+            self.assertFalse(g._arm_renewal_retiring(g.step), age)
+        g.step['status']['world_age_ms'] = 0
+        g.step['status']['active_expires_ms'] = 1200
+        self.assertFalse(g._arm_renewal_retiring(g.step))
+        g.step['status']['active_expires_ms'] = 1056
+        g.permits.admitted_arm_holding = True
+        self.assertFalse(g._arm_renewal_retiring(g.step))
+        g.permits.admitted_arm_expired = True
+        self.assertTrue(g._arm_renewal_retiring(g.step))
+        g.permits.admitted_goal_sequence = 0
+        self.assertFalse(g._arm_renewal_retiring(g.step))
 
     def test_world_admission_cutoff_is_distinct_from_proposal_expiry(self):
         g = self.gate
