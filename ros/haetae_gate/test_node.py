@@ -1,5 +1,6 @@
 """Transport control-flow tests using actual node methods without ROS installed."""
 import ast
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -12,7 +13,7 @@ tree = ast.parse(Path(__file__).with_name('node.py').read_text())
 definition = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'HaetaeGate')
 definition.bases = []
 clock = SimpleNamespace(value=0.0)
-environment = dict(time=SimpleNamespace(monotonic=lambda: clock.value,
+environment = dict(json=json, time=SimpleNamespace(monotonic=lambda: clock.value,
                                        monotonic_ns=lambda: int(clock.value * 1_000_000_000)), UInt64=SimpleNamespace,
                    String=SimpleNamespace, IDLE="0" * 64,
                    GoalStatus=SimpleNamespace(STATUS_SUCCEEDED=4, STATUS_CANCELED=5, STATUS_ABORTED=6),
@@ -29,6 +30,8 @@ class NodeBoundaryTest(unittest.TestCase):
         clock.value = 0
         g = self.gate = Gate.__new__(Gate)
         g.failed = False
+        g.signed_vla_writers_matched = 0
+        g.signed_vla_callbacks = 0
         g.signer = None
         g.permits = None
         g.arm_goal = None
@@ -54,6 +57,24 @@ class NodeBoundaryTest(unittest.TestCase):
         g.heartbeat_pub = SimpleNamespace(publish=lambda message: g.heartbeats.append(message.data))
         g._publish = lambda step: None
         g._abort = lambda exc: g.aborts.append(str(exc))
+
+    def test_vla_transport_matching_never_sends_authority(self):
+        g = self.gate
+        for count, expected in ((1, 1), (0, 0), (-1, 0), (True, 0), ('1', 0), (1.0, 0)):
+            g._vla_matched(SimpleNamespace(current_count=count))
+            self.assertEqual(g.signed_vla_writers_matched, expected)
+            self.assertFalse(g.requests)
+            self.assertFalse(g.heartbeats)
+        self.assertEqual(g.signed_vla_callbacks, 0)
+
+    def test_vla_ingress_diagnostic_counts_rejected_input_without_grant(self):
+        g = self.gate
+        g.get_logger = lambda: SimpleNamespace(warning=lambda message: None)
+        g._signed(SimpleNamespace(data='{}'), 'vla')
+        self.assertEqual(g.signed_vla_callbacks, 1)
+        self.assertEqual([row['k'] for row in g.requests], ['reject'])
+        self.assertFalse(g.heartbeats)
+        self.assertFalse(g.aborts)
 
     def test_delayed_cancel_is_fresh_revocation_without_restamping_authority(self):
         g = self.gate

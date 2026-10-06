@@ -5,10 +5,30 @@ from pathlib import Path
 import unittest
 from types import SimpleNamespace
 
-from arm_barrier import rearm_ready, gazebo_rearm_ready, activated_guards_ready, accepted_world_ready
+from arm_barrier import (rearm_ready, gazebo_rearm_ready, activated_guards_ready,
+                         accepted_world_ready, arm_fault_owner_ready)
 
 
 class ArmBarrierTest(unittest.TestCase):
+    def test_new_isolated_owner_waits_for_its_match_and_still_needs_explicit_off(self):
+        state = {'mode': 'normal', 'arm_controller_ready': True}
+        states = [(10., state)]
+        self.assertFalse(arm_fault_owner_ready([], True))
+        self.assertTrue(arm_fault_owner_ready(states, False))
+        for count in (None, 0, -1, True, '1', 1.0):
+            state['signed_vla_writers_matched'] = count
+            self.assertFalse(arm_fault_owner_ready(states, True))
+        state['signed_vla_writers_matched'] = 1
+        self.assertTrue(arm_fault_owner_ready(states, True))
+        self.assertFalse(rearm_ready(states, [], 9.))
+        state['signed_vla_writers_matched'] = 0
+        self.assertFalse(arm_fault_owner_ready(states, True))
+        for change in ({'mode': 'hold'}, {'arm_controller_ready': False}):
+            state.update({'mode': 'normal', 'arm_controller_ready': True,
+                          'signed_vla_writers_matched': 1})
+            state.update(change)
+            self.assertFalse(arm_fault_owner_ready(states, True))
+
     def test_discovered_graph_or_old_world_does_not_allow_fixture_reset(self):
         state = {'mode': 'normal', 'active': None, 'recorder_ok': True,
                  'state_ok': True, 'world_age_ms': 20, 'arm_cancelling': False}

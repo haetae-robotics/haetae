@@ -132,7 +132,18 @@ unexpected initial posture fails before any repositioning or setup reset; the
 initializer cannot silently move an arm into its supported starting posture.
 
 Each isolated arm kill/stall/delay fixture waits for newly published, rotated
-wheel/arm activation challenges. It allows at most two sequential OFF-only
+wheel/arm activation challenges. Its existing ten-second owner startup wait
+also requires the new owner's signed VLA subscription to report a matched
+writer. A normal state and third-party graph counts can arrive before that
+connection completes. `signed_vla_writers_matched` is a transport hint only;
+it never grants or renews controller authority. Sources stay alive across owner
+restarts, and signed VLA QoS remains reliable, volatile and depth one.
+Post-publication stop IDs/counters, writer match events, and the owner's
+`signed_vla_callbacks` count distinguish reservation, publication and ingress
+when diagnosing a failure. These observations cannot replace Rust acceptance.
+Owner startup failures also checkpoint that fixture's state, outcomes and log.
+
+The subsequent barrier allows at most two sequential OFF-only
 preparation requests within five seconds, to tolerate volatile DDS discovery
 loss. This same deadline includes waiting for a newly advancing Rust-accepted
 world and a subsequent fresh idle state before the first OFF request. Graph

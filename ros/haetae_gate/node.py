@@ -17,6 +17,7 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Twist, TwistStamped
 from rclpy.action import ActionClient
 from rclpy.clock import Clock, ClockType
+from rclpy.event_handler import SubscriptionEventCallbacks
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String, UInt64
@@ -113,11 +114,17 @@ class HaetaeGate(Node):
         self.seq = {role: 0 for role in ("vla", "planner", "teleop", "peer")}
         reliable = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         best_effort = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+        # Transport observations only. Neither matching nor callback ingress
+        # grants authority; Rust and the independent controllers still decide.
+        self.signed_vla_writers_matched = 0
+        self.signed_vla_callbacks = 0
         if self.signed_inputs_only:
             for role in ("world", "fault", "vla"):
                 self.create_subscription(String, "~/signed/" + role,
                     lambda msg, role=role: self._signed(msg, role),
-                    best_effort if role == "world" else reliable)
+                    best_effort if role == "world" else reliable,
+                    event_callbacks=SubscriptionEventCallbacks(matched=self._vla_matched)
+                    if role == "vla" else None)
         else:
             self.create_subscription(String, "~/world", self._world, best_effort)
             self.create_subscription(String, "~/fault", self._fault, reliable)
@@ -166,6 +173,8 @@ class HaetaeGate(Node):
                 raise BridgeFailure("invalid arm output")
         if step.get("status") is not None:
             self.state_pub.publish(String(data=json.dumps({**step["status"],
+                "signed_vla_writers_matched": self.signed_vla_writers_matched,
+                "signed_vla_callbacks": self.signed_vla_callbacks,
                 "arm_controller_ready": ((not self.permits or len(self.permits.challenges) == 2)
                     and self.arm_client.server_is_ready()) if self.arm_joints else True})))
         if step.get("outcome") is not None:
@@ -442,7 +451,13 @@ class HaetaeGate(Node):
     def _fault(self, msg):
         self._receive(lambda: self._send("fault", msg.data))
 
+    def _vla_matched(self, event):
+        count = event.current_count
+        self.signed_vla_writers_matched = count if type(count) is int and count >= 0 else 0
+
     def _signed(self, msg, role):
+        if role == "vla":
+            self.signed_vla_callbacks += 1
         def send():
             try:
                 envelope = json.loads(msg.data)

@@ -99,3 +99,13 @@ def activated_guards_ready(world, reset_at, now, previous):
                 or not 0 <= now - published < 0.1):
             return False
     return True
+
+
+def arm_fault_owner_ready(states, isolated):
+    """Startup hint only; the explicit OFF/controller barrier grants motion."""
+    if not states:
+        return False
+    state = states[-1][1]
+    matched = state.get("signed_vla_writers_matched")
+    return (state.get("mode") == "normal" and state.get("arm_controller_ready") is True
+            and (not isolated or type(matched) is int and matched > 0))

@@ -35,7 +35,8 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
 from run_scenario import fixture, public  # noqa: E402
-from arm_barrier import gazebo_rearm_ready, activated_guards_ready, accepted_world_ready  # noqa: E402
+from arm_barrier import (gazebo_rearm_ready, activated_guards_ready, accepted_world_ready,
+                         arm_fault_owner_ready)  # noqa: E402
 from network_guard import NetworkGuard, sandboxed
 from transport_probe import probe_transport
 from compound_fault import exercise_compound
@@ -546,7 +547,10 @@ def prepare_arm_fault(world, processes, roles=None):
         sent = time.monotonic()
         world.propose_base(0.0)
         attempts.append({"attempt": attempt + 1, "sent_wall": sent, "proposal_id": proposal_id,
-                         "counter_before": before, "routes_at_send": route_counts})
+                         "counter_before": before, "routes_at_send": route_counts,
+                         "owner_vla_at_send": {"state_received_wall": world.states[-1][0],
+                             **{key: world.states[-1][1].get(key) for key in
+                                ("signed_vla_writers_matched", "signed_vla_callbacks")}}})
         try:
             # One pending request at a time, at most two OFF-only requests.
             # A lost volatile DDS delivery at gate discovery can use the second
@@ -1162,18 +1166,25 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                             "-r", "/cmd_vel:=/haetae_authorized/cmd_vel"],
                            fault_root, "gate", processes, role_env("gate"), UIDS["gate"] if roles else None)
             logs.append(log)
-            wait_for(lambda: world.states and world.states[-1][1]["mode"] == "normal"
-                 and world.states[-1][1].get("arm_controller_ready"),
-                     10, processes, "new isolated arm fault fixture")
+            # A normal state and a discovered graph do not show that this new
+            # owner has matched the long-lived signed VLA writer. Use the
+            # existing startup wait; keep the later OFF-only 5 s unchanged.
+            world.arm_preparation_diagnostics = None
+            fault_stage = "owner_startup"
             try:
+                wait_for(lambda: arm_fault_owner_ready(world.states, roles is not None),
+                         10, processes, "new isolated arm fault fixture")
+                fault_stage = "arm_fault"
                 arm_fault_results[case] = exercise_arm_fault(world, processes, case, roles)
             except Exception:
                 # Keep the original qualification failure. Capture this fault
                 # session, not the old ordinary gate's log, before cleanup.
                 try:
                     diagnostics = getattr(world, "arm_preparation_diagnostics", None)
-                    if diagnostics is not None:
-                        (fault_root / "preparation-diagnostics.json").write_text(json.dumps(diagnostics, indent=2))
+                    if diagnostics is None:
+                        diagnostics = {"stage": fault_stage, "attempts": [],
+                            "states": list(world.states), "outcomes": list(world.outcomes)}
+                    (fault_root / "preparation-diagnostics.json").write_text(json.dumps(diagnostics, indent=2))
                     if roles:
                         checkpoint_evidence(root, fault_gate / "sillok.jsonl", fault_root / "sillok.jsonl", UIDS["gate"])
                 except Exception as evidence_exc:
