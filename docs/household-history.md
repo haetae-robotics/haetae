@@ -58,6 +58,8 @@ Two strictly advancing, fresh World samples must show all four named joints
 within configured position limits with `|velocity| <= 0.01 rad/s`, and measured
 base twist within 0.01. Source time, semantic coverage and confidence must also
 be valid. Resetting operator mode preserves the history.
+Both World and semantic stop evidence must be within the configured world
+freshness limit, capped at 200 ms; a stricter policy is also a stricter stop barrier.
 
 Ordinary expiry can enter `awaiting_stop`. Only post-expiry fresh stop samples
 with the original context, sample time at/after the trajectory end and all joint
@@ -100,7 +102,8 @@ Interrupted reservations persisted before execution remain the recovery guard.
 Every advancing household World acknowledgement can therefore incur file and
 directory fsync latency. Slow storage can revoke or interrupt motion; target-host
 storage latency is unqualified here and no hard realtime guarantee is made.
-Semantic observation time later than the outer World stamp is rejected before
+Semantic observation time later than the outer World stamp or the enforcer's
+current receive time is rejected before
 it can advance the durable floor. Original measurement timestamps are retained.
 
 Existing/unparseable, oversized, wrong-version, inconsistent or pin-mismatched

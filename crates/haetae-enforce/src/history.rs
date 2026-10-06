@@ -222,7 +222,7 @@ impl History {
         }
     }
 
-    pub fn check_world(&self, world: &WorldSnapshot) -> Result<(), String> {
+    pub fn check_world(&self, world: &WorldSnapshot, now_ms: u64) -> Result<(), String> {
         let Some(next) = world.semantic.as_ref() else {
             return Ok(());
         };
@@ -236,7 +236,7 @@ impl History {
         {
             return Err("history:pin-mismatch".into());
         }
-        if next.observed_ms > world.stamp_ms {
+        if next.observed_ms > world.stamp_ms || next.observed_ms > now_ms {
             return Err("history:future-observation".into());
         }
         if let Some(old) = &self.floor {
@@ -469,10 +469,11 @@ impl History {
             self.settle_samples = 0;
             return;
         };
+        let max_age_ms = policy.freshness.world_max_age_ms.min(200);
         let fresh = world.stamp_ms <= now_ms
-            && now_ms - world.stamp_ms <= 200
+            && now_ms - world.stamp_ms <= max_age_ms
             && scene.observed_ms <= now_ms
-            && now_ms - scene.observed_ms <= 200
+            && now_ms - scene.observed_ms <= max_age_ms
             && scene.coverage_known
             && scene.confidence >= 0.9
             && world.confidence >= 0.9;

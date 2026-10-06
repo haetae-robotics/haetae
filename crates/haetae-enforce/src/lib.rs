@@ -291,7 +291,11 @@ impl Enforcer {
                 }
             }
             Inbound::World(w) => {
-                if let Some(error) = self.history.as_ref().and_then(|h| h.check_world(&w).err()) {
+                if let Some(error) = self
+                    .history
+                    .as_ref()
+                    .and_then(|h| h.check_world(&w, now_ms).err())
+                {
                     return self.reject(error, b"", now_ms);
                 }
                 let observed = w.clone();

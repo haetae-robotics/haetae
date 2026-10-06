@@ -684,7 +684,7 @@ fn crash_and_mode_reset_preserve_pending_motion_and_require_stop_evidence_and_ne
 
 #[test]
 fn remembered_bleach_survives_crash_empty_claim_and_reset_and_blocks_ammonia() {
-    for initial_observed_ms in [1000, 750] {
+    for initial_observed_ms in [1000, 750, 1001] {
         let fixture = Fixture::new();
         let mut observed = world(1000);
         observed["semantic"]["observed_ms"] = json!(initial_observed_ms);
@@ -694,7 +694,37 @@ fn remembered_bleach_survives_crash_empty_claim_and_reset_and_blocks_ammonia() {
             "contents":["bleach"],"contents_known":true
         }]);
         let mut first = fixture.spawn("facts-before-crash.jsonl");
-        first.prepare(observed.clone());
+        let world_counter_offset = if initial_observed_ms > 1000 {
+            // The outer stamp is within the policy's 20ms future tolerance.
+            // A semantic fact must still not receive a durable ACK before its
+            // original observation time. Retry it after that time arrives.
+            observed["stamp_ms"] = json!(initial_observed_ms);
+            history_rejected(
+                &first.send(1000, Role::World, 1, observed.clone(), WORLD_SEED),
+                "history:future-observation",
+            );
+            assert!(state_file(&fixture)["history"]["floor"].is_null());
+            assert_eq!(state_file(&fixture)["history"]["containers"], json!({}));
+            let acknowledged = first.send(
+                initial_observed_ms,
+                Role::World,
+                2,
+                observed.clone(),
+                WORLD_SEED,
+            );
+            assert!(acknowledged["outcome"]["world_updated"].is_object());
+            first.send(
+                initial_observed_ms,
+                Role::Vla,
+                1,
+                stop(1, initial_observed_ms),
+                VLA_SEED,
+            );
+            1
+        } else {
+            first.prepare(observed.clone());
+            0
+        };
         let counter_offset = if initial_observed_ms < 1000 {
             assert_household_denied(
                 &first.send(1000, Role::Vla, 2, trajectory(2, 1000, 0.1), VLA_SEED),
@@ -720,7 +750,13 @@ fn remembered_bleach_survives_crash_empty_claim_and_reset_and_blocks_ammonia() {
         observed["semantic"]["item_id"] = json!("ammonia-object");
         observed["semantic"]["item"] = json!("ammonia");
         observed["semantic"]["regions"][0]["contents"] = json!([]);
-        next.send(1100, Role::World, 2, observed.clone(), WORLD_SEED);
+        next.send(
+            1100,
+            Role::World,
+            2 + world_counter_offset,
+            observed.clone(),
+            WORLD_SEED,
+        );
         next.send(1100, Role::Vla, 2 + counter_offset, stop(2, 1100), VLA_SEED);
         let mut proposal = trajectory(3, 1100, 0.1);
         for (field, value) in [
@@ -740,7 +776,13 @@ fn remembered_bleach_survives_crash_empty_claim_and_reset_and_blocks_ammonia() {
         observed["semantic"]["revision"] = json!(3);
         observed["semantic"]["regions"][0]["bounds"] =
             json!({"min":{"x":7,"y":7,"z":0},"max":{"x":7.1,"y":7.1,"z":0.1}});
-        next.send(1150, Role::World, 3, observed, WORLD_SEED);
+        next.send(
+            1150,
+            Role::World,
+            3 + world_counter_offset,
+            observed,
+            WORLD_SEED,
+        );
         next.send(1150, Role::Vla, 4 + counter_offset, stop(4, 1150), VLA_SEED);
         let mut safe = trajectory(5, 1150, 0.1);
         safe["semantic"]["world_revision"] = json!(3);

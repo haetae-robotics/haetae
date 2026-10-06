@@ -145,6 +145,32 @@ fn ordinary_ttl_expiry_owns_completion_at_the_exact_boundary() {
 }
 
 #[test]
+fn settled_motion_requires_semantic_stop_evidence_within_stricter_policy_age() {
+    let mut strict = policy();
+    strict.freshness.world_max_age_ms = 50;
+    let mut g = Enforcer::open(strict, EnforcerConfig::default(), 1000).unwrap();
+    accepted(&mut g);
+    g.handle(world(1990, 0.25, Some(semantic(1990))), 1990);
+    cancelled(g.tick(2000));
+    g.handle(world(2010, 0.25, Some(semantic(2010))), 2010);
+    let first = g.handle(world(2020, 0.25, Some(semantic(2020))), 2020);
+    assert!(!first.status.arm_cancelling);
+    assert!(first.status.history.unwrap().motion_pending);
+    // Fresh outer feedback must not refresh the original semantic stop sample.
+    let old = g.handle(world(2120, 0.25, Some(semantic(2020))), 2120);
+    let history = old.status.history.unwrap();
+    assert!(history.motion_pending);
+    assert_eq!(history.settled_motions, 0);
+    let one = g.handle(world(2130, 0.25, Some(semantic(2130))), 2130);
+    assert!(one.status.history.unwrap().motion_pending);
+    let stopped = g.handle(world(2140, 0.25, Some(semantic(2140))), 2140);
+    let history = stopped.status.history.unwrap();
+    assert!(!history.motion_pending);
+    assert_eq!(history.settled_motions, 1);
+    assert_eq!(history.material_effects_committed, 0);
+}
+
+#[test]
 fn no_world_after_admission_cancels_on_outer_world_expiry() {
     let mut g = gate();
     accepted(&mut g);
