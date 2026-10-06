@@ -195,6 +195,8 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
                 and row.get("mandatory_semantic_gate") is True
                 and row.get("signed_arm_acceptance_observed") is True
                 and row.get("accepted_waypoints_match") is True
+                and row.get("history_motion_settled") is True
+                and type(row.get("material_effects_committed")) is int and row["material_effects_committed"] == 0
                 and within(row.get("max_joint_tracking_error_rad"), .05)
                 and type(row.get("tracking_samples")) is int and row["tracking_samples"] >= 10
                 and (number(row.get("measured_motion_rad")) or 0) > .1
@@ -243,6 +245,22 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
         checks.append({"id": "gate_" + identifier, "title": "필수 실행 검사 · " + identifier,
                        "status": "not_run" if not row else "passed" if passed else "failed",
                        "measurements": {"denied_drift_rad": row["denied_drift_rad"]} if number(row.get("denied_drift_rad")) is not None else {}})
+    history = mapping(result.get("history_controls"))
+    consumed, retained = mapping(history.get("consumed_step")), mapping(history.get("retained_contents"))
+    passed_history = (consumed.get("blocked") is True and consumed.get("reason") == "history:consumed-step"
+        and consumed.get("settled_positive_control") is True and consumed.get("fresh_counter_signed_probe") is True
+        and within(consumed.get("denied_drift_rad"), .02)
+        and retained.get("raw_contents_empty") is True
+        and type(retained.get("retained_contaminants")) is int and retained["retained_contaminants"] >= 1
+        and retained.get("reason") == "household:chemicals:incompatible"
+        and retained.get("signed_gate_rejection_observed") is True
+        and retained.get("settled_positive_control") is True
+        and within(retained.get("denied_drift_rad"), .02)
+        and type(result.get("material_effects_committed")) is int and result["material_effects_committed"] == 0)
+    checks.append({"id": "durable_history", "title": "같은 작업 재실행·내용물 이력 지우기 차단",
+        "status": "not_run" if not history else "passed" if passed_history else "failed",
+        "measurements": {"retained_contaminants": retained["retained_contaminants"]}
+            if number(retained.get("retained_contaminants")) is not None else {}})
     passed = result.get("ok") is True and all(row["status"]=="passed" for row in checks)
     return {"schema_version":1,"scope":"household_hazard_mandatory_gate_simulation","status":"failed" if failed or result.get("ok") is not True or any(row["status"]=="failed" for row in checks) else "passed" if passed else "incomplete",
             "source_revision":revision if isinstance(revision,str) and re.fullmatch(r"[a-f0-9]{40}",revision) else "unknown",

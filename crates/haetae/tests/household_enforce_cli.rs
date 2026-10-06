@@ -560,3 +560,351 @@ fn root_signed_policy_hash_rejects_changed_household_policy_bytes() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+fn state_file(fixture: &Fixture) -> Value {
+    serde_json::from_slice(&fs::read(fixture.path("state.json")).unwrap()).unwrap()
+}
+
+fn measured_world(t: u64, position: f64) -> Value {
+    let mut observed = world(t);
+    observed["robot"]["joints"][0]["position"] = json!(position);
+    observed
+}
+
+fn finish_motion(session: &mut Session, counter: &mut u64) {
+    for t in [1100, 1200, 1250, 1300, 1350] {
+        *counter += 1;
+        let answer = session.send(t, Role::World, *counter, measured_world(t, 0.1), WORLD_SEED);
+        if t == 1350 {
+            assert_eq!(
+                answer["status"]["history"]["motion_pending"], false,
+                "{answer}"
+            );
+            assert_eq!(answer["status"]["history"]["material_effects_committed"], 0);
+        }
+    }
+}
+
+fn history_rejected(answer: &Value, reason: &str) {
+    assert_no_execute(answer);
+    assert_eq!(answer["outcome"]["rejected"]["error"], reason, "{answer}");
+}
+
+#[test]
+fn reservation_and_exact_emitted_digest_are_durable_before_execute() {
+    let fixture = Fixture::new();
+    let mut session = fixture.spawn("reservation.jsonl");
+    session.prepare(world(1000));
+    let proposal = trajectory(2, 1000, 0.1);
+    let accepted = session.send(1000, Role::Vla, 2, proposal.clone(), VLA_SEED);
+    assert!(accepted["arm"]["execute"].is_object());
+    let persisted = state_file(&fixture);
+    assert_eq!(persisted["v"], 2);
+    assert_eq!(persisted["counters"]["vla"], 2);
+    let record = &persisted["history"]["steps"]["test-task/step-1"];
+    assert_eq!(record["outcome"], "reserved");
+    let typed: haetae_core::ActionProposal = serde_json::from_value(proposal).unwrap();
+    assert_eq!(
+        record["command_sha256"],
+        hex::encode(Sha256::digest(serde_json::to_vec(&typed).unwrap()))
+    );
+}
+
+#[test]
+fn settled_motion_is_not_a_material_effect_and_a_fresh_counter_cannot_repeat_the_step() {
+    let fixture = Fixture::new();
+    let mut session = fixture.spawn("settled.jsonl");
+    session.prepare(world(1000));
+    assert!(
+        session.send(1000, Role::Vla, 2, trajectory(2, 1000, 0.1), VLA_SEED)["arm"]["execute"]
+            .is_object()
+    );
+    let mut counter = 1;
+    finish_motion(&mut session, &mut counter);
+    let persisted = state_file(&fixture);
+    assert_eq!(
+        persisted["history"]["steps"]["test-task/step-1"]["outcome"],
+        "motion_settled"
+    );
+    session.send(1400, Role::Vla, 3, stop(3, 1400), VLA_SEED);
+    let mut repeated = trajectory(4, 1400, 0.2);
+    repeated["action"]["points"][0]["positions"][0] = json!(0.1);
+    let answer = session.send(1400, Role::Vla, 4, repeated, VLA_SEED);
+    history_rejected(&answer, "history:consumed-step");
+}
+
+#[test]
+fn crash_and_mode_reset_preserve_pending_motion_and_require_stop_evidence_and_new_task_epoch() {
+    let fixture = Fixture::new();
+    let mut session = fixture.spawn("before-crash.jsonl");
+    session.prepare(world(1000));
+    assert!(
+        session.send(1000, Role::Vla, 2, trajectory(2, 1000, 0.1), VLA_SEED)["arm"]["execute"]
+            .is_object()
+    );
+    session.child.kill().unwrap();
+    session.child.wait().unwrap();
+    let before = state_file(&fixture)["history"].clone();
+    fixture.reset_normal();
+    assert_eq!(state_file(&fixture)["history"], before);
+    let mut restored = fixture.spawn("after-crash.jsonl");
+    let first = restored.send(1100, Role::World, 2, world(1100), WORLD_SEED);
+    assert_eq!(first["status"]["history"]["motion_pending"], true);
+    restored.send(1125, Role::World, 3, world(1125), WORLD_SEED);
+    restored.send(1125, Role::Vla, 3, stop(3, 1125), VLA_SEED);
+    history_rejected(
+        &restored.send(1125, Role::Vla, 4, trajectory(4, 1125, 0.1), VLA_SEED),
+        "history:unresolved-motion",
+    );
+    // Two new, trusted, measured stopped worlds resolve only the kinematic lock.
+    restored.send(1150, Role::World, 4, world(1150), WORLD_SEED);
+    restored.send(1200, Role::World, 5, world(1200), WORLD_SEED);
+    restored.send(1200, Role::Vla, 5, stop(5, 1200), VLA_SEED);
+    history_rejected(
+        &restored.send(1200, Role::Vla, 6, trajectory(6, 1200, 0.1), VLA_SEED),
+        "history:interrupted-task-revision",
+    );
+    let mut next = world(1250);
+    next["semantic"]["revision"] = json!(2);
+    next["semantic"]["task_revision"] = json!(2);
+    next["semantic"]["step_id"] = json!("new-step");
+    restored.send(1250, Role::World, 6, next.clone(), WORLD_SEED);
+    restored.send(1250, Role::Vla, 7, stop(7, 1250), VLA_SEED);
+    let mut proposal = trajectory(8, 1250, 0.1);
+    proposal["semantic"]["world_revision"] = json!(2);
+    proposal["semantic"]["task_revision"] = json!(2);
+    proposal["semantic"]["step_id"] = json!("new-step");
+    let accepted = restored.send(1250, Role::Vla, 8, proposal, VLA_SEED);
+    assert!(accepted["arm"]["execute"].is_object(), "{accepted}");
+    assert_eq!(
+        accepted["status"]["history"]["material_effects_committed"],
+        0
+    );
+}
+
+#[test]
+fn remembered_bleach_survives_crash_empty_claim_and_reset_and_blocks_ammonia() {
+    for initial_observed_ms in [1000, 750, 1001] {
+        let fixture = Fixture::new();
+        let mut observed = world(1000);
+        observed["semantic"]["observed_ms"] = json!(initial_observed_ms);
+        observed["semantic"]["regions"] = json!([{
+            "id":"vessel-1","kind":"container","state":"active",
+            "bounds":{"min":{"x":5.18,"y":4.99,"z":-0.02},"max":{"x":5.22,"y":5.03,"z":0.02}},
+            "contents":["bleach"],"contents_known":true
+        }]);
+        let mut first = fixture.spawn("facts-before-crash.jsonl");
+        let world_counter_offset = if initial_observed_ms > 1000 {
+            // The outer stamp is within the policy's 20ms future tolerance.
+            // A semantic fact must still not receive a durable ACK before its
+            // original observation time. Retry it after that time arrives.
+            observed["stamp_ms"] = json!(initial_observed_ms);
+            history_rejected(
+                &first.send(1000, Role::World, 1, observed.clone(), WORLD_SEED),
+                "history:future-observation",
+            );
+            assert!(state_file(&fixture)["history"]["floor"].is_null());
+            assert_eq!(state_file(&fixture)["history"]["containers"], json!({}));
+            let acknowledged = first.send(
+                initial_observed_ms,
+                Role::World,
+                2,
+                observed.clone(),
+                WORLD_SEED,
+            );
+            assert!(acknowledged["outcome"]["world_updated"].is_object());
+            first.send(
+                initial_observed_ms,
+                Role::Vla,
+                1,
+                stop(1, initial_observed_ms),
+                VLA_SEED,
+            );
+            1
+        } else {
+            first.prepare(observed.clone());
+            0
+        };
+        let counter_offset = if initial_observed_ms < 1000 {
+            assert_household_denied(
+                &first.send(1000, Role::Vla, 2, trajectory(2, 1000, 0.1), VLA_SEED),
+                "household:stale-world",
+            );
+            1
+        } else {
+            0
+        };
+        // An acknowledged non-cancelling world has its facts durably committed.
+        assert_eq!(
+            state_file(&fixture)["history"]["containers"]["vessel-1"]["contents"],
+            json!(["bleach"])
+        );
+        first.child.kill().unwrap();
+        first.child.wait().unwrap();
+        fixture.reset_normal();
+        let mut next = fixture.spawn("facts-after-crash.jsonl");
+        observed["stamp_ms"] = json!(1100);
+        observed["semantic"]["observed_ms"] = json!(1100);
+        observed["semantic"]["revision"] = json!(2);
+        observed["semantic"]["task_revision"] = json!(2);
+        observed["semantic"]["item_id"] = json!("ammonia-object");
+        observed["semantic"]["item"] = json!("ammonia");
+        observed["semantic"]["regions"][0]["contents"] = json!([]);
+        next.send(
+            1100,
+            Role::World,
+            2 + world_counter_offset,
+            observed.clone(),
+            WORLD_SEED,
+        );
+        next.send(1100, Role::Vla, 2 + counter_offset, stop(2, 1100), VLA_SEED);
+        let mut proposal = trajectory(3, 1100, 0.1);
+        for (field, value) in [
+            ("world_revision", json!(2)),
+            ("task_revision", json!(2)),
+            ("item_id", json!("ammonia-object")),
+        ] {
+            proposal["semantic"][field] = value;
+        }
+        assert_household_denied(
+            &next.send(1100, Role::Vla, 3 + counter_offset, proposal, VLA_SEED),
+            "household:chemicals:incompatible",
+        );
+        // Positive non-touching route: same material and retained contaminant.
+        observed["stamp_ms"] = json!(1150);
+        observed["semantic"]["observed_ms"] = json!(1150);
+        observed["semantic"]["revision"] = json!(3);
+        observed["semantic"]["regions"][0]["bounds"] =
+            json!({"min":{"x":7,"y":7,"z":0},"max":{"x":7.1,"y":7.1,"z":0.1}});
+        next.send(
+            1150,
+            Role::World,
+            3 + world_counter_offset,
+            observed,
+            WORLD_SEED,
+        );
+        next.send(1150, Role::Vla, 4 + counter_offset, stop(4, 1150), VLA_SEED);
+        let mut safe = trajectory(5, 1150, 0.1);
+        safe["semantic"]["world_revision"] = json!(3);
+        safe["semantic"]["task_revision"] = json!(2);
+        safe["semantic"]["item_id"] = json!("ammonia-object");
+        assert!(
+            next.send(1150, Role::Vla, 5 + counter_offset, safe, VLA_SEED)["arm"]["execute"]
+                .is_object()
+        );
+    }
+}
+
+#[test]
+fn durable_floor_rejects_rollback_and_changed_equal_revision_without_restoring_world_authority() {
+    let fixture = Fixture::new();
+    let mut session = fixture.spawn("floor-before.jsonl");
+    let mut observed = world(1000);
+    observed["semantic"]["revision"] = json!(10);
+    observed["semantic"]["task_revision"] = json!(5);
+    session.prepare(observed.clone());
+    session.child.kill().unwrap();
+    session.child.wait().unwrap();
+    fixture.reset_normal();
+    let mut restored = fixture.spawn("floor-after.jsonl");
+    let no_world = restored.exchange(1050, "tick", "");
+    assert_eq!(no_world["stop"], "no_world");
+    observed["stamp_ms"] = json!(1100);
+    observed["semantic"]["observed_ms"] = json!(1100);
+    let mut rollback = observed.clone();
+    rollback["semantic"]["revision"] = json!(9);
+    history_rejected(
+        &restored.send(1100, Role::World, 2, rollback, WORLD_SEED),
+        "history:observation-rollback",
+    );
+    let mut altered = observed.clone();
+    altered["semantic"]["item"] = json!("pressurized");
+    history_rejected(
+        &restored.send(1100, Role::World, 3, altered, WORLD_SEED),
+        "history:same-revision-changed-facts",
+    );
+    let accepted = restored.send(1100, Role::World, 4, observed, WORLD_SEED);
+    assert!(
+        accepted["outcome"]["world_updated"].is_object(),
+        "{accepted}"
+    );
+    assert!(accepted["status"]["active"].is_null());
+}
+
+#[test]
+fn future_semantic_stamp_cannot_poison_durable_floor_or_restart() {
+    let fixture = Fixture::new();
+    let mut session = fixture.spawn("future-floor-before.jsonl");
+    session.prepare(world(1000));
+    let mut future = world(1100);
+    future["semantic"]["observed_ms"] = json!(u64::MAX);
+    future["semantic"]["revision"] = json!(2);
+    history_rejected(
+        &session.send(1100, Role::World, 2, future, WORLD_SEED),
+        "history:future-observation",
+    );
+    assert_eq!(
+        state_file(&fixture)["history"]["floor"]["observed_ms"],
+        1000
+    );
+    assert_eq!(state_file(&fixture)["history"]["floor"]["revision"], 1);
+    session.close();
+    fixture.reset_normal();
+    let mut restored = fixture.spawn("future-floor-after.jsonl");
+    let fresh = restored.send(1100, Role::World, 3, world(1100), WORLD_SEED);
+    assert!(fresh["outcome"]["world_updated"].is_object(), "{fresh}");
+    assert_eq!(
+        state_file(&fixture)["history"]["floor"]["observed_ms"],
+        1100
+    );
+    restored.send(1100, Role::Vla, 2, stop(2, 1100), VLA_SEED);
+    let positive = restored.send(1100, Role::Vla, 3, trajectory(3, 1100, 0.1), VLA_SEED);
+    assert!(positive["arm"]["execute"].is_object(), "{positive}");
+}
+
+#[test]
+fn corrupted_protected_history_fails_startup_and_is_not_overwritten() {
+    let fixture = Fixture::new();
+    let mut session = fixture.spawn("corrupt-before.jsonl");
+    session.prepare(world(1000));
+    session.child.kill().unwrap();
+    session.child.wait().unwrap();
+    let corrupt = b"{\"v\":2,\"history\":broken";
+    fs::write(fixture.path("state.json"), corrupt).unwrap();
+    let out = fixture
+        .command("corrupt-after.jsonl", true, true, true)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    assert_eq!(fs::read(fixture.path("state.json")).unwrap(), corrupt);
+}
+
+#[test]
+fn failed_atomic_reservation_checkpoint_emits_no_positive_step() {
+    let fixture = Fixture::new();
+    let mut session = fixture.spawn("commit-failure.jsonl");
+    session.prepare(world(1000));
+    session.send(1000, Role::World, 2, world(1000), WORLD_SEED);
+    fs::rename(fixture.path("state.json"), fixture.path("saved-state.json")).unwrap();
+    fs::create_dir(fixture.path("state.json")).unwrap();
+    let input = session.input.as_mut().unwrap();
+    writeln!(
+        input,
+        "{}",
+        json!({"t":1000,"k":"signed","data":signed(Role::Vla,2,trajectory(2,1000,0.1),VLA_SEED)})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    let mut output = String::new();
+    assert_eq!(
+        session.output.read_line(&mut output).unwrap(),
+        0,
+        "{output}"
+    );
+    assert!(!session.child.wait().unwrap().success());
+    let saved: Value =
+        serde_json::from_slice(&fs::read(fixture.path("saved-state.json")).unwrap()).unwrap();
+    assert!(saved["history"]["steps"].as_object().unwrap().is_empty());
+    assert_eq!(saved["counters"]["vla"], 1);
+}

@@ -145,6 +145,32 @@ fn ordinary_ttl_expiry_owns_completion_at_the_exact_boundary() {
 }
 
 #[test]
+fn settled_motion_requires_semantic_stop_evidence_within_stricter_policy_age() {
+    let mut strict = policy();
+    strict.freshness.world_max_age_ms = 50;
+    let mut g = Enforcer::open(strict, EnforcerConfig::default(), 1000).unwrap();
+    accepted(&mut g);
+    g.handle(world(1990, 0.25, Some(semantic(1990))), 1990);
+    cancelled(g.tick(2000));
+    g.handle(world(2010, 0.25, Some(semantic(2010))), 2010);
+    let first = g.handle(world(2020, 0.25, Some(semantic(2020))), 2020);
+    assert!(!first.status.arm_cancelling);
+    assert!(first.status.history.unwrap().motion_pending);
+    // Fresh outer feedback must not refresh the original semantic stop sample.
+    let old = g.handle(world(2120, 0.25, Some(semantic(2020))), 2120);
+    let history = old.status.history.unwrap();
+    assert!(history.motion_pending);
+    assert_eq!(history.settled_motions, 0);
+    let one = g.handle(world(2130, 0.25, Some(semantic(2130))), 2130);
+    assert!(one.status.history.unwrap().motion_pending);
+    let stopped = g.handle(world(2140, 0.25, Some(semantic(2140))), 2140);
+    let history = stopped.status.history.unwrap();
+    assert!(!history.motion_pending);
+    assert_eq!(history.settled_motions, 1);
+    assert_eq!(history.material_effects_committed, 0);
+}
+
+#[test]
 fn no_world_after_admission_cancels_on_outer_world_expiry() {
     let mut g = gate();
     accepted(&mut g);
@@ -419,4 +445,125 @@ fn a_valid_signature_cannot_skip_mandatory_semantic_checks() {
     assert!(denied.arm.is_none());
     assert!(denied.status.active.is_none());
     assert!(denied.status.armed.is_empty());
+}
+
+fn expect_history_rejection(step: &Step, expected: &str) {
+    let Some(haetae_runtime::Outcome::Rejected { error }) = &step.outcome else {
+        panic!("{step:?}");
+    };
+    assert_eq!(error, expected);
+    assert!(step.status.active.is_none());
+    assert!(!matches!(step.arm, Some(ArmOutput::Execute { .. })));
+}
+
+#[test]
+fn item_identity_conflict_does_not_erase_history_and_new_trusted_identity_still_works() {
+    let mut g = gate();
+    g.handle(world(1000, 0.0, Some(semantic(1000))), 1000);
+    let mut changed = semantic(1050);
+    changed["revision"] = json!(2);
+    changed["item"] = json!("pressurized");
+    expect_history_rejection(
+        &g.handle(world(1050, 0.0, Some(changed.clone())), 1050),
+        "history:item-identity-changed",
+    );
+    changed["item_id"] = json!("new-object-generation");
+    let observed = g.handle(world(1050, 0.0, Some(changed)), 1050);
+    assert!(matches!(
+        observed.outcome,
+        Some(haetae_runtime::Outcome::WorldUpdated { .. })
+    ));
+    arm(&mut g, Source::Vla);
+    let mut bound = binding();
+    bound["world_revision"] = json!(2);
+    bound["item_id"] = json!("new-object-generation");
+    let mut p = proposal(2, Source::Vla, Some(bound));
+    p.timestamp_ms = 1050;
+    assert!(matches!(
+        g.handle(Inbound::Proposal(p), 1050).arm,
+        Some(ArmOutput::Execute { .. })
+    ));
+}
+
+#[test]
+fn item_capacity_denies_new_registration_without_blocking_registered_positive_control_or_stop() {
+    let mut g = gate();
+    for i in 1..=256u64 {
+        let mut scene = semantic(1000 + i);
+        scene["revision"] = json!(i);
+        scene["item_id"] = json!(format!("item-{i}"));
+        let accepted = g.handle(world(1000 + i, 0.0, Some(scene)), 1000 + i);
+        assert!(matches!(
+            accepted.outcome,
+            Some(haetae_runtime::Outcome::WorldUpdated { .. })
+        ));
+    }
+    let mut scene = semantic(1300);
+    scene["revision"] = json!(257);
+    scene["item_id"] = json!("unrecordable-object");
+    expect_history_rejection(
+        &g.handle(world(1300, 0.0, Some(scene.clone())), 1300),
+        "history:item-capacity",
+    );
+    scene["item_id"] = json!("item-1");
+    g.handle(world(1300, 0.0, Some(scene)), 1300);
+    arm(&mut g, Source::Vla);
+    let mut bound = binding();
+    bound["world_revision"] = json!(257);
+    let mut p = proposal(2, Source::Vla, Some(bound));
+    p.timestamp_ms = 1300;
+    assert!(matches!(
+        g.handle(Inbound::Proposal(p), 1300).arm,
+        Some(ArmOutput::Execute { .. })
+    ));
+}
+
+#[test]
+fn container_history_retains_known_contents_but_fresh_observation_can_resolve_sensor_uncertainty() {
+    let mut g = gate();
+    let mut scene = semantic(1000);
+    scene["regions"] = json!([{
+        "id":"vessel","kind":"container","state":"active",
+        "bounds":{"min":{"x":1.3,"y":1,"z":0},"max":{"x":1.4,"y":1.1,"z":0.1}},
+        "contents":["bleach"],"contents_known":true
+    }]);
+    g.handle(world(1000, 0.0, Some(scene.clone())), 1000);
+    scene["revision"] = json!(2);
+    scene["observed_ms"] = json!(1050);
+    scene["regions"][0]["contents"] = json!([]);
+    scene["regions"][0]["contents_known"] = json!(false);
+    g.handle(world(1050, 0.0, Some(scene.clone())), 1050);
+    arm(&mut g, Source::Vla);
+    let mut bound = binding();
+    bound["world_revision"] = json!(2);
+    let mut p = proposal(2, Source::Vla, Some(bound));
+    p.timestamp_ms = 1050;
+    let denied = g.handle(Inbound::Proposal(p), 1050);
+    let Some(haetae_runtime::Outcome::Decision(d)) = denied.outcome else {
+        panic!("{denied:?}");
+    };
+    assert!(d
+        .fired
+        .contains(&"household:container:unknown-contents".into()));
+    scene["revision"] = json!(3);
+    scene["observed_ms"] = json!(1100);
+    scene["regions"][0]["contents_known"] = json!(true);
+    let state = g.handle(world(1100, 0.0, Some(scene.clone())), 1100);
+    assert_eq!(state.status.history.unwrap().retained_contaminants, 1);
+    arm(&mut g, Source::Vla);
+    let mut bound = binding();
+    bound["world_revision"] = json!(3);
+    let mut p = proposal(3, Source::Vla, Some(bound));
+    p.timestamp_ms = 1100;
+    assert!(matches!(
+        g.handle(Inbound::Proposal(p), 1100).arm,
+        Some(ArmOutput::Execute { .. })
+    ));
+    // Raw contents stay empty at the same revision while the active recheck
+    // must use the same retained facts as admission, not revoke a safe motion.
+    scene["observed_ms"] = json!(1150);
+    let monitored = g.handle(world(1150, 0.025, Some(scene)), 1150);
+    assert!(monitored.stop.is_none(), "{monitored:?}");
+    assert!(monitored.status.active.is_some());
+    assert_eq!(monitored.status.history.unwrap().retained_contaminants, 1);
 }

@@ -25,9 +25,16 @@
 - 시뮬레이터 평가용 알파 운영 명령, 공유용 허용 필드 리포트, CI 소스/검증 후보 패키지를 제공한다. 실물 보호나 인증 버전이 아니다.
 - 공식 UNO R4 Minima를 USB만 연결했고 사용자 승인으로 Rosetta를 설치했다. main `1b8a904`의 H1 LED 펌웨어를 업로드해 USB 실물 6개 시험을 통과했다. 갱신 없는 독립 잠금 USB 관측은204.2ms이며 호스트 중지/복구 뒤 자동 재가동이 없었다. USB 소프트웨어 상태 증거이고 GPIO·WDT reset·모터 정지·실물 인지는 미검증이다. H1은 USB writer를 신뢰한다. 후속 [H2 controller permits](docs/controller-permits.md)는 서명된 OFF-only 연결과 매 LED 명령 인증을 보드에서 검사하고 별도 승인 서비스를 제공한다. 실제 ROS arm/base M3·실물 모터 보호와 동일시하지 않는다.
 
-- `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 유효하게 서명된 6개 위험 명령과 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 영속 effect history, 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 아직 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
+- `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 유효하게 서명된 6개 위험 명령과 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 검증된 영속 material effect history, 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 아직 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
 
 - H2 UNO R4 Minima의 인증 허가·런타임 USB 경로 차단은 USB 실물 13개 시험, native 17개 시험과 Linux 역할 격리 시험을 통과했다. 최종 커밋별 리뷰·CI·머지 상태는 [PR19](https://github.com/haetae-robotics/haetae/pull/19)와 [H2 문서](docs/controller-permits.md)의 좁은 범위를 따른다. 보드에는 H2 강화 프로필을 올렸으며 이후 재업로드는 물리 RESET 진입이 필요하다. 개인 키·생성 헤더·장치 이미지는 로컬에만 있고 공개하지 않는다. GPIO·WDT reset·전원 차단·모터·실물 인지·secure boot는 미검증이다. 별도 [M3 Gazebo 허가](docs/gazebo-controller-permits.md)는 실제 가상 바퀴·팔의 최종 제어기에서 동작별 서명과 임대를 검사한다. 실물 MCU/모터 보호 결과가 아니다.
+
+## Durable household history (M2a)
+
+- [이력 문서](docs/household-history.md): household policy에서 관측된 내용물의 보수적 합집합, 물체/region kind와 관측 revision floor, 정확한 승인 동작의 예약을 기존 상태 파일 v2에 보존한다. 모드·서명 카운터·이력은 한 번의 atomic checkpoint로 저장하며 양의 명령 전에 완료한다.
+- 재시작은 pending motion을 interrupted로 남기고 취소/실측 정지를 요구한다. 같은 observer task revision의 step 재사용은 거부한다. 새로운 trusted task revision만 새 epoch를 만들며 오래된 binding은 지속 floor로 거부한다. 유효한 새 VLA 카운터만으로 재실행할 수 없다.
+- motion settling은 관절 측정의 증거이며 물질 이송/파지/작업 성공이 아니다. 모든 material effect commit은 0이다. M2 전체 effect ledger, 실물 identity/인지·clock epoch 재시작·전체 팔 geometry는 별도다.
+- Gazebo household 보고서는13개 필수 항목이다. 새 이력 검사는 정상 이동·정지 이후 중복 step 차단과 raw 빈 용기 주장 뒤 실제 Rust의 내용물 이력 거부를 요구한다. 정확한 최종 head의 리뷰/CI/실행 상태를 별도로 확인해야 한다.
 
 ## 실행
 

@@ -162,7 +162,9 @@ class HaetaeGate(Node):
             self.permit_reset = explicit_rearm(step)
             status = step.get("status") or {}
             self.permit_stop = not status.get("armed") or status.get("mode") not in ("normal", "caution")
-        self._publish_command(float(step["cmd"]["linear"]), float(step["cmd"]["angular"]))
+        retiring = self._arm_renewal_retiring(step)
+        if not retiring:
+            self._publish_command(float(step["cmd"]["linear"]), float(step["cmd"]["angular"]))
         if step.get("arm"):
             arm = step["arm"]
             if isinstance(arm, dict) and "execute" in arm:
@@ -181,6 +183,37 @@ class HaetaeGate(Node):
             self.outcome_pub.publish(String(data=json.dumps(step["outcome"])))
             if "decision" in step["outcome"]:
                 self.decision_pub.publish(String(data=json.dumps(step["outcome"]["decision"])))
+        return retiring
+
+    def _arm_renewal_retiring(self, step):
+        # Stop minting positive permits inside the existing admission reserve
+        # of an already admitted arm goal. Its last permit still expires at or
+        # before the original deadline; Rust then cancels and measures stop.
+        # This grants no time, reset, new goal, or stale-world grace period.
+        if (not self.permits or self.permit_reset or self.permit_stop
+                or step.get("arm") is not None or self.arm_goal_future is not None
+                or step["cmd"]["linear"] != 0 or step["cmd"]["angular"] != 0):
+            return False
+        status = step.get("status") or {}
+        active = status.get("active") or {}
+        if (active.get("action", {}).get("type") != "joint_trajectory"
+                or self.permits.active_arm == IDLE
+                or (self.permits.admitted_arm_holding and not self.permits.admitted_arm_expired)
+                or self.permits.admitted_arm != self.permits.active_arm
+                or self.permits.admitted_goal_sequence != self.permits.goal_sequence):
+            return False
+        expires, world_age = status.get("active_expires_ms"), status.get("world_age_ms")
+        if type(expires) is not int or type(world_age) is not int or world_age < 0:
+            return False
+        proposal_remaining = expires * 1_000_000 - self.permit_sim_ns
+        sim_age = self._now() * 1_000_000 - self.permit_sim_ns
+        wall_age = time.monotonic_ns() - self.permit_wall_ns
+        age = max(sim_age + self.permits.sim_backdate_ns, wall_age)
+        return (min(sim_age, wall_age) >= 0 and age < 50_000_000
+                and self.permit_world_remaining_ns - age > 50_000_000
+                and (self.world_max_age_ms - world_age) * 1_000_000 - age > 50_000_000
+                and proposal_remaining > 0 and self.permit_remaining_ns == proposal_remaining
+                and proposal_remaining - age <= 50_000_000)
 
     def _execute_arm(self, points):
         if self.arm_goal_future is not None or self.arm_goal is not None:
@@ -418,8 +451,9 @@ class HaetaeGate(Node):
                 if remaining_ns <= 0:
                     raise ExpiredActuation("trusted world did not advance within dual-clock freshness")
                 self.permit_remaining_ns = remaining_ns
-            self._publish(step)
+            retiring = self._publish(step)
             if (self.heartbeat_pub and not self.cancel_requested and not self.failed
+                    and not retiring
                     and (not self.permits or self.arm_goal_future is None)
                     and lease_renewable(step, elapsed_ms,
                     self.world_max_age_ms, self.max_actuation_response_ms)):

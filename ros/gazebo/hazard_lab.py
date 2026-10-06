@@ -226,6 +226,14 @@ class Kinematics:
         result.append(self.point(points[-1][1], pose, yaw))
         return result
 
+    def project_path(self, base_path, pose, yaw):
+        # Pure FK is prepared once in the robot frame. Only this inexpensive
+        # rigid transform depends on the latest measured base pose.
+        cosine, sine = math.cos(yaw), math.sin(yaw)
+        return [{"x": pose[0] + cosine * point["x"] - sine * point["y"],
+                 "y": pose[1] + sine * point["x"] + cosine * point["y"],
+                 "z": point["z"]} for point in base_path]
+
 
 def native_fixture_driver(commands, acknowledgements, stop):
     # Gazebo's blocking Python transport call can hold the GIL. A spawned
@@ -489,7 +497,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
     semantic_lock = threading.RLock()
     semantic_context = {"item": None, "contents": [], "revision": 0,
                         "task_revision": 0, "facts": None, "task_id": None,
-                        "base_pose": None, "base_yaw": None}
+                        "base_pose": None, "base_yaw": None, "step": 0, "step_id": None}
     verified_denial: dict[str, Optional[float]] = {"at": None}
     arm_dispatch = {"sent": False, "initialized": False}
     policy_binding = kinematics.household_policy(urdf)
@@ -592,7 +600,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 native.failure = str(exc)
                 return
 
-    def request(item, points, contents=()):
+    def request(item, points, contents=(), *, base_path=None):
         case = active["case"]
         sample = native.sample(f"hazard_{case}_target")
         item_sample = native.sample(f"hazard_{case}_item")
@@ -607,7 +615,9 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         if abs(world.speed()) >= 0.01:
             raise RuntimeError("base must be stationary")
         position, stamp = sample[:2]
-        path = kinematics.path(points, world.pose(), world.heading())
+        path = (kinematics.path(points, world.pose(), world.heading())
+                if base_path is None else
+                kinematics.project_path(base_path, world.pose(), world.heading()))
         joint_stamp = (
             world.joint.header.stamp.sec * 1000
             + world.joint.header.stamp.nanosec // 1_000_000
@@ -630,7 +640,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             "path": path,
             "regions": [
                 {
-                    "id": "fixture-target",
+                    "id": f"hazard_{active['case']}_target",
                     "kind": CASES[active["stage"] - 1][3],
                     "state": "active",
                     "bounds": {
@@ -649,14 +659,34 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             ],
         }
 
-    def set_semantic_context(item, contents=()):
+    def fresh_request(item, points, contents=()):
+        # Hundreds of full FK evaluations can consume the freshness window on
+        # a slow host. Prepare only immutable proposal geometry before reading
+        # observations; do not cache measurements, facts or their timestamps.
+        base_path = kinematics.path(points, (0.0, 0.0), 0.0)
+        # A newly delivered callback can still contain an old simulation stamp.
+        # Wait for the oldest original observation before speculative judging;
+        # never restamp evidence or retry a dispatched actuator proposal.
+        checked = None
+        def ready():
+            nonlocal checked
+            checked = request(item, points, contents, base_path=base_path)
+            age = checked["now_ms"] - checked["observed_ms"]
+            return 0 <= age < 75
+
+        wait_for(ready, 3, processes, "fresh original household observation stamps")
+        return checked
+
+    def set_semantic_context(item, contents=(), new_step=False):
         # Only this root-owned fixture transaction can set material/device
         # facts. The untrusted proposal writer receives references only.
         with semantic_lock:
             task_id = "household-lab-" + active["case"]
-            if (semantic_context["item"] != item
+            if (new_step or semantic_context["item"] != item
                     or semantic_context["contents"] != list(contents)
                     or semantic_context["task_id"] != task_id):
+                semantic_context["step"] += 1
+                semantic_context["step_id"] = f"fixture-motion-{semantic_context['step']}"
                 semantic_context.update(item=item, contents=list(contents), task_id=task_id,
                     task_revision=semantic_context["task_revision"] + 1,
                     base_pose={"x": world.pose()[0], "y": world.pose()[1]},
@@ -672,12 +702,27 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                                    semantic_context["contents"])
             except (RuntimeError, ValueError, KeyError):
                 return None
+            # A registered container stays in the closed-scene observation even
+            # when the root lab moves its native prop offstage. Fresh geometry
+            # comes from Gazebo; contents remain explicitly injected test facts.
+            if active["case"] != "chemicals":
+                container = native.sample("hazard_chemicals_target")
+                if not fresh_sample(container, now(), time.monotonic()):
+                    return None
+                pos = container[0]
+                measured["regions"].append({
+                    "id": "hazard_chemicals_target", "kind": "container", "state": "active",
+                    "bounds": {"min": {k:v-(0.09 if k == "z" else 0.06) for k,v in pos.items()},
+                               "max": {k:v+(0.09 if k == "z" else 0.06) for k,v in pos.items()}},
+                    "contents": [], "contents_known": True,
+                })
+                measured["observed_ms"] = min(measured["observed_ms"], container[1])
             facts = {"schema_version": 1, "task_revision": semantic_context["task_revision"],
-                     "task_id": semantic_context["task_id"], "step_id": "fixture-motion",
+                     "task_id": semantic_context["task_id"], "step_id": semantic_context["step_id"],
                      "robot_id": policy_binding["robot_id"],
                      "model_sha256": policy_binding["model_sha256"],
                      "tool_id": policy_binding["tool_id"],
-                     "item_id": "hazard_" + active["case"] + "_item",
+                     "item_id": "hazard_" + active["case"] + "_item_" + semantic_context["item"],
                      "item": measured["item"], "regions": measured["regions"],
                      "base_pose": semantic_context["base_pose"], "base_yaw": semantic_context["base_yaw"]}
             fingerprint = json.dumps(facts, sort_keys=True, separators=(",", ":"))
@@ -691,7 +736,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     "coverage_known": True}
 
     def current_binding(item, contents=()):
-        set_semantic_context(item, contents)
+        set_semantic_context(item, contents, new_step=True)
 
         def accepted_context():
             snapshot = world.semantic_last
@@ -808,7 +853,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     or not world.controllers_unlocked()):
                 raise RuntimeError("household preflight lost explicit arm authority")
             binding = current_binding(item, contents)
-            checked = request(item, points, contents)
+            checked = fresh_request(item, points, contents)
             base, yaw = world.pose(), world.heading()
             target = native.sample(f"hazard_{active['case']}_target")[0]
             started_wall = time.monotonic()
@@ -877,6 +922,13 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             processes,
             "signed arm gate finishes cancellation and settling",
         )
+        wait_for(lambda: world.states and
+                 world.states[-1][1].get("history", {}).get("motion_pending") is False,
+                 3, processes, "durable motion history observes post-cancel measured stop")
+        history = world.states[-1][1].get("history", {})
+        if (history.get("settled_motions", 0) < 1
+                or history.get("material_effects_committed") != 0):
+            raise AssertionError("missing motion-only settling history")
         completed_wall = time.monotonic_ns()
         wait_for(lambda: world.guard_states and
                  world.guard_states[-1][1].get("published_wall_ns", 0) >= completed_wall + 120_000_000,
@@ -913,8 +965,35 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             "accepted_waypoints_match": True,
             "max_joint_tracking_error_rad": tracking["max_error"],
             "tracking_samples": tracking["samples"],
+            "history_motion_settled": True,
+            "material_effects_committed": history["material_effects_committed"],
         }
 
+    def reject_consumed_step(points):
+        rearm_for_test()
+        snapshot = dict(world.semantic_last)
+        fields = ("schema_version", "task_revision", "task_id", "step_id", "robot_id",
+                  "model_sha256", "tool_id", "item_id")
+        binding = {**{k:snapshot[k] for k in fields}, "world_revision": snapshot["revision"]}
+        history = world.states[-1][1].get("history", {})
+        if history.get("settled_motions", 0) < 1 or history.get("motion_pending") is not False:
+            raise AssertionError("duplicate-step probe lacks prior settled positive control")
+        before = world.arm_positions()
+        submitted = time.monotonic()
+        world.propose_arm_plan(points, semantic=binding)
+        wait_for(lambda: any(t >= submitted and row.get("rejected", {}).get("error") == "history:consumed-step"
+                            for t,row in world.outcomes), 3, processes, "Rust refuses fresh-counter consumed step")
+        time.sleep(0.4)
+        drift = max(abs(a-b) for a,b in zip(before, world.arm_positions()))
+        if drift > 0.02 or any(t >= submitted and row.get("decision", {}).get("verdict") == "yun"
+                              and row.get("decision", {}).get("action", {}).get("type") == "joint_trajectory"
+                              for t,row in world.outcomes):
+            raise AssertionError("consumed step acquired actuator authority")
+        verified_denial["at"] = submitted
+        return {"blocked": True, "reason": "history:consumed-step", "denied_drift_rad": drift,
+                "settled_positive_control": True, "fresh_counter_signed_probe": True}
+
+    history_controls = {}
     try:
         judge_engine = HazardJudge(binary)
         world.semantic_snapshot = semantic_snapshot
@@ -1029,14 +1108,25 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 )
                 active["item_kind"] = "ammonia"
                 dangerous = plan(world.arm_positions(), start[0] + direction * 0.75)
-            checked = request(item, dangerous, contents)
+            checked = fresh_request(item, dangerous, contents)
             active["path"] = checked["path"][::10] + [checked["path"][-1]]
             verdict = judge_engine.decide(checked)
             if verdict["allowed"] or verdict["reason"] != expected:
                 raise AssertionError(f"{case}: expected {expected}, got {verdict}")
             if index == 1 and not arm_dispatch["sent"]:
                 initialize_for_test(item, contents)
-            gate_denial = reject_at_gate(dangerous, item, contents, "household:" + expected)
+            gate_contents = () if case == "chemicals" else contents
+            gate_denial = reject_at_gate(dangerous, item, gate_contents, "household:" + expected)
+            if case == "chemicals":
+                snapshot = world.semantic_last
+                container = next(r for r in snapshot["regions"] if r["id"] == "hazard_chemicals_target")
+                retained = world.states[-1][1].get("history", {}).get("retained_contaminants", 0)
+                if container["contents"] != [] or retained < 1:
+                    raise AssertionError("retention probe lacks empty raw facts and remembered contaminant")
+                history_controls["retained_contents"] = {"raw_contents_empty": True,
+                    "retained_contaminants": retained, "reason": "household:" + expected,
+                    "signed_gate_rejection_observed": True, "settled_positive_control": False,
+                    "denied_drift_rad": gate_denial["denied_drift_rad"]}
             drift = gate_denial["denied_drift_rad"]
             world._emit(
                 "hazard_decision",
@@ -1056,7 +1146,12 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 title + " · 정상 경로 검사",
                 detail="위험 공간을 유지한 채 반대 방향의 계획을 검사합니다.",
             )
-            control = execute(safe, item, contents)
+            control = execute(safe, item, gate_contents)
+            if case == "chemicals":
+                history_controls["retained_contents"]["settled_positive_control"] = control["history_motion_settled"]
+            if index == 1:
+                history_controls["consumed_step"] = reject_consumed_step(
+                    plan(world.arm_positions(), world.primary_joint() - direction * 0.2))
             world._emit(
                 "hazard_decision",
                 allowed=True,
@@ -1117,6 +1212,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             "hazard_checks": rows,
             "negative_controls": fault_controls,
             "mandatory_gate_controls": gate_controls,
+            "history_controls": history_controls,
+            "material_effects_committed": 0,
             "semantic_input": "trusted_injected_fixtures",
             "geometry_input": "native_gazebo_pose_and_measured_joint_fk",
             "execution_scope": "root_policy_bound_mandatory_rust_household_gate",
@@ -1160,6 +1257,10 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     "recent_controller_states": [state for _, state in world.guard_states[-100:]],
                     "failure_hold_observed": hold_observed,
                     "sim_ms": now(),
+                    "joint_stamp_ms": (world.joint.header.stamp.sec * 1000
+                        + world.joint.header.stamp.nanosec // 1_000_000) if world.joint else None,
+                    "odom_stamp_ms": (world.odom.header.stamp.sec * 1000
+                        + world.odom.header.stamp.nanosec // 1_000_000) if world.odom else None,
                     "sensor": {
                         k: world.sensor_info.get(k)
                         for k in (

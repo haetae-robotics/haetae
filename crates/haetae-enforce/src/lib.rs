@@ -2,6 +2,7 @@
 //! `Step.cmd` and must stop its actuator independently if this process dies.
 
 pub mod auth;
+mod history;
 mod state;
 pub use state::{set as set_state, show as show_state};
 
@@ -16,6 +17,8 @@ use haetae_core::{
     ActionKind, ActionProposal, JointWaypoint, Mode, Policy, Source, Twist2, Verdict,
 };
 use haetae_runtime::{Fault, Inbound, Outcome, Runtime, RuntimeConfig};
+use history::History;
+pub use history::HistoryStatus;
 use serde::Serialize;
 use state::StateStore;
 
@@ -68,6 +71,8 @@ pub struct Status {
     pub recorder_ok: bool,
     pub state_ok: bool,
     pub arm_cancelling: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistoryStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +126,7 @@ pub struct Enforcer {
     last_cmd: Twist2,
     tick_ms: u64,
     auth_checkpoint: Option<(u64, BTreeMap<Role, u64>)>,
+    history: Option<History>,
 }
 
 impl Enforcer {
@@ -133,21 +139,30 @@ impl Enforcer {
             return Err("tick_ms must be 1..=1000".into());
         }
         let state = match cfg.state_path.take() {
-            Some(path) => Some(StateStore::open(path, now_ms)?),
+            Some(path) => Some(StateStore::open(path, now_ms, &policy)?),
             None => None,
         };
         if let Some(s) = &state {
             cfg.runtime.start_mode = s.mode();
         }
         cfg.runtime.defer_seal = true;
+        let history = state
+            .as_ref()
+            .and_then(StateStore::history)
+            .or_else(|| History::new(&policy));
+        let mut runtime = Runtime::new(policy, None, cfg.runtime)?;
+        if let Some(h) = &history {
+            runtime.set_container_history(h.regions());
+        }
+        let recovery_stop = history.as_ref().is_some_and(|h| h.status().motion_pending);
         Ok(Self {
-            runtime: Runtime::new(policy, None, cfg.runtime)?,
+            runtime,
             state,
             active: None,
             active_arm: None,
-            arm_cancel_pending: false,
-            arm_cancelling: false,
-            cancel_since_ms: now_ms,
+            arm_cancel_pending: recovery_stop,
+            arm_cancelling: recovery_stop,
+            cancel_since_ms: if recovery_stop { 0 } else { now_ms },
             last_settle_stamp: 0,
             settle_samples: 0,
             last_now_ms: now_ms,
@@ -159,6 +174,7 @@ impl Enforcer {
             last_cmd: zero(),
             tick_ms: cfg.tick_ms,
             auth_checkpoint: None,
+            history,
         })
     }
 
@@ -217,6 +233,15 @@ impl Enforcer {
                     Some(Outcome::Rejected {
                         error: "no monitored actuator adapter for this action".into(),
                     })
+                } else if let Some(error) = self
+                    .history
+                    .as_ref()
+                    .and_then(|h| h.check_admission(&p).err())
+                {
+                    self.clear_active();
+                    self.armed.clear();
+                    forced = Some(StopReason::Denied);
+                    Some(self.runtime.reject_input(error, b"", now_ms))
                 } else {
                     let out = self
                         .runtime
@@ -241,13 +266,16 @@ impl Enforcer {
                                 &d.action
                             {
                                 self.clear_active();
+                                if let Some(history) = &mut self.history {
+                                    history.reserve(&p, d.action.as_ref().unwrap(), now_ms);
+                                }
                                 arm_execute = Some(points.clone());
                                 self.active_arm = Some(ActiveArm {
                                     proposal: p,
                                     semantic: self
                                         .runtime
-                                        .world()
-                                        .and_then(|world| world.semantic.clone()),
+                                        .effective_world()
+                                        .and_then(|world| world.semantic),
                                     started_ms: now_ms,
                                     expires_ms: d.expires_ms.unwrap_or(now_ms),
                                 });
@@ -263,10 +291,32 @@ impl Enforcer {
                 }
             }
             Inbound::World(w) => {
+                if let Some(error) = self
+                    .history
+                    .as_ref()
+                    .and_then(|h| h.check_world(&w, now_ms).err())
+                {
+                    return self.reject(error, b"", now_ms);
+                }
+                let observed = w.clone();
                 let out = self.runtime.handle(Inbound::World(w), now_ms).ok();
                 if matches!(out, Some(Outcome::WorldUpdated { .. })) {
+                    if let Some(h) = &mut self.history {
+                        h.observe(&observed, now_ms);
+                        self.runtime.set_container_history(h.regions());
+                    }
                     self.update_arm_settle();
                     self.rejudge(now_ms, &mut forced);
+                    if self.active_arm.is_none() {
+                        if let Some(h) = &mut self.history {
+                            h.observe_stop(
+                                &observed,
+                                now_ms,
+                                self.arm_cancelling,
+                                self.runtime.policy(),
+                            );
+                        }
+                    }
                 } else {
                     self.clear_active();
                     self.armed.clear();
@@ -383,7 +433,8 @@ impl Enforcer {
             return Err("arm:mode-changed".into());
         }
         let active = self.active_arm.as_ref().ok_or("arm:no-active")?;
-        let world = self.runtime.world().ok_or("arm:no-world")?;
+        let effective_world = self.runtime.effective_world().ok_or("arm:no-world")?;
+        let world = &effective_world;
         let arm = self.runtime.policy().arm.as_ref().ok_or("arm:no-policy")?;
         if self.runtime.policy().household.is_some() {
             let original = active
@@ -442,6 +493,13 @@ impl Enforcer {
     }
 
     fn clear_active(&mut self) {
+        self.clear_active_with_completion(false);
+    }
+
+    fn clear_active_with_completion(&mut self, expected_expiry: bool) {
+        if let Some(h) = &mut self.history {
+            h.retire(expected_expiry);
+        }
         self.active = None;
         if self.active_arm.take().is_some() {
             self.arm_cancel_pending = true;
@@ -545,7 +603,17 @@ impl Enforcer {
             self.armed.clear();
         }
         if matches!(reason, Some(StopReason::Expired)) {
-            self.clear_active();
+            let expected = self.active_arm.as_ref().is_some_and(|active| {
+                let ActionKind::JointTrajectory { points, .. } = &active.proposal.action else {
+                    return false;
+                };
+                active.expires_ms
+                    >= active
+                        .proposal
+                        .timestamp_ms
+                        .saturating_add(points.last().unwrap().time_from_start_ms)
+            });
+            self.clear_active_with_completion(expected);
         }
         let cmd = if reason.is_none() {
             self.active.as_ref().map_or(zero(), |a| a.approved)
@@ -597,6 +665,7 @@ impl Enforcer {
             recorder_ok: self.runtime.recorder_fault().is_none(),
             state_ok: self.state_ok,
             arm_cancelling: self.arm_cancelling,
+            history: self.history.as_ref().map(History::status),
         };
         Step {
             cmd,
@@ -611,21 +680,21 @@ impl Enforcer {
     pub fn commit(&mut self, now_ms: u64) -> Result<(), Box<dyn Error>> {
         self.runtime.commit();
         if let Some(state) = &mut self.state {
-            if let Err(e) = state.persist(self.runtime.mode(), now_ms) {
+            if let Err(e) = state.persist_checkpoint(
+                self.runtime.mode(),
+                self.auth_checkpoint.take(),
+                &self.history,
+                now_ms,
+            ) {
                 self.state_ok = false;
                 return Err(Box::new(e));
-            }
-            if let Some((epoch, counters)) = self.auth_checkpoint.take() {
-                if let Err(e) = state.persist_auth(epoch, &counters, now_ms) {
-                    self.state_ok = false;
-                    return Err(Box::new(e));
-                }
             }
         }
         Ok(())
     }
 
     pub fn close(mut self, now_ms: u64) -> Result<(), Box<dyn Error>> {
+        self.clear_active();
         self.commit(now_ms)?;
         self.runtime.close()?;
         if let Some(state) = self.state {

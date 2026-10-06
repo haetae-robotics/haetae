@@ -549,15 +549,20 @@ fn enforce_stdio(
         let actuating = step.cmd.linear != 0.0
             || step.cmd.angular != 0.0
             || matches!(step.arm.as_ref(), Some(ArmOutput::Execute { .. }));
-        // Persist the accepted signature counter before a command can move an
-        // actuator. A failed checkpoint exits without publishing that command.
-        if actuating {
+        // Positive commands and non-cancelling world acknowledgments wait for
+        // the atomic counter/history checkpoint. Cancellation still reaches the
+        // controller before fsync; such replies are not durable world receipts.
+        let checkpoint_first = actuating
+            || (step.status.history.is_some()
+                && matches!(step.outcome, Some(Outcome::WorldUpdated { .. }))
+                && !matches!(step.arm, Some(ArmOutput::Cancel)));
+        if checkpoint_first {
             gate.commit(last_t)?;
         }
         writeln!(output, "{}", serde_json::to_string(&step)?)?;
         output.flush()?;
         // Stop and cancel must reach the controller without waiting for fsync.
-        if !actuating {
+        if !checkpoint_first {
             gate.commit(last_t)?;
         }
     }

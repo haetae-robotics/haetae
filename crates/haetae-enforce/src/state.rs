@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::auth::Role;
-use haetae_core::Mode;
+use crate::history::History;
+use haetae_core::{Mode, Policy};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +22,8 @@ struct StateFile {
     auth_epoch: u64,
     #[serde(default)]
     counters: BTreeMap<Role, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    history: Option<History>,
 }
 
 pub struct StateStore {
@@ -29,38 +32,72 @@ pub struct StateStore {
     current: Mode,
     auth_epoch: u64,
     counters: BTreeMap<Role, u64>,
+    history: Option<History>,
 }
 
 impl StateStore {
-    pub fn open(path: PathBuf, now_ms: u64) -> io::Result<Self> {
+    pub fn open(path: PathBuf, now_ms: u64, policy: &Policy) -> io::Result<Self> {
         let lock = lock(&path)?;
-        let (mode, reason, auth_epoch, counters) = match fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<StateFile>(&bytes) {
-                Ok(s) if s.v == 1 && !s.running => (s.mode, "restart", s.auth_epoch, s.counters),
-                Ok(s) if s.v == 1 => (
-                    s.mode.max(Mode::Hold),
-                    "unclean-restart",
-                    s.auth_epoch,
-                    s.counters,
-                ),
-                _ => (Mode::Hold, "state:untrusted", 0, BTreeMap::new()),
-            },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                (Mode::Hold, "first-boot", 0, BTreeMap::new())
+        let protected = policy.household.is_some();
+        let (loaded, startup_reason) = match read_state(&path) {
+            Ok(state) => {
+                let reason = if state.running {
+                    "unclean-restart"
+                } else {
+                    "restart"
+                };
+                (Some(state), reason)
             }
-            Err(_) => (Mode::Hold, "state:untrusted", 0, BTreeMap::new()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (None, "first-boot"),
+            Err(e) if protected => return Err(e),
+            Err(_) => (None, "state:untrusted"),
         };
+        let mut history = loaded.as_ref().and_then(|s| s.history.clone());
+        if loaded
+            .as_ref()
+            .is_some_and(|s| s.v == 2 && s.history.is_none())
+        {
+            return Err(io::Error::other("v2 history is missing"));
+        }
+        let history_initialized = protected && history.is_none();
+        if history_initialized {
+            history = History::new(policy);
+        }
+        if let Some(h) = &mut history {
+            h.validate(policy).map_err(io::Error::other)?;
+            h.restart();
+        }
         let store = StateStore {
             path,
             _lock: lock,
-            current: mode,
-            auth_epoch,
-            counters,
+            current: loaded.as_ref().map_or(Mode::Hold, |s| {
+                if s.running {
+                    s.mode.max(Mode::Hold)
+                } else {
+                    s.mode
+                }
+            }),
+            auth_epoch: loaded.as_ref().map_or(0, |s| s.auth_epoch),
+            counters: loaded.map_or_else(BTreeMap::new, |s| s.counters),
+            history,
         };
-        // Persist the running marker before any motion can be admitted. A
-        // SIGKILL between a mode raise and commit then restarts in Hold.
-        store.write(mode, true, reason, "haetae", now_ms)?;
+        // Running marker and interrupted reservation are one atomic write.
+        store.write(
+            store.current,
+            true,
+            &if history_initialized {
+                format!("history-initialized:{startup_reason}")
+            } else {
+                startup_reason.into()
+            },
+            "haetae",
+            now_ms,
+        )?;
         Ok(store)
+    }
+
+    pub fn history(&self) -> Option<History> {
+        self.history.clone()
     }
 
     pub fn mode(&self) -> Mode {
@@ -71,28 +108,55 @@ impl StateStore {
         (self.auth_epoch, self.counters.clone())
     }
 
-    pub fn persist(&mut self, mode: Mode, now_ms: u64) -> io::Result<()> {
-        if mode != self.current {
-            self.write(mode, true, "mode-raised", "haetae", now_ms)?;
-            self.current = mode;
-        }
-        Ok(())
-    }
-
-    pub fn persist_auth(
+    /// Mode, authentication counters and motion reservation share one commit.
+    pub fn persist_checkpoint(
         &mut self,
-        epoch: u64,
-        counters: &BTreeMap<Role, u64>,
+        mode: Mode,
+        auth: Option<(u64, BTreeMap<Role, u64>)>,
+        history: &Option<History>,
         now_ms: u64,
     ) -> io::Result<()> {
+        let (epoch, counters) = auth.unwrap_or((self.auth_epoch, self.counters.clone()));
         if epoch < self.auth_epoch {
             return Err(io::Error::other("auth epoch rollback"));
         }
-        if epoch != self.auth_epoch || counters != &self.counters {
-            self.auth_epoch = epoch;
-            self.counters = counters.clone();
-            self.write(self.current, true, "auth-checkpoint", "haetae", now_ms)?;
+        if mode == self.current
+            && epoch == self.auth_epoch
+            && counters == self.counters
+            && history == &self.history
+        {
+            return Ok(());
         }
+        let state = StateFile {
+            v: if history.is_some() { 2 } else { 1 },
+            mode,
+            running: true,
+            reason: if history.is_some() {
+                "execution-checkpoint"
+            } else if mode != self.current {
+                if epoch != self.auth_epoch || counters != self.counters {
+                    "mode-raised:auth-checkpoint"
+                } else {
+                    "mode-raised"
+                }
+            } else {
+                "auth-checkpoint"
+            }
+            .into(),
+            set_by: "haetae".into(),
+            ts_ms: now_ms,
+            auth_epoch: epoch,
+            counters: counters.clone(),
+            history: history.clone(),
+        };
+        write_atomic(
+            &self.path,
+            &serde_json::to_vec(&state).map_err(io::Error::other)?,
+        )?;
+        self.current = mode;
+        self.auth_epoch = epoch;
+        self.counters = counters;
+        self.history = history.clone();
         Ok(())
     }
 
@@ -109,7 +173,7 @@ impl StateStore {
         ts_ms: u64,
     ) -> io::Result<()> {
         let state = StateFile {
-            v: 1,
+            v: if self.history.is_some() { 2 } else { 1 },
             mode,
             running,
             reason: reason.into(),
@@ -117,45 +181,63 @@ impl StateStore {
             ts_ms,
             auth_epoch: self.auth_epoch,
             counters: self.counters.clone(),
+            history: self.history.clone(),
         };
         let bytes = serde_json::to_vec(&state).map_err(io::Error::other)?;
         write_atomic(&self.path, &bytes)
     }
 }
 
-pub fn show(path: &Path) -> io::Result<serde_json::Value> {
-    let bytes = fs::read(path)?;
+const MAX_STATE_BYTES: u64 = 1024 * 1024;
+
+fn read_state(path: &Path) -> io::Result<StateFile> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(MAX_STATE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_STATE_BYTES {
+        return Err(io::Error::other("state exceeds 1 MiB"));
+    }
     let state: StateFile = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    if state.v != 1 {
+    if !matches!(state.v, 1 | 2)
+        || (state.v == 1 && state.history.is_some())
+        || (state.v == 2 && state.history.is_none())
+    {
         return Err(io::Error::other("unsupported state version"));
     }
-    serde_json::to_value(state).map_err(io::Error::other)
+    Ok(state)
 }
 
-/// Offline operator operation. Fails while an enforcer holds the state lock.
+pub fn show(path: &Path) -> io::Result<serde_json::Value> {
+    serde_json::to_value(read_state(path)?).map_err(io::Error::other)
+}
+
+/// Offline mode reset preserves object facts, consumed work and pending stops.
 pub fn set(path: &Path, mode: Mode, by: &str, reason: &str, now_ms: u64) -> io::Result<()> {
     if by.trim().is_empty() || reason.trim().is_empty() {
         return Err(io::Error::other("operator and reason are required"));
     }
     let _guard = lock(path)?;
-    let (auth_epoch, counters) = match fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice::<StateFile>(&bytes) {
-            Ok(s) if s.v == 1 => (s.auth_epoch, s.counters),
-            _ => return Err(io::Error::other("cannot reset an untrusted state file")),
+    let mut state = match read_state(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => StateFile {
+            v: 1,
+            mode: Mode::Hold,
+            running: false,
+            reason: String::new(),
+            set_by: String::new(),
+            ts_ms: now_ms,
+            auth_epoch: 0,
+            counters: BTreeMap::new(),
+            history: None,
         },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => (0, BTreeMap::new()),
         Err(e) => return Err(e),
     };
-    let state = StateFile {
-        v: 1,
-        mode,
-        running: false,
-        reason: reason.into(),
-        set_by: by.into(),
-        ts_ms: now_ms,
-        auth_epoch,
-        counters,
-    };
+    state.mode = mode;
+    state.running = false;
+    state.reason = reason.into();
+    state.set_by = by.into();
+    state.ts_ms = now_ms;
     write_atomic(path, &serde_json::to_vec(&state).map_err(io::Error::other)?)
 }
 
@@ -177,6 +259,9 @@ fn lock(path: &Path) -> io::Result<File> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if bytes.len() as u64 > MAX_STATE_BYTES {
+        return Err(io::Error::other("state exceeds 1 MiB"));
+    }
     static NONCE: AtomicU64 = AtomicU64::new(0);
     let parent = path
         .parent()

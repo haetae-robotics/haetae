@@ -101,6 +101,7 @@ class PermitSigner:
         self.goal_sequence = 0
         self.admitted_goal_sequence = 0
         self.admitted_arm_holding = True
+        self.admitted_arm_expired = False
 
     def observe(self, target, value):
         nonce = value.get("nonce", "")
@@ -120,6 +121,7 @@ class PermitSigner:
             if type(holding) is not bool:
                 raise ValueError("invalid admitted arm holding state")
             self.admitted_arm_holding = holding
+            self.admitted_arm_expired = holding and value.get("reason") == "expired"
 
     def sign(self, target, kind, digest, sim_ns, remaining_ns=MAX_LEASE_NS, wall_ns=None):
         if target not in self.challenges:
