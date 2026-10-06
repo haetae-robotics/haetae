@@ -630,7 +630,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             "path": path,
             "regions": [
                 {
-                    "id": f"hazard_{case}_target",
+                    "id": f"hazard_{active['case']}_target",
                     "kind": CASES[active["stage"] - 1][3],
                     "state": "active",
                     "bounds": {
@@ -1097,7 +1097,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     raise AssertionError("retention probe lacks empty raw facts and remembered contaminant")
                 history_controls["retained_contents"] = {"raw_contents_empty": True,
                     "retained_contaminants": retained, "reason": "household:" + expected,
-                    "signed_gate_rejection_observed": True, "settled_positive_control": True,
+                    "signed_gate_rejection_observed": True, "settled_positive_control": False,
                     "denied_drift_rad": gate_denial["denied_drift_rad"]}
             drift = gate_denial["denied_drift_rad"]
             world._emit(
@@ -1119,6 +1119,8 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 detail="위험 공간을 유지한 채 반대 방향의 계획을 검사합니다.",
             )
             control = execute(safe, item, gate_contents)
+            if case == "chemicals":
+                history_controls["retained_contents"]["settled_positive_control"] = control["history_motion_settled"]
             if index == 1:
                 history_controls["consumed_step"] = reject_consumed_step(
                     plan(world.arm_positions(), world.primary_joint() - direction * 0.2))

@@ -350,6 +350,9 @@ impl History {
         if self.pending.is_some() {
             return Err("history:unresolved-motion".into());
         }
+        if binding.task_revision < self.step_epoch {
+            return Err("history:stale-task-revision".into());
+        }
         if binding.task_revision <= self.blocked_epoch {
             return Err("history:interrupted-task-revision".into());
         }

@@ -105,9 +105,14 @@ response or cancel callback cannot refresh that positive authority.
 
 Before signing non-stop permits, the owner rechecks both original clock ages
 and reserves the existing 50ms admission window within the original remaining
-world/proposal budget. If that margin is unavailable, it revokes and disarms
-early rather than dispatching an already nearly expired grant. Expiry is never
-extended. Non-reset arm renewal is also suppressed while trusted controller
+world/proposal budget. New commands/goals/resets with insufficient margin
+revoke and disarm. For an already admitted arm goal, a timely, healthy renewal
+round trip inside the original proposal's final admission reserve publishes
+state only: no base command or arm lease is signed, and existing controller
+permits retain their expiry. Rust still owns ordinary expiry, cancellation and
+measured stop confirmation. Insufficient world margin or stale round trips
+still revoke and disarm immediately. Expiry is never extended.
+Non-reset arm renewal is also suppressed while trusted controller
 telemetry reports holding; only an explicit accepted Rust stop can reset it.
 
 World-budget admission cutoff has a distinct owner rejection from proposal TTL

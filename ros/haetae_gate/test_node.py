@@ -8,6 +8,7 @@ import unittest
 from bridge import (BridgeFailure, StaleActuation, ExpiredActuation,
                     require_fresh_actuation, lease_renewable, reject_expired_actuation)
 from proposals import InvalidProposal
+from controller_permits import explicit_rearm
 
 tree = ast.parse(Path(__file__).with_name('node.py').read_text())
 definition = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'HaetaeGate')
@@ -20,7 +21,7 @@ environment = dict(json=json, time=SimpleNamespace(monotonic=lambda: clock.value
                    BridgeFailure=BridgeFailure, StaleActuation=StaleActuation,
                    ExpiredActuation=ExpiredActuation, InvalidProposal=InvalidProposal,
                    require_fresh_actuation=require_fresh_actuation, lease_renewable=lease_renewable,
-                   reject_expired_actuation=reject_expired_actuation)
+                   reject_expired_actuation=reject_expired_actuation, explicit_rearm=explicit_rearm)
 exec(compile(ast.Module(body=[definition], type_ignores=[]), 'actual-node-methods', 'exec'), environment)
 Gate = environment['HaetaeGate']
 
@@ -110,6 +111,63 @@ class NodeBoundaryTest(unittest.TestCase):
         g.permit_remaining_ns += 1
         g._permit("arm", "lease", "a" * 64)
         self.assertEqual(signed[-1][3:], (1_000_000_000, 56_000_001, 0))
+
+    def retiring_arm(self):
+        g = self.gate
+        g.arm_goal_future = None
+        g.permits = SimpleNamespace(sim_backdate_ns=0, challenges={"arm": "b" * 32},
+            active_arm="a" * 64, admitted_arm="a" * 64, admitted_arm_holding=False,
+            goal_sequence=3, admitted_goal_sequence=3)
+        g.permit_reset = g.permit_stop = False
+        g.permit_sim_ns, g.permit_wall_ns = 1_000_000_000, 0
+        g.permit_remaining_ns = 56_000_000
+        g.step['status'].update(armed=['vla'], active={"action": {"type": "joint_trajectory"}},
+                                active_expires_ms=1056)
+        clock.value = .006
+        return g
+
+    def test_admitted_arm_retirement_mints_nothing_and_preserves_engine_expiry(self):
+        g = self.retiring_arm()
+        self.assertTrue(g._arm_renewal_retiring(g.step))
+        commands, states = [], []
+        g._publish_command = lambda *args: commands.append(args)
+        g.state_pub = SimpleNamespace(publish=lambda msg: states.append(json.loads(msg.data)))
+        g.outcome_pub = g.decision_pub = SimpleNamespace(publish=lambda msg: None)
+        g.arm_joints = []
+        g._publish = lambda step: Gate._publish(g, step)
+        g.permit_world = SimpleNamespace(observe=lambda *args: None,
+                                        remaining=lambda *args: 200_000_000)
+        g._permit = lambda *args: self.fail('retirement must mint no positive permit')
+        g._receive(lambda: g.step)
+        self.assertFalse(commands)
+        self.assertFalse(g.heartbeats)
+        self.assertFalse(g.requests)
+        self.assertFalse(g.aborts)
+        self.assertEqual(states[-1]['active_expires_ms'], 1056)
+        self.assertEqual(states[-1]['active'], g.step['status']['active'])
+
+    def test_retirement_cannot_hide_new_commands_staleness_or_controller_loss(self):
+        g = self.retiring_arm()
+        self.assertTrue(g._arm_renewal_retiring(g.step))
+        for field, value in (('permit_reset', True), ('permit_stop', True),
+                             ('arm_goal_future', object()), ('permit_world_remaining_ns', 56_000_000),
+                             ('permit_remaining_ns', 56_000_001), ('permit_remaining_ns', 6_000_000)):
+            old = getattr(g, field)
+            setattr(g, field, value)
+            self.assertFalse(g._arm_renewal_retiring(g.step), field)
+            setattr(g, field, old)
+        for field, value in (('admitted_arm_holding', True), ('admitted_arm', 'c' * 64),
+                             ('admitted_goal_sequence', 2), ('active_arm', '0' * 64)):
+            old = getattr(g.permits, field)
+            setattr(g.permits, field, value)
+            self.assertFalse(g._arm_renewal_retiring(g.step), field)
+            setattr(g.permits, field, old)
+        for arm in ('cancel', {'execute': {'points': []}}):
+            self.assertFalse(g._arm_renewal_retiring({**g.step, 'arm': arm}))
+        self.assertFalse(g._arm_renewal_retiring({**g.step, 'cmd': {'linear': .1, 'angular': 0}}))
+        for when in (-.001, .05):
+            clock.value = when
+            self.assertFalse(g._arm_renewal_retiring(g.step))
 
     def test_world_admission_cutoff_is_distinct_from_proposal_expiry(self):
         g = self.gate

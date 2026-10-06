@@ -522,7 +522,7 @@ fn container_history_retains_known_contents_but_fresh_observation_can_resolve_se
     scene["revision"] = json!(3);
     scene["observed_ms"] = json!(1100);
     scene["regions"][0]["contents_known"] = json!(true);
-    let state = g.handle(world(1100, 0.0, Some(scene)), 1100);
+    let state = g.handle(world(1100, 0.0, Some(scene.clone())), 1100);
     assert_eq!(state.status.history.unwrap().retained_contaminants, 1);
     arm(&mut g, Source::Vla);
     let mut bound = binding();
@@ -533,4 +533,11 @@ fn container_history_retains_known_contents_but_fresh_observation_can_resolve_se
         g.handle(Inbound::Proposal(p), 1100).arm,
         Some(ArmOutput::Execute { .. })
     ));
+    // Raw contents stay empty at the same revision while the active recheck
+    // must use the same retained facts as admission, not revoke a safe motion.
+    scene["observed_ms"] = json!(1150);
+    let monitored = g.handle(world(1150, 0.025, Some(scene)), 1150);
+    assert!(monitored.stop.is_none(), "{monitored:?}");
+    assert!(monitored.status.active.is_some());
+    assert_eq!(monitored.status.history.unwrap().retained_contaminants, 1);
 }

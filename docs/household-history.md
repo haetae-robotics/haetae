@@ -44,6 +44,8 @@ cannot repeat a consumed step. Only a newer **trusted observer** task revision
 starts a new task epoch; old entries can then be retired because the durable
 world/task floor and exact binding prevent old-epoch admission. This is not
 lifetime deduplication of a logical task across observer-authorized new epochs.
+The current observer contract requires a newer task revision for a different
+task or step ID: in normal operation it admits one motion per task revision.
 
 One unresolved motion blocks further motion. STOP, faults, malformed/rejected
 input, stale observations, revocation and restart preserve an `interrupted`
@@ -61,6 +63,12 @@ positions within the existing tracking tolerance of the final waypoint produce
 become success. A resolved interrupted motion additionally requires a newer
 trusted task revision, explicit STOP/rearm and a new approved proposal.
 Settling proves **kinematics only**, never a task effect.
+An explicit STOP/rearm or stale observation during `awaiting_stop` interrupts
+the record; consumers must wait for `motion_pending: false` before rearming.
+The signed ROS adapter mints no further positive permits during the last
+controller admission reserve of an already admitted arm goal. Existing permits
+keep their original expiry, and Rust's expiry/cancel and measured stop checks
+remain required. World or round-trip staleness still interrupts immediately.
 
 ## Persistence, bounds and clocks
 
@@ -72,6 +80,10 @@ share one atomic rename/file-and-directory-sync transaction. Positive output
 is discarded if that checkpoint fails. A non-cancelling household World reply
 also waits for its checkpoint. Urgent STOP/cancellation is emitted first and
 then checkpointed: a cancelling reply is **not a durable observation receipt**.
+The trusted observer must re-publish the same facts/revision after a cancelling
+reply and wait for a non-cancelling World acknowledgement before treating them
+as durable. Process close does not emit a Cancel reply; the independent final
+controller watchdog must stop it, and restart still requires measured recovery.
 Interrupted reservations persisted before execution remain the recovery guard.
 
 Existing/unparseable, oversized, wrong-version, inconsistent or pin-mismatched

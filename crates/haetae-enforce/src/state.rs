@@ -39,11 +39,18 @@ impl StateStore {
     pub fn open(path: PathBuf, now_ms: u64, policy: &Policy) -> io::Result<Self> {
         let lock = lock(&path)?;
         let protected = policy.household.is_some();
-        let loaded = match read_state(&path) {
-            Ok(state) => Some(state),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        let (loaded, startup_reason) = match read_state(&path) {
+            Ok(state) => {
+                let reason = if state.running {
+                    "unclean-restart"
+                } else {
+                    "restart"
+                };
+                (Some(state), reason)
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (None, "first-boot"),
             Err(e) if protected => return Err(e),
-            Err(_) => None,
+            Err(_) => (None, "state:untrusted"),
         };
         let mut history = loaded.as_ref().and_then(|s| s.history.clone());
         if loaded
@@ -81,7 +88,7 @@ impl StateStore {
             if history_initialized {
                 "history-initialized"
             } else {
-                "startup"
+                startup_reason
             },
             "haetae",
             now_ms,

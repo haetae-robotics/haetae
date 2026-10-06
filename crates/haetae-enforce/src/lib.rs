@@ -274,8 +274,8 @@ impl Enforcer {
                                     proposal: p,
                                     semantic: self
                                         .runtime
-                                        .world()
-                                        .and_then(|world| world.semantic.clone()),
+                                        .effective_world()
+                                        .and_then(|world| world.semantic),
                                     started_ms: now_ms,
                                     expires_ms: d.expires_ms.unwrap_or(now_ms),
                                 });
