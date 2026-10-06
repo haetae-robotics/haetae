@@ -653,12 +653,15 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         # A newly delivered callback can still contain an old simulation stamp.
         # Wait for the oldest original observation before speculative judging;
         # never restamp evidence or retry a dispatched actuator proposal.
+        checked = None
         def ready():
+            nonlocal checked
             checked = request(item, points, contents)
             age = checked["now_ms"] - checked["observed_ms"]
-            return checked if 0 <= age < 75 else False
+            return 0 <= age < 75
 
-        return wait_for(ready, 3, processes, "fresh original household observation stamps")
+        wait_for(ready, 3, processes, "fresh original household observation stamps")
+        return checked
 
     def set_semantic_context(item, contents=(), new_step=False):
         # Only this root-owned fixture transaction can set material/device

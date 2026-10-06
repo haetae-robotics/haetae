@@ -41,7 +41,8 @@ class WorldPublicationTest(unittest.TestCase):
             for _ in range(4):
                 checked = check()
                 if checked:
-                    return checked
+                    # The production wait_for returns a wall-clock timestamp.
+                    return 10.0
             raise TimeoutError(description)
         scope = {"request": request, "wait_for": wait, "processes": {}}
         exec(compile(ast.Module(body=[method], type_ignores=[]), "actual-household-freshness", "exec"), scope)
