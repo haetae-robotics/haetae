@@ -12,7 +12,8 @@ import time
 
 from bench_link import LinkError, SerialLink
 from bench_gate import BenchGate
-from bench_evidence import scheduling_loss
+from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, h1_timing_loss,
+                            scheduling_loss)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "bench"
@@ -82,7 +83,31 @@ def protocol_case(name, attack, reason):
         device.close()
 
 
-def host_case(name, scenario="allow", interrupt=None):
+def host_case(name, scenario="allow", interrupt=None, timing=None):
+    """One host scenario, restarted only after a timing-inconclusive attempt (never a pass).
+
+    Each attempt is a fresh device emulator and host (new gate, keys and USB session).
+    """
+    timing = TimingRecord("H1") if timing is None else timing
+    # This case's retry logs from an earlier local run would sit beside this run's attempts. No case
+    # name contains "-retry", so the pattern matches no other case's logs.
+    for stale in OUT.glob(name + "-retry[0-9]*"):
+        stale.unlink()
+    return bounded_attempts(name, lambda label: host_attempt(label, scenario, interrupt), timing,
+                            lambda label: OUT / (label + ".jsonl"), "fresh device emulator and host")
+
+
+def ready_state(path):
+    """Parsed ready file, None if the host never wrote one, or a marker when unreadable."""
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        return "unreadable"
+
+
+def host_attempt(name, scenario="allow", interrupt=None):
     device = Device(name)
     host = None
     gate_pid = None
@@ -96,8 +121,22 @@ def host_case(name, scenario="allow", interrupt=None):
                                      str(ROOT / "tools"), str(ROOT / "target/release/haetae"),
                                      device.port, scenario, str(ready)],
                                     stdout=log, stderr=log, start_new_session=True)
+            def timing_loss(code):
+                # Called only after the host exited, so its log and ready file are final.
+                # Inconclusive only for a fail-closed timing loss before any fault, delivered
+                # stop decision or interrupt; anything else stays an ordinary failure.
+                try:
+                    wait_for(lambda: device_settled(device.events()), 1)
+                except AssertionError:
+                    pass  # no stop evidence: h1_timing_loss returns None
+                time.sleep(.05)  # rows for bytes the host wrote just before it exited
+                evidence = h1_timing_loss(Path(log.name).read_text(), code, ready_state(ready), device.events())
+                if evidence is not None:
+                    raise Inconclusive(evidence)
             def is_ready():
                 if host.poll() is not None:
+                    # Before positive control no interrupt was applied, so every case classifies.
+                    timing_loss(host.returncode)
                     raise AssertionError("host failed before positive control; see " + str(log.name))
                 if ready.exists():
                     try:
@@ -122,11 +161,13 @@ def host_case(name, scenario="allow", interrupt=None):
             code = host.wait(timeout=3)
             availability = "normal"
             if interrupt is None:
-                if scenario != "allow":
-                    assert json.loads(ready.read_text())["fault"] == scenario, "stopped before injecting intended fault"
                 expected_expiry = (scenario == "world-loss" and code == 1 and
                                    "stale actuation response: world expired" in Path(log.name).read_text())
                 measured_loss = scheduling_loss(Path(log.name).read_text(), code, scenario, device.events())
+                if code != 0 and not (expected_expiry or measured_loss):
+                    timing_loss(code)  # raises Inconclusive only before the fault, with fail-closed evidence
+                if scenario != "allow":
+                    assert json.loads(ready.read_text())["fault"] == scenario, "stopped before injecting intended fault"
                 normal_exit = code == 0 and (scenario != "allow" or stopped["reason"] == "stop")
                 assert normal_exit or expected_expiry or measured_loss, "host scenario failed; see " + str(log.name)
                 if measured_loss:
@@ -168,6 +209,7 @@ def main():
     report["source_dirty"] = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip())
     source_paths = sorted((ROOT / "hardware").rglob("*.h")) + sorted((ROOT / "hardware").rglob("*.ino"))
     report["firmware_sha256"] = {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in source_paths}
+    timing = TimingRecord("H1")  # non-blocking; never a pass/fail input
     try:
         subprocess.run(["cargo", "build", "--release", "--locked", "-p", "haetae"], cwd=ROOT, check=True)
         report["gate_sha256"] = hashlib.sha256((ROOT / "target" / "release" / "haetae").read_bytes()).hexdigest()
@@ -192,12 +234,12 @@ def main():
         subprocess.run([str(OUT / "guard-test")], check=True)
         report["core_tests_passed"] = True
         cases = [
-            ("host-kill", lambda: host_case("host-kill", interrupt="kill")),
-            ("host-pause-resume", lambda: host_case("host-pause-resume", interrupt="pause")),
-            ("rust-kill", lambda: host_case("rust-kill", interrupt="gate-kill")),
+            ("host-kill", lambda: host_case("host-kill", interrupt="kill", timing=timing)),
+            ("host-pause-resume", lambda: host_case("host-pause-resume", interrupt="pause", timing=timing)),
+            ("rust-kill", lambda: host_case("rust-kill", interrupt="gate-kill", timing=timing)),
         ]
         for scenario in ("person", "world-loss", "replay", "invalid-signature", "allow"):
-            cases.append((scenario, lambda s=scenario: host_case(s, s)))
+            cases.append((scenario, lambda s=scenario: host_case(s, s, timing=timing)))
         def raw(link, content):
             os.write(link.fd, content)
         def poll_without_run(link):
@@ -218,12 +260,16 @@ def main():
             report["cases"].append(result)
             report["availability_degraded"] |= result.get("availability") == "host-scheduling-loss"
             label = "host-scheduling-loss (fail-closed)" if result.get("availability") == "host-scheduling-loss" else name
+            if result.get("attempt", 1) > 1:
+                label += f" (attempt {result['attempt']}, after timing-inconclusive restarts)"
             print(f"PASS {label}: {result['stop_reason']} / {result['last_run_to_off_ms']} ms", flush=True)
         report["passed"] = True
     except BaseException as exc:
         report["error"] = str(exc)
         raise
     finally:
+        # Per-attempt cadence and every inconclusive attempt's evidence, also when a case failed.
+        report["timing"] = timing.payload()
         (OUT / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print("Software-only report: " + str(OUT / "report.json"))
 
