@@ -237,18 +237,118 @@ activation/fixture reset is recorded in `setup.log`.
 
 `controller-permits.json` records separate normal wheel/arm physical movement,
 independent expiry, and unsigned, payload-altered, signature-altered, replayed,
-delayed and cross-target commands for each controller. Negative cases require
+delayed and cross-target commands for each controller, plus an arm renewal
+signed 60 ms in the past while the arm moves under a live goal. That renewal
+must be refused for `freshness`. The controller's own hold must begin after the
+renewal left, before the goal's lease could end on either clock, and within
+three controller updates of the update stamp on the first arm telemetry row
+that shows the refusal. That row is published every 50 ms, so the check allows
+a hold up to about eight updates after the refusal itself. From that row's
+update, or from the hold if it came earlier, the arm may move at most 0.02 rad.
+Negative cases require
 fresh unlocked telemetry under the same nonce before delivery, no acceptance,
 one new rejection with the expected binding/signature/sequence/freshness reason
-observed before the prior lease's wall expiry, holding state, at most 0.02 m/rad motion drift
-and no rearm from subsequent traffic. Native tests cover clock rollback, exact
-expiry boundaries, stale activation nonces, oversized parser inputs and latch
-recovery. Ordinary ROS/Gazebo scenarios still exercise the production
+observed before the prior lease's wall expiry (for the base, more than 20 ms
+before it), the holding state that refusal latched (a latched wheel or arm
+controller keeps reporting the refusal's reason, while an unlatched one would
+report `expired` once the lease ends; the arm must also hold within three
+controller updates of the first telemetry row that shows the refusal, as
+above), at most 0.02 m/rad motion drift and no
+rearm from subsequent traffic. A refusal that reaches a controller whose lease
+already lapsed replaces `expired` with its own reason, so a lapse published
+before the refusal is judged like any other lock (below). Native tests cover
+clock rollback, exact expiry boundaries, stale activation nonces, oversized parser
+inputs and latch recovery. Ordinary ROS/Gazebo scenarios still exercise the production
 authorizer → relay → controller path, people revocation, tracking, cancellation
 and authorizer kill/stall/delay faults.
 The stale-packet case signs deliberately older origins rather than waiting for
-the controller reset lease to expire. An expired reset or a generic locked-arm
-precheck cannot count as a successful property-specific negative control.
+the controller reset lease to expire. It signs them when the packet is sent,
+with a full 200 ms lease, so the permit's own ends are still ahead and only the
+50 ms age bound can refuse it; a refusal observed too close to those ends is
+not counted. An expired reset or a generic locked-arm precheck cannot count as
+a successful property-specific negative control.
+
+Shared-runner delay can make a probe attempt inconclusive but never makes it
+pass. The harness signs nothing when the fixture issuer times out or its
+approval arrives late, expired or with no authority left. It does not send a
+positive permit that the verifier's own 50 ms predicate would already refuse,
+an arm goal signed before the controller's last hold cutoff, or any positive
+permit once the last lease it sent has ended. Positive permits leave one at a
+time, so each refusal is observed on its own. A delay in the harness itself, in
+a positive case or before a negative packet leaves, counts as inconclusive only
+after the refusals and locks that the controller already published were judged;
+before a negative packet leaves, only the passing of time may show at the
+controller. Once the motion threshold is reached, the harness still waits for
+the controller to admit or refuse the last permit it sent, or for the current
+lease to lapse, and judges that outcome too. An admission count past the
+permits the harness sent then fails at once.
+Beyond these harness-side delays, an attempt is inconclusive only in these
+cases:
+
+- a permit that was timely when it left was refused for `freshness`;
+- a lock (`expired`, `locked`, or `rejected` at the arm action ingress) that
+  the controller's own telemetry places at or after the end of the lease it
+  relied on, including a lapse published before a negative packet's refusal.
+  The controller's admission counter identifies that lease. For the arm the
+  evidence is the hold it stamps: at or after the wall end, or within one 10 ms
+  update of the simulation end, because the controller may notice a lapse in a
+  callback before its next update. For the base it is the telemetry
+  publication, which may come at most 20 ms before the signed wall end: the
+  10 ms simulation backdate plus one 10 ms update, assuming the controller's
+  simulation clock leads the harness's view by at most one update. A larger
+  lead makes a real lapse look early, which fails the case rather than passing
+  it. Because that telemetry is published every 20 ms, the lock itself may come
+  up to about 40 ms before that end;
+- an arm goal that the verifier admitted and the action handshake then refused,
+  with the controller's hold stamped no more than one 10 ms update before the
+  goal's own 50 ms simulation window closed;
+- a live-lease window that closed before a negative packet left, when nothing
+  but time changed at the controller: the same nonce and counters, and any
+  `expired` lock placed at or after the lease end by the same evidence;
+- a property-specific rejection observed only after that lease ended (for the
+  base, within 20 ms of its wall end, where a lapse may come first and the
+  refusal's reason then replaces `expired`) or too close to a stale permit's
+  own end, a latched arm refusal whose hold stamps reach the end of the lease
+  the arm relied on, and an admitted replay goal's own motion before the
+  duplicate's refusal.
+
+Even then, once a packet that must be refused has left, the robot must not have
+moved: the wheel or arm drift check runs before any attempt counts as
+inconclusive. The case then restarts from a fresh maintenance reset, at most
+three attempts; three inconclusive attempts fail CI. An occasional premature
+lock that falls inside these windows therefore looks like runner delay: it
+stops the robot early and fails CI only when all three attempts are
+inconclusive. These fail at once:
+admitting a packet that must be refused, a rejection counted before it left,
+any other rejection reason, a lock before such a bound, an arm hold more than
+three updates after the first telemetry row that shows its refusal, motion over
+0.02 m or rad, and automatic recovery. A harness delay while the recovery
+packet is prepared counts as inconclusive only while the controller still holds
+with the same nonce and counters. A late renewal that the controller never
+counts fails at once even when the goal's lease then lapses at its end, because
+no refusal and hold bound the arm's motion; the harness cannot tell a renewal
+that its best-effort topic lost from one the controller ignored. A refusal that
+the controller never shows latched fails when its two-second wait ends. Each
+check row records the attempt that passed.
+
+CI non-blocking measurement: `controller-timing.json` records, per run, each
+live renewal round trip, the identical world-admission step of every approval,
+the approval round trip, the age that the verifier would compute for each
+permit at the harness's pre-send freshness check (positive permits, reset
+packets, the signature and replay negatives and the base recovery packet),
+including permits withheld there because they were already 50 ms old, and every
+attempt with its outcome. A CI step reports nearest-rank p50/p95/max for four
+rows: `renewal_path_ms` (the live renewals pooled with the world-admission
+steps, which have no row of their own), `renewal_ms`, `actuation_admission_ms`
+and `send_age_ms`. It emits a warning when the p95 of a row with at least 20
+samples reaches 50 ms, and only a notice when a row with fewer samples does. Any
+inconclusive attempt also emits a warning. Other notices flag a row without
+samples, a pooled renewal row under 20 samples, an incomplete run, and a
+missing or unreadable record. The job summary also lists every attempt that
+did not pass: each inconclusive attempt, which was retried, with its stage and
+cause, and the failed attempt when a case failed, with its error. The step
+always exits 0, so the measurement never fails a check. It is not a latency
+claim, and the 50 ms and 200 ms verifier limits are unchanged.
 
 ## Remaining boundaries
 

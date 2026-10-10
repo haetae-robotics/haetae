@@ -9,7 +9,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A newer PR run supersedes the older one for that ref. Each main push run has
+  # its own group, so it is never cancelled, even while pending.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -19,11 +21,18 @@ env:
 jobs:
   uno-bench:
     name: UNO LED software bench (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        # matrix.os renders the required check name; matrix.runner is the runner label
+        # (Ubuntu pinned to ubuntu-24.04, macOS stays on macos-latest).
         os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-24.04
+          - os: macos-latest
+            runner: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -76,7 +85,7 @@ jobs:
 
   uno-firmware:
     name: UNO R4 Minima firmware compile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -96,11 +105,18 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        # matrix.os renders the required check name; matrix.runner is the runner label
+        # (Ubuntu pinned to ubuntu-24.04, macOS stays on macos-latest).
         os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-24.04
+          - os: macos-latest
+            runner: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -113,7 +129,7 @@ jobs:
 
   wasm:
     name: WASM simulator build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -131,7 +147,7 @@ jobs:
 
   dinner-party:
     name: Dinner-party demo
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -157,7 +173,7 @@ jobs:
 
   python:
     name: Python package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -171,7 +187,7 @@ jobs:
 
   ros-smoke:
     name: ROS 2 Jazzy smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: ros:jazzy
     steps:
       - uses: actions/checkout@v7
@@ -190,7 +206,7 @@ jobs:
 
   gate-python:
     name: ROS bridge and signing core
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -202,7 +218,7 @@ jobs:
 
   sros-policy:
     name: SROS2 permission generation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: ros:jazzy
     env:
       ROS_DOMAIN_ID: 79
@@ -240,7 +256,7 @@ jobs:
   ros-gate-e2e:
     name: ROS 2 signed gate smoke
     needs: build-linux
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: ros:jazzy
     env:
       ROS_DOMAIN_ID: 76
@@ -264,7 +280,7 @@ jobs:
   ros-sim-e2e:
     name: ROS 2 reference scenarios
     needs: build-linux
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: ros:jazzy
     env:
       ROS_DOMAIN_ID: 77
@@ -299,7 +315,7 @@ jobs:
   ros-arm-e2e:
     name: ROS 2 arm action reference
     needs: build-linux
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: ros:jazzy
     env:
       ROS_DOMAIN_ID: 78
@@ -329,7 +345,7 @@ jobs:
   gazebo-reference:
     name: Gazebo physics base and arm reference
     needs: build-linux
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: ros:jazzy
       options: --cap-add=NET_ADMIN
@@ -358,8 +374,10 @@ jobs:
           ctest --test-dir /tmp/guard-build/haetae_scene --output-on-failure
           source /opt/haetae/setup.bash
           python3 -m unittest discover -s ros/gazebo -p 'test_*.py' -v
+          # Wall budget for setup plus the scenario run; bounded in-test retries of
+          # inconclusive permit probes need headroom. Actuation budgets are unchanged.
           python3 ros/gazebo/check_live_stream.py --port 8765 \
-            --out artifacts/gazebo-reference/live-stream.jsonl --timeout-seconds 300 &
+            --out artifacts/gazebo-reference/live-stream.jsonl --timeout-seconds 420 &
           live_checker=$!
           # Container checkout ownership can differ from the step user.
           # GITHUB_SHA is the same event commit checked out by both evidence and package jobs.
@@ -372,6 +390,13 @@ jobs:
           python3 ros/gazebo/run_reference.py bin/haetae --secure-graph --household-hazards \
             --out artifacts/gazebo-reference/household-hazards --live-hold-seconds 0
           python3 -c 'import json; r=json.load(open("artifacts/gazebo-reference/household-hazards/verification-report.json")); assert r["status"] == "passed" and r["scope"] == "household_hazard_mandatory_gate_simulation" and len(r["checks"]) == 13'
+      # CI non-blocking measurement: shared-runner latency is reported, never a verdict.
+      - name: Shared-runner permit timing (CI non-blocking measurement)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        run: python3 ros/gazebo/permit_timing.py artifacts/gazebo-reference/controller-timing.json 50
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -382,7 +407,7 @@ jobs:
   simulator-alpha-package:
     name: Simulator alpha source and verification report
     needs: gazebo-reference
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
