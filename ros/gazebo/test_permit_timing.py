@@ -1,4 +1,5 @@
 """The shared-runner timing summary is a measurement only: it never fails CI."""
+import contextlib
 import io
 import json
 from pathlib import Path
@@ -61,8 +62,41 @@ class TimingSummaryTest(unittest.TestCase):
         code, out, _ = run(data)
         self.assertEqual(code, 0)
         self.assertEqual([line for line in out.splitlines() if line.startswith("::warning")],
-                         ["::warning title=Permit timing (CI non-blocking measurement)::1 inconclusive probe attempt(s) "
-                          "retried from reset, never counted as a pass: base_delay#1"])
+                         ["::warning title=Permit timing (CI non-blocking measurement)::1 inconclusive probe "
+                          "attempt(s), never counted as a pass: base_delay#1"])
+
+    def test_a_p95_of_exactly_50_ms_over_20_samples_warns(self):
+        # Nearest rank over 20 samples: the p95 is the 19th smallest value.
+        for edge, warns in ((50.0, True), (49.9, False)):
+            code, out, _ = run({"complete": True, "series": {"actuation_admission_ms": [1.0] * 18 + [edge] * 2}})
+            self.assertEqual(code, 0)
+            self.assertEqual([line for line in out.splitlines() if line.startswith("::warning")],
+                             ["::warning title=Permit timing (CI non-blocking measurement)::actuation_admission_ms "
+                              "p95 50.0 ms >= 50 ms on this shared runner (n=20, p50 1.0, max 50.0)"] if warns else [],
+                             edge)
+
+    def test_a_case_whose_attempts_were_all_inconclusive_is_listed_as_failed(self):
+        from permit_attempts import AttemptLog, RunnerDelay, bounded_attempts
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "controller-timing.json"
+            log = AttemptLog(path)
+            def body():
+                raise RunnerDelay("base delay", {"cause": "rejection_not_separable_from_lease_end"})
+            # Capture the retry lines, so the Gazebo job log shows only real probe retries.
+            with contextlib.redirect_stderr(io.StringIO()) as printed, \
+                    self.assertRaisesRegex(AssertionError, "all 3 attempts were inconclusive"):
+                bounded_attempts("base_delay", body, log)
+            data = json.loads(path.read_text())
+        self.assertEqual(printed.getvalue().splitlines()[-1],
+                         "Inconclusive controller permit attempt, no attempts left: base_delay #3 base delay: "
+                         '{"cause": "rejection_not_separable_from_lease_end"}')
+        self.assertEqual(data["cases"]["base_delay"], {"attempts": 3, "inconclusive": 3, "outcome": "failed"})
+        code, out, summary = run(data)
+        self.assertEqual(code, 0)
+        self.assertIn("3 inconclusive probe attempt(s), never counted as a pass: base_delay#1, base_delay#2, "
+                      "base_delay#3", out)
+        self.assertIn("| base_delay | 3 | inconclusive | base delay | rejection_not_separable_from_lease_end |", summary)
+        self.assertIn("| base_delay | 3 | failed | AssertionError | all_attempts_inconclusive |", summary)
 
     def test_missing_or_garbage_record_is_a_notice_and_exit_zero(self):
         for data, raw in ((None, None), (None, "{not json"), ([1, 2], None), ({"series": {"renewal_ms": "x"}}, None),

@@ -252,8 +252,8 @@ observed before the prior lease's wall expiry (for the base, more than 20 ms
 before it), the holding state that refusal latched (a latched wheel or arm
 controller keeps reporting the refusal's reason, while an unlatched one would
 report `expired` once the lease ends; the arm must also hold within three
-controller updates of the first telemetry row that shows the refusal, as
-above), at most 0.02 m/rad motion drift and no
+controller updates of the first telemetry row that shows the refusal and move
+at most 0.02 rad from it, as above), at most 0.02 m/rad motion drift and no
 rearm from subsequent traffic. A refusal that reaches a controller whose lease
 already lapsed replaces `expired` with its own reason, so a lapse published
 before the refusal is judged like any other lock (below). Native tests cover
@@ -288,7 +288,8 @@ cases:
 - a permit that was timely when it left was refused for `freshness`;
 - a lock (`expired`, `locked`, or `rejected` at the arm action ingress) that
   the controller's own telemetry places at or after the end of the lease it
-  relied on, including a lapse published before a negative packet's refusal.
+  relied on, including a lapse published before a negative packet's refusal
+  (an arm goal must still be counted, below).
   The controller's admission counter identifies that lease. For the arm the
   evidence is the hold it stamps: at or after the wall end, or within one 10 ms
   update of the simulation end, because the controller may notice a lapse in a
@@ -296,15 +297,24 @@ cases:
   publication, which may come at most 20 ms before the signed wall end: the
   10 ms simulation backdate plus one 10 ms update, assuming the controller's
   simulation clock leads the harness's view by at most one update. A larger
-  lead makes a real lapse look early, which fails the case rather than passing
-  it. Because that telemetry is published every 20 ms, the lock itself may come
-  up to about 40 ms before that end;
+  lead makes a real lapse look early, which fails a case whose lapse is
+  published rather than passing it; a lapse that a refusal overwrites before
+  the next 20 ms row stays invisible, and that case can then pass without
+  showing that the refusal itself latched. Because that telemetry is
+  published every 20 ms, the lock itself may come up to about 40 ms before
+  that end;
 - an arm goal that the verifier admitted and the action handshake then refused,
   with the controller's hold stamped no more than one 10 ms update before the
   goal's own 50 ms simulation window closed;
 - a live-lease window that closed before a negative packet left, when nothing
   but time changed at the controller: the same nonce and counters, and any
   `expired` lock placed at or after the lease end by the same evidence;
+- in the late-renewal case, a goal that was not admitted, or not seen moving
+  the arm more than 0.005 rad while the goal's own lease was live, within
+  0.2 s of the goal's send and with a telemetry row under 50 ms old, once
+  nothing beyond that goal was admitted and the controller counted the goal
+  (below), and once the refusals and locks that the controller published by
+  then, the goal's own refusal included, were judged;
 - a property-specific rejection observed only after that lease ended (for the
   base, within 20 ms of its wall end, where a lapse may come first and the
   refusal's reason then replaces `expired`) or too close to a stale permit's
@@ -324,12 +334,35 @@ any other rejection reason, a lock before such a bound, an arm hold more than
 three updates after the first telemetry row that shows its refusal, motion over
 0.02 m or rad, and automatic recovery. A harness delay while the recovery
 packet is prepared counts as inconclusive only while the controller still holds
-with the same nonce and counters. A late renewal that the controller never
-counts fails at once even when the goal's lease then lapses at its end, because
-no refusal and hold bound the arm's motion; the harness cannot tell a renewal
-that its best-effort topic lost from one the controller ignored. A refusal that
-the controller never shows latched fails when its two-second wait ends. Each
-check row records the attempt that passed.
+with the same nonce and counters.
+
+A packet that the controller never counts is judged by how it travels. Arm
+goals use a reliable action whose ingress counts every goal, even one that
+arrives after a lapse (as `rejected`), so on every path, inconclusive ones
+included, an arm goal that the controller does not count fails. For a valid
+goal (the positive control's, the late-renewal case's or the arm replay's
+first copy) the harness waits at least one second after its send (the
+probe's admission wait for a valid goal) for its admission or refusal. For a
+goal that must be refused it waits at least two seconds, as the conclusive
+path does, for that goal's counted refusal and a hold no later than three
+updates after the first telemetry row that shows it. A late renewal that the
+controller has not counted by then fails too, even when the goal's lease then
+lapses at its end, because no refusal and hold bound the arm's motion; the
+harness cannot tell a renewal that its best-effort topic lost from one the
+controller ignored. A recovery packet that the latched controller does not
+count within two seconds fails; the base recovery command travels on the
+best-effort command topic, so like a lost late renewal it can fail CI without
+a controller fault. Other packets that the controller never counts are
+retried once the lease they relied on lapses at its end: a base packet that
+must be refused, a base command or arm renewal that should be admitted
+(including the base replay's first copy), and either maintenance-reset packet
+once the other controller's reset lease lapses (if both are lost, the reset
+times out and fails). These travel on best-effort topics. Such an attempt
+cannot pass, because it lacks the refusal, admission or motion it needs, but a
+controller that only sometimes ignores these packets fails CI only when all
+three attempts are inconclusive. A refusal that the controller never shows
+latched fails when its two-second wait ends. Each check row records the
+attempt that passed.
 
 CI non-blocking measurement: `controller-timing.json` records, per run, each
 live renewal round trip, the identical world-admission step of every approval,
@@ -344,11 +377,12 @@ and `send_age_ms`. It emits a warning when the p95 of a row with at least 20
 samples reaches 50 ms, and only a notice when a row with fewer samples does. Any
 inconclusive attempt also emits a warning. Other notices flag a row without
 samples, a pooled renewal row under 20 samples, an incomplete run, and a
-missing or unreadable record. The job summary also lists every attempt that
-did not pass: each inconclusive attempt, which was retried, with its stage and
-cause, and the failed attempt when a case failed, with its error. The step
-always exits 0, so the measurement never fails a check. It is not a latency
-claim, and the 50 ms and 200 ms verifier limits are unchanged.
+missing or unreadable record. The job summary also lists every attempt that did
+not pass: each inconclusive attempt with its stage and cause and, when a case
+failed, its failure with the error, or `all_attempts_inconclusive` when none of
+its attempts was conclusive. The step always exits 0, so the measurement never
+fails a check. It is not a latency claim, and the 50 ms and 200 ms verifier
+limits are unchanged.
 
 ## Remaining boundaries
 

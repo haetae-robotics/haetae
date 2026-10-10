@@ -1,7 +1,9 @@
 """Runner delay may make a controller-permit probe attempt inconclusive, never passing."""
 import ast
+import contextlib
 import copy
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
@@ -12,7 +14,7 @@ from types import SimpleNamespace
 import unittest
 
 from permit_attempts import (MAX_ATTEMPTS, PENDING, VERIFIER_WINDOW_NS, AttemptLog, GrantChain, RunnerDelay,
-                             bounded_attempts, check_timely, fail_closed_settled, hold_evidence,
+                             bounded_attempts, check_timely, fail_closed_settled, goal_counted, hold_evidence,
                              late_stop_verdict, motion_after, motion_checked, negative_timing, permit_fields,
                              precondition_miss, refusal, refusal_hold, refused_motion, require_fresh_witness,
                              require_live, require_no_fail_closed, require_refused_inside_lease,
@@ -74,6 +76,10 @@ def goal_row(published_ms, stamp_ms, accepted=4, **extra):
 
 class ReachedRecovery(Exception):
     """The actual negative() judged its refusal a pass and went on to the recovery packet."""
+
+
+class ReachedRenewals(Exception):
+    """The actual arm_positive() saw its goal admitted and went on to the renewals."""
 
 
 class LogStub:
@@ -148,19 +154,34 @@ class BoundedAttemptsTest(unittest.TestCase):
             return outcome
         return calls, log, (lambda: bounded_attempts("arm_positive", body, log))
 
+    @staticmethod
+    @contextlib.contextmanager
+    def retry_log():
+        """Capture bounded_attempts()'s retry lines, so the Gazebo job log shows only real probe retries."""
+        with contextlib.redirect_stderr(io.StringIO()) as captured:
+            yield captured
+
     def test_inconclusive_attempts_retry_from_scratch_and_are_recorded(self):
         calls, log, run = self.run_body([RunnerDelay("arm renewal", {"cause": "late"}), {"ok": True, "moved_rad": .09}])
-        self.assertEqual(run(), {"ok": True, "moved_rad": .09, "attempt": 2})
+        with self.retry_log() as printed:
+            self.assertEqual(run(), {"ok": True, "moved_rad": .09, "attempt": 2})
         self.assertEqual(len(calls), 2)
         self.assertEqual([entry[2] for entry in log.records], ["inconclusive", "passed"])
         self.assertEqual(log.records[0][3], "arm renewal")
+        self.assertEqual(printed.getvalue(), "Inconclusive controller permit attempt, retrying from reset: "
+                                             'arm_positive #1 arm renewal: {"cause": "late"}\n')
 
     def test_all_inconclusive_is_a_failure_not_a_pass(self):
         calls, log, run = self.run_body([RunnerDelay("late")] * MAX_ATTEMPTS)
-        with self.assertRaisesRegex(AssertionError, "inconclusive never counts as a pass"):
+        with self.retry_log() as printed, self.assertRaisesRegex(AssertionError, "inconclusive never counts as a pass"):
             run()
+        self.assertEqual(printed.getvalue().splitlines()[-1],
+                         "Inconclusive controller permit attempt, no attempts left: arm_positive #3 late: {}")
         self.assertEqual(len(calls), MAX_ATTEMPTS)
-        self.assertNotIn("passed", [entry[2] for entry in log.records])
+        # The record ends with the case's failure, never a pass.
+        self.assertEqual([entry[1:] for entry in log.records],
+                         [(attempt, "inconclusive", "late") for attempt in range(1, MAX_ATTEMPTS + 1)]
+                         + [(MAX_ATTEMPTS, "failed", "AssertionError")])
 
     def test_real_failures_are_never_retried(self):
         for failure in (AssertionError("moved under invalid permit"), TimeoutError("no motion"),
@@ -320,7 +341,7 @@ class PreSendTest(unittest.TestCase):
 
 
 class PositiveClassificationTest(unittest.TestCase):
-    """Finding: a lock on a timely permit is inconclusive only with evidence of a signed bound."""
+    """A lock on a timely permit is inconclusive only with evidence of a signed bound."""
 
     def setUp(self):
         self.reset = grant("arm-reset", sim=1_000 * MS, wall=5_000 * MS)    # ends 1180 / 5180 ms
@@ -438,7 +459,7 @@ class PositiveClassificationTest(unittest.TestCase):
 
 
 class NegativeRefusalTest(unittest.TestCase):
-    """Finding: an admission is checked before any timing classification."""
+    """An admission is checked before any timing classification."""
 
     def setUp(self):
         self.witness = {"sent_wall_ns": 5_100 * MS, "nonce_before": NONCE, "accepted_before": 3, "rejected_before": 4}
@@ -457,7 +478,7 @@ class NegativeRefusalTest(unittest.TestCase):
         self.assertEqual(self.judge([not_held, later]), (not_held, later))
 
     def test_hold_must_be_the_refusals_own_latch(self):
-        # Reviewer case: a counted refusal that does not latch leaves the guard unlocked
+        # A counted refusal that does not latch leaves the guard unlocked
         # under the reset lease until live_unlocked() lapses it as `expired`. That later
         # hold is not this refusal's latch, so the case stays undecided and times out.
         self.assertIsNone(self.judge([row(5_120, rejected=5, reason="signature"),
@@ -468,7 +489,7 @@ class NegativeRefusalTest(unittest.TestCase):
                                      "rejected", (), "arm"))
 
     def test_arm_prompt_hold_must_also_be_the_refusals_own_latch(self):
-        # Reviewer case: an arm refusal that does not latch leaves the guard unlocked until
+        # An arm refusal that does not latch leaves the guard unlocked until
         # the reset lease lapses as `expired`. That lapse hold lands within three updates of
         # the refusal row, so it is prompt, but it is not this refusal's latch: never a pass.
         for case in ("unsigned", "altered", "target", "delay", "signature", "replay"):
@@ -524,7 +545,7 @@ class NegativeRefusalTest(unittest.TestCase):
             late_stop_verdict("arm renewal_delay", hold, witness["sent_wall_ns"], goal)
 
     def test_admission_of_the_refused_packet_fails_before_timing(self):
-        # Reviewer case: the arm verifier admits a stale goal (accepted +1) and the
+        # The arm verifier admits a stale goal (accepted +1) and the
         # handshake then refuses it as `rejected`. That is a failure, never runner delay.
         admitted = arm(5_150, 1_150, rejected=5, accepted=4, reason="rejected")
         with self.assertRaisesRegex(AssertionError, "admitted the packet"):
@@ -554,7 +575,7 @@ class NegativeRefusalTest(unittest.TestCase):
                            negative_timing("arm", case), "arm", 5_090 * MS)
 
     def test_other_reasons_fail_as_themselves_where_lapse_evidence_would_be_inconclusive(self):
-        # Reviewer case: a reason outside `timing` must fail as that reason, never reach the lapse
+        # A reason outside `timing` must fail as that reason, never reach the lapse
         # judgement, even where that judgement would place it at the governing lease's end.
         boundary = (self.reset["wall_end_ns"] - LAPSE_ALLOWANCE_NS) // MS    # 5160 ms
         for reason in ("binding", "locked", "rejected", "sequence"):
@@ -607,7 +628,7 @@ class NegativeRefusalTest(unittest.TestCase):
 
     def test_lapse_published_before_the_refusal_is_judged_not_skipped(self):
         # accept() lapses an ended lease and then overwrites `expired` with its own refusal
-        # reason, so the refusal row alone looks latched. Reviewer case: an `expired` row 75 ms
+        # reason, so the refusal row alone looks latched. Here an `expired` row 75 ms
         # before the reset lease's wall end, then the refusal, for every base case.
         witness = dict(self.witness, before_published_wall_ns=5_090 * MS)    # sent 5100 ms
         boundary = (self.reset["wall_end_ns"] - LAPSE_ALLOWANCE_NS) // MS    # 5160 ms
@@ -660,7 +681,7 @@ class NegativeRefusalTest(unittest.TestCase):
                                  "binding", (), self.reset, "x"), (refused, refused))
 
     def test_base_refusal_near_the_lease_end_is_inconclusive_in_probe_and_report(self):
-        # Reviewer boundary case: a lapse in the last 20 ms is never published (the base
+        # Boundary case: a lapse in the last 20 ms is never published (the base
         # publishes every 20 ms), and the refusal then overwrites `expired`. refusal() cannot
         # see it; the refusal's own publication is too close to the lease end to count.
         witness = dict(self.witness, before_published_wall_ns=5_090 * MS, sent_wall_ns=5_150 * MS)
@@ -703,7 +724,7 @@ class NegativeRefusalTest(unittest.TestCase):
         with self.assertRaises(RunnerDelay) as delay:
             miss([row(1_100), row(boundary, reason="expired", holding=True), row(1_190, reason="expired", holding=True)])
         self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed")
-        # Reviewer case: the reset lease lapsed before it could end. The positive path fails
+        # The reset lease lapsed before it could end. The positive path fails
         # this lock, and so does the precondition, although the latest row alone looks late.
         for early in (1_090, boundary - 1):
             with self.assertRaisesRegex(AssertionError, "before any signed bound could close"):
@@ -733,7 +754,7 @@ class NegativeRefusalTest(unittest.TestCase):
 
 
 class MotionTest(unittest.TestCase):
-    """Finding: motion after the controller's refusal is bounded on every path."""
+    """Motion after the controller's refusal is bounded on every path."""
 
     def test_motion_is_measured_on_the_controllers_clock_from_the_window_start(self):
         samples = [(1_000 * MS, [.100, 0, 0, 0]), (1_010 * MS, [.104, 0, 0, 0]),
@@ -760,6 +781,31 @@ class MotionTest(unittest.TestCase):
         # A hold before the send that no lease end explains is a fault, not runner delay.
         with self.assertRaisesRegex(AssertionError, "before the late renewal left"):
             late_stop_verdict("s", held(5_095, 1_090, 5_090, 1_090), sent, goal)
+
+    def test_inconclusive_outcome_after_a_valid_arm_goal_still_needs_it_counted(self):
+        calls = []
+        def counted():
+            calls.append("counted")
+        with goal_counted(counted):
+            pass
+        self.assertEqual(calls, [])
+        delay = RunnerDelay("signed arm physically moves", {"cause": "governing_lease_lapsed"})
+        with self.assertRaises(RunnerDelay) as raised:
+            with goal_counted(counted):
+                raise delay
+        self.assertIs(raised.exception, delay)
+        self.assertEqual(calls, ["counted"])
+        def never():
+            raise AssertionError("signed arm physically moves: the controller never counted a valid arm goal")
+        with self.assertRaisesRegex(AssertionError, "never counted a valid arm goal"):
+            with goal_counted(never):
+                raise delay
+        # Failures and timeouts are never intercepted.
+        for failure in (AssertionError("timely permit rejected for binding"), TimeoutError("no admission")):
+            with self.assertRaises(type(failure)) as raised:
+                with goal_counted(never):
+                    raise failure
+            self.assertIs(raised.exception, failure)
 
     def test_inconclusive_outcome_after_send_still_requires_no_motion(self):
         calls = []
@@ -845,7 +891,13 @@ class AttemptLogTest(unittest.TestCase):
             self.assertIsNone(data["attempts"][0]["evidence"]["elapsed_ms"])
             self.assertEqual((data["scope"], data["limit_ms"], data["max_attempts"], data["complete"]),
                              ("ci_non_blocking_measurement", 50.0, 3, False))
-            AttemptLog(Path(directory) / "missing" / "\0bad").write()
+            # An unwritable record is reported, never raised; captured so that the Gazebo job log
+            # shows only the real probe's message.
+            with contextlib.redirect_stderr(io.StringIO()) as printed:
+                AttemptLog(Path(directory) / "missing" / "\0bad").write()
+            self.assertTrue(printed.getvalue().startswith("controller timing record not written: "),
+                            printed.getvalue())
+            self.assertEqual(len(printed.getvalue().splitlines()), 1, printed.getvalue())
 
 
 class ProbeFunctionsTest(unittest.TestCase):
@@ -1103,7 +1155,7 @@ class ProbeFunctionsTest(unittest.TestCase):
         run, approvals = self.base_positive(base)
         self.assertEqual(run(), {"ok": True, "moved_m": .06})
         self.assertEqual((len(approvals), base.queue, base.state["accepted"]), (3, [], 6))
-        # Its non-timing refusal still fails; before, the case returned at the threshold.
+        # Its non-timing refusal still fails, although the base already passed the threshold.
         run, _ = self.base_positive(ScriptedBase(["admit", "admit", "binding"]))
         with self.assertRaisesRegex(AssertionError, "timely permit rejected for binding"):
             run()
@@ -1116,7 +1168,7 @@ class ProbeFunctionsTest(unittest.TestCase):
             self.assertEqual(delay.exception.evidence["cause"], cause, outcome)
 
     def test_positive_case_fails_when_the_controller_counts_more_admissions_than_permits_sent(self):
-        # Reviewer case: the controller counts the second command twice, so the harness reads the
+        # The controller counts the second command twice, so the harness reads the
         # third as already counted. The base moves and nothing is refused, yet the count (7) runs
         # past the reset and three commands this harness sent (6): never a pass.
         base = ScriptedBase(["admit", "admit twice", "admit"])
@@ -1146,21 +1198,111 @@ class ProbeFunctionsTest(unittest.TestCase):
             run()
         self.assertIs(raised.exception, delay)
 
-    def negative_case(self, case, build=None, stale_permit=None, after_send=(), permit=None):
-        """The actual negative() for the base, against scripted telemetry, through its refusal judgement.
+    def arm_positive_until_renewals(self, ticks):
+        """The actual arm_positive() up to its renewals. The reset lease ends at 1175 ms sim /
+        5180 ms wall and the goal leaves at 5040 ms; each wait poll advances the clock 10 ms
+        and publishes ticks[clock_ms]. An admitted goal raises ReachedRenewals."""
+        clock = {"ns": 5_040 * MS}
+        rows = [(0, arm(5_005, 1_005))]
+        reset_grant = grant("arm-reset", sim=995 * MS, wall=5_000 * MS)
+        goal = grant("arm-goal", sim=1_020 * MS, wall=5_030 * MS)
+        def wait_for(predicate, timeout, processes, description, action=None):
+            for _ in range(int(timeout * 100)):
+                clock["ns"] += 10 * MS
+                rows.extend((0, value) for value in ticks.get(clock["ns"] // MS, ()))
+                if predicate():
+                    return
+            raise TimeoutError(description)
+        def positive_motion(*args):
+            raise ReachedRenewals()
+        scope = dict(json=json, time=SimpleNamespace(monotonic_ns=lambda: clock["ns"]), processes={},
+                     wait_for=wait_for, world=SimpleNamespace(guard_states=rows, base_guard_states=[],
+                                                              arm_positions=lambda: [0.0] * 4),
+                     reset=lambda: {"arm": {"fields": reset_grant, "accepted": 3, "unlocked_wall_ns": 5_005 * MS}},
+                     GrantChain=GrantChain, require_no_fail_closed=require_no_fail_closed,
+                     fail_closed_settled=fail_closed_settled, goal_counted=goal_counted,
+                     arm_packet=lambda: ({"arm": {"permit": "goal"}}, "d" * 64),
+                     send_timely=lambda packet, permit, stage, chain=None: chain.sent(goal),
+                     positive_motion=positive_motion)
+        names = ("telemetry", "guard", "since", "fail_closed_check", "settle", "require_counted", "arm_positive")
+        exec(compile(ast.Module(body=[self.nodes()[name] for name in names], type_ignores=[]),
+                     "actual-arm-positive", "exec"), scope)
+        return scope["arm_positive"]
 
-        The reset lease ends at 5180 ms wall; the harness clock reads 5050 ms. build() runs
-        inside the packet build and stale_permit() replaces the stale-permit signer. The n-th
-        send publishes the rows in after_send[n]. A refusal judged a pass goes on to the
-        recovery packet, which raises ReachedRecovery; the drift check finds no motion.
+    def test_a_valid_arm_goal_the_controller_never_counts_fails_even_after_a_lapse_at_the_lease_end(self):
+        # Goals travel on a reliable action whose ingress counts every goal, even one that arrives
+        # after a lapse, so a valid goal that is never counted is a controller fault.
+        # The reset lease (ends 1175 ms sim / 5180 ms wall) lapses at its end; the arm holds.
+        lapse = {5_180: [arm(5_180, 1_170, reason="expired")],
+                 5_190: [held(5_190, 1_180, stop_ms=5_181, cutoff_ms=1_176, rejected=4, reason="expired")]}
+        late_goal = {5_300: [held(5_300, 1_290, stop_ms=5_181, cutoff_ms=1_176, reason="rejected")]}
+        # The positive control's goal.
+        with self.assertRaises(ReachedRenewals):
+            self.arm_positive_until_renewals({5_050: [arm(5_050, 1_040, accepted=4)]})()
+        with self.assertRaisesRegex(AssertionError, "signed arm physically moves: the controller never counted "
+                                                    "a valid arm goal"):
+            self.arm_positive_until_renewals(lapse)()
+        # Counted after the lapse, at the ingress (`rejected`): runner delay, never a pass.
+        with self.assertRaises(RunnerDelay) as delay:
+            self.arm_positive_until_renewals({**lapse, **late_goal})()
+        self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed")
+        # The 1 s admission wait: a goal counted only later still fails.
+        with self.assertRaisesRegex(AssertionError, "never counted a valid arm goal"):
+            self.arm_positive_until_renewals({**lapse, 6_300: late_goal[5_300]})()
+        # The late-renewal case's goal, whether or not its lapse shows inside the 0.2 s wait.
+        for ticks in ({}, lapse):
+            with self.assertRaisesRegex(AssertionError, "arm renewal_delay goal: the controller never counted "
+                                                        "a valid arm goal"):
+                self.late_renewal_until_send(ticks=ticks)()
+        with self.assertRaises(RunnerDelay) as delay:
+            self.late_renewal_until_send(ticks={**lapse, **late_goal})()
+        self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed")
+        # The arm replay's first copy (wall end 5250 ms); the base's best-effort command is not checked.
+        first = "v1:{}-{}:" + NONCE + ":2:1030000000:5050000000:1230000000:5250000000:" + "c" * 64 + ":" + "d" * 128
+        arm_lapse = [arm(5_182, 1_181, reason="expired"),
+                     held(5_190, 1_182, stop_ms=5_181, cutoff_ms=1_181, rejected=4, reason="expired")]
+        def replay(target, rows):
+            return self.negative_case("replay", permit=first.format(target, "goal" if target == "arm" else "command"),
+                                      after_send=[rows], target=target)()
+        with self.assertRaisesRegex(AssertionError, "arm replay first packet: the controller never counted "
+                                                    "a valid arm goal"):
+            replay("arm", arm_lapse)
+        with self.assertRaises(RunnerDelay) as delay:
+            replay("arm", arm_lapse + [held(5_240, 1_230, stop_ms=5_181, cutoff_ms=1_181, reason="rejected")])
+        self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed")
+        with self.assertRaises(RunnerDelay) as delay:
+            replay("base", [row(5_165, reason="expired", holding=True)])
+        self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed")
+
+    def negative_case(self, case, build=None, stale_permit=None, after_send=(), permit=None, target="base",
+                      at_wait=None):
+        """The actual negative() for `target`, against scripted telemetry, through its refusal judgement.
+
+        The reset lease ends at 1180 ms sim / 5180 ms wall; the harness clock reads 5050 ms
+        (1040 ms sim). build() runs inside the packet build and stale_permit() replaces the
+        stale-permit signer. The n-th send publishes the rows in after_send[n], and the wait
+        named d in at_wait publishes at_wait[d] when it begins; run.waits lists every wait as
+        (description, timeout). A refusal judged a pass goes on to the recovery packet, which
+        raises ReachedRecovery; neither the drift check nor the arm's joint history finds motion.
         """
-        rows = [(0, row(5_005))]
-        record = NegativeRefusalTest.reset_record(grant("base-reset", sim=1_000 * MS, wall=5_000 * MS), 5_005)
+        rows = [(0, row(5_005) if target == "base" else arm(5_005, 1_000))]
+        record = NegativeRefusalTest.reset_record(grant(target + "-reset", sim=1_000 * MS, wall=5_000 * MS), 5_005)
         published = iter(after_send)
+        waits = []
+        def wait_for(predicate, timeout, processes, description, action=None):
+            waits.append((description, timeout))
+            rows.extend((0, value) for value in (at_wait or {}).get(description, ()))
+            return self.wait_for(predicate, timeout, processes, description, action)
         def base_packet():
             if build is not None:
                 build(rows)
             return {"base": {"permit": permit or "v1:base-command:" + NONCE + ":2:1:2:3:4:" + "c" * 64 + ":" + "d" * 128}}
+        def arm_packet():
+            if build is not None:
+                build(rows)
+            return ({"arm": {"points": [{"positions": [0.0] * 4}], "permit": permit or (
+                "v1:arm-goal:" + NONCE + ":2:1030000000:5040000000:1210000000:5220000000:" + "c" * 64 + ":"
+                + "d" * 128)}}, "c" * 64)
         def send(packet):
             rows.extend((0, value) for value in next(published))
         def recover(target, stage):
@@ -1168,24 +1310,34 @@ class ProbeFunctionsTest(unittest.TestCase):
         seconds = iter(range(10**6))
         scope = dict(reset=lambda: {"base": record, "arm": record}, GrantChain=GrantChain, PENDING=PENDING,
                      reset_lease_events=reset_lease_events, fail_closed_settled=fail_closed_settled,
-                     precondition_miss=precondition_miss, VERIFIER_WINDOW_NS=VERIFIER_WINDOW_NS,
-                     world=SimpleNamespace(base_guard_states=rows, guard_states=[], pose=lambda: [5.0, 5.0],
+                     goal_counted=goal_counted, precondition_miss=precondition_miss,
+                     VERIFIER_WINDOW_NS=VERIFIER_WINDOW_NS,
+                     world=SimpleNamespace(base_guard_states=rows if target == "base" else [],
+                                           guard_states=rows if target == "arm" else [], pose=lambda: [5.0, 5.0],
                                            arm_positions=lambda: [0.0] * 4),
                      time=SimpleNamespace(monotonic_ns=lambda: 5_050 * MS, monotonic=lambda: float(next(seconds))),
-                     now=lambda: 1_040, processes={}, wait_for=self.wait_for, base_packet=base_packet,
-                     stale_permit=lambda *args: stale_permit(rows), send=send, recover=recover,
-                     copy=copy, hashlib=hashlib, json=json, signer=SimpleNamespace(challenges={"base": NONCE}),
+                     now=lambda: 1_040, processes={}, wait_for=wait_for, base_packet=base_packet,
+                     arm_packet=arm_packet, stale_permit=lambda *args: stale_permit(rows), send=send, recover=recover,
+                     copy=copy, hashlib=hashlib, json=json, signer=SimpleNamespace(challenges={target: NONCE}),
                      permit_fields=permit_fields, require_timely=lambda permit, stage: permit_fields(permit),
                      require_fresh_witness=require_fresh_witness, require_live=require_live,
                      require_no_fail_closed=require_no_fail_closed, motion_checked=motion_checked,
                      refusal=refusal, negative_timing=negative_timing, NEGATIVE_REASONS=NEGATIVE_REASONS,
                      require_refused_inside_lease=require_refused_inside_lease,
                      require_refused_inside_stale_window=require_refused_inside_stale_window,
-                     refused_motion=refused_motion, stopped=lambda: True)
-        names = ("telemetry", "guard", "since", "wait_row", "wait_judged", "fail_closed_check", "settle", "negative")
+                     refused_motion=refused_motion, stopped=lambda: True,
+                     # The cross-target signer, and the arm's hold and joint history (no motion).
+                     token=lambda *args: "v1:base-command:" + NONCE + ":9:1:2:3:4:" + "c" * 64 + ":" + "d" * 128,
+                     SIM_ORDERING_BACKDATE_NS=10 * MS, DRIFT_LIMIT=DRIFT_LIMIT, refusal_hold=refusal_hold,
+                     motion_after=motion_after, joint_history=lambda: [(1_000 * MS, [0.0] * 4), (1_300 * MS, [0.0] * 4)])
+        names = ("telemetry", "guard", "since", "wait_row", "wait_judged", "fail_closed_check", "settle",
+                 "require_counted", "arm_hold", "negative")
         exec(compile(ast.Module(body=[self.nodes()[name] for name in names], type_ignores=[]),
                      "actual-negative", "exec"), scope)
-        return lambda: scope["negative"]("base", case)
+        def run():
+            return scope["negative"](target, case)
+        run.waits = waits
+        return run
 
     def test_harness_delay_before_a_negative_packet_leaves_judges_the_reset_lease_first(self):
         delay = RunnerDelay("rust approval", {"cause": "stale_or_expired_rust_approval"})
@@ -1194,7 +1346,7 @@ class ProbeFunctionsTest(unittest.TestCase):
                 rows.extend((0, value) for value in published)
                 raise delay
             return build
-        # Reviewer case: the reset lease lapses 95 ms early while the approval runs late.
+        # The reset lease lapses 95 ms early while the approval runs late.
         with self.assertRaisesRegex(AssertionError, r"locked \(expired\) before any signed bound could close"):
             self.negative_case("unsigned", approval(row(5_085, reason="expired", holding=True)))()
         # A lapse inside the allowance is the reset lease's own end: still inconclusive.
@@ -1225,7 +1377,7 @@ class ProbeFunctionsTest(unittest.TestCase):
         self.assertIs(raised.exception, stale)
 
     def test_pre_send_witness_must_still_show_the_resets_counters(self):
-        # Reviewer case: an admission (or a rejection) published between the reset and the pre-send
+        # An admission (or a rejection) published between the reset and the pre-send
         # row, still unlocked under the same nonce. Nothing was sent, so it fails at once instead of
         # becoming the baseline that the negative packet's refusal is counted against.
         for changed in (row(5_040, accepted=4), row(5_040, rejected=5)):
@@ -1242,7 +1394,7 @@ class ProbeFunctionsTest(unittest.TestCase):
     def test_negative_judges_a_lapse_before_its_refusal_against_the_lease_it_relied_on(self):
         # The actual negative() through its refusal judgement. A refusal replaces `expired` on a
         # lapsed guard, so only the earlier lapse row tells a premature lock apart, and only
-        # against the lease the controller relied on (reviewer case: the governing argument).
+        # against the lease the controller relied on (the governing argument).
         refused = row(5_120, rejected=5, reason="binding", holding=True)
         with self.assertRaises(ReachedRecovery):
             self.negative_case("unsigned", after_send=[[refused]])()
@@ -1266,6 +1418,55 @@ class ProbeFunctionsTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, r"locked \(expired\) before the governing lease could end"):
             self.negative_case("replay", permit=first, after_send=[
                 [admitted], [row(5_190, accepted=4, reason="expired", holding=True), duplicate_refused]])()
+
+    def test_an_arm_goal_the_controller_never_counts_fails_even_after_a_lapse_at_the_lease_end(self):
+        # Goals travel on a reliable action whose ingress counts every goal, even one that arrives
+        # after a lapse, so an inconclusive outcome still needs the goal's counted refusal and prompt
+        # hold. Here the reset lease (ends 1180 ms sim / 5180 ms wall) lapses at its end.
+        lapse = [arm(5_182, 1_181, reason="expired"),
+                 held(5_190, 1_182, stop_ms=5_181, cutoff_ms=1_181, rejected=4, reason="expired")]
+        stale = "v1:arm-goal:" + NONCE + ":3:980000000:4990000000:1180000000:5190000000:" + "c" * 64 + ":" + "d" * 128
+        for case in ("unsigned", "altered", "signature", "delay", "target"):
+            def run(rows, case=case):
+                return self.negative_case(case, stale_permit=lambda _: (stale, permit_fields(stale)),
+                                          after_send=[rows], target="arm")()
+            # Never counted: neither admitted nor refused, so nothing latched. Never runner delay.
+            with self.assertRaisesRegex(AssertionError, "arm " + case + ": no controller refusal and hold bound"):
+                run(lapse)
+            # A slow goal that reached the lapsed controller is refused at its ingress: inconclusive.
+            with self.assertRaises(RunnerDelay) as delay:
+                run(lapse + [held(5_240, 1_230, stop_ms=5_181, cutoff_ms=1_181, reason="rejected")])
+            self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed_before_refusal", case)
+        # A latched refusal with a prompt hold is judged a pass and reaches the recovery packet.
+        with self.assertRaises(ReachedRecovery):
+            self.negative_case("unsigned", target="arm", after_send=[[
+                arm(5_100, 1_090, rejected=5, reason="binding"),
+                held(5_110, 1_100, stop_ms=5_101, cutoff_ms=1_091, reason="binding")]])()
+        # Base commands travel on a best-effort topic: one that the base never counts stays
+        # inconclusive once the reset lease lapses at its end (after the drift check).
+        with self.assertRaises(RunnerDelay) as delay:
+            self.negative_case("unsigned", after_send=[[row(5_165, reason="expired", holding=True)]])()
+        self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed_before_refusal")
+
+    def test_a_refused_arm_goal_counted_after_the_drift_observation_is_still_inconclusive(self):
+        # A slow goal reaches the arm after the reset lease (ends 1180 ms sim / 5180 ms wall)
+        # lapsed at its end, and its ingress refusal (`rejected`) shows only once the 0.3 s drift
+        # observation is over. arm_hold gives it the conclusive path's 2 s, so this is runner
+        # delay; a goal that is never counted still fails (above).
+        lapse = [arm(5_182, 1_181, reason="expired"),
+                 held(5_190, 1_182, stop_ms=5_181, cutoff_ms=1_181, rejected=4, reason="expired")]
+        counted = held(5_600, 1_590, stop_ms=5_181, cutoff_ms=1_181, reason="rejected")
+        stale = "v1:arm-goal:" + NONCE + ":3:980000000:4990000000:1180000000:5190000000:" + "c" * 64 + ":" + "d" * 128
+        for case in ("unsigned", "altered", "signature", "delay", "target"):
+            shown = "arm " + case + " counted refusal and prompt hold"
+            run = self.negative_case(case, stale_permit=lambda _: (stale, permit_fields(stale)), after_send=[lapse],
+                                     target="arm", at_wait={shown: [counted]})
+            with self.assertRaises(RunnerDelay) as delay:
+                run()
+            self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed_before_refusal", case)
+            waits = [description for description, _ in run.waits]
+            self.assertLess(waits.index("negative control observation"), waits.index(shown), case)
+            self.assertEqual(run.waits[-1], (shown, 2), case)
 
     def recover_until_send(self, target, published):
         """The actual recover() up to its send. The controller latched a `binding` refusal; the
@@ -1291,7 +1492,7 @@ class ProbeFunctionsTest(unittest.TestCase):
                 with self.assertRaises(RunnerDelay) as raised:
                     run()
                 self.assertIs(raised.exception, delay)
-            # Reviewer case: an automatic recovery published while the approval ran late fails at
+            # An automatic recovery published while the approval ran late fails at
             # once, also when the controller locked again before the delay surfaced.
             for published in ((row(5_220, rejected=5, reason="binding"),),
                               (row(5_220, rejected=5, reason="binding"), row(5_240, rejected=5, reason="expired",
@@ -1328,20 +1529,21 @@ class ProbeFunctionsTest(unittest.TestCase):
                      world=SimpleNamespace(guard_states=rows, base_guard_states=[], primary_joint=lambda: joint["q"]),
                      reset=lambda: {"arm": {"fields": reset_grant, "accepted": 3, "unlocked_wall_ns": 5_005 * MS}},
                      GrantChain=GrantChain, require_no_fail_closed=require_no_fail_closed,
-                     fail_closed_settled=fail_closed_settled, RunnerDelay=RunnerDelay,
+                     fail_closed_settled=fail_closed_settled, goal_counted=goal_counted, RunnerDelay=RunnerDelay,
                      VERIFIER_WINDOW_NS=VERIFIER_WINDOW_NS, require_live=require_live,
                      arm_packet=lambda: ({"arm": {"permit": "goal"}}, "d" * 64),
                      send_timely=lambda packet, permit, stage, chain=None: chain.sent(goal),
                      stale_permit=lambda *args: ("stale", dict(goal, seq=3)),
                      require_fresh_witness=lambda stage, published, sent: before_send(rows, goal_row))
-        names = ("telemetry", "guard", "since", "wait_row", "fail_closed_check", "settle", "late_renewal")
+        names = ("telemetry", "guard", "since", "wait_row", "fail_closed_check", "settle", "require_counted",
+                 "late_renewal")
         exec(compile(ast.Module(body=[self.nodes()[name] for name in names], type_ignores=[]),
                      "actual-late-renewal", "exec"), scope)
         return scope["late_renewal"]
 
     def test_harness_delay_before_the_late_renewal_leaves_judges_the_goal_first(self):
         delay = RunnerDelay("arm renewal_delay", {"cause": "pre_send_telemetry_aged"})
-        # Reviewer case: the goal lease lapses 80 ms before its wall end and the arm holds,
+        # The goal lease lapses 80 ms before its wall end and the arm holds,
         # then the pre-send witness check reports a runner delay.
         def premature(rows, moving):
             rows.append((0, moving(5_131, 1_121, reason="expired", holding=True, stop_ms=5_130, cutoff_ms=1_120)))
@@ -1370,6 +1572,28 @@ class ProbeFunctionsTest(unittest.TestCase):
             self.late_renewal_until_send(ticks=admitted)()
         self.assertEqual(delay.exception.evidence, {"cause": "goal_motion_not_witnessed_inside_goal_lease",
                                                     "accepted_delta": 1})
+        # (d) The controller counts the goal only after that wait and settle()'s poll (5250 ms), so the
+        # event it counted is judged too, once counted. A refusal for another reason, published before
+        # the reset lease (ends 1175 ms sim / 5180 ms wall) could end, fails instead of being retried.
+        def refused(reason):
+            return arm(5_175, 1_165, rejected=5, reason=reason, holding=True, stop_ms=5_176, cutoff_ms=1_166)
+        for reason in ("binding", "signature", "sequence"):
+            for shown in (5_260, 5_300):
+                with self.assertRaisesRegex(AssertionError, "goal: timely permit rejected for " + reason):
+                    self.late_renewal_until_send(ticks={shown: [refused(reason)]})()
+        # So does a lapse 70 ms before the reset lease could end, shown before the goal's ingress refusal.
+        early = {5_260: [held(5_110, 1_100, stop_ms=5_101, cutoff_ms=1_091, rejected=4, reason="expired")],
+                 5_300: [held(5_200, 1_190, stop_ms=5_101, cutoff_ms=1_091, reason="rejected")]}
+        with self.assertRaisesRegex(AssertionError, r"goal: controller locked \(expired\) before any signed bound"):
+            self.late_renewal_until_send(ticks=early)()
+        # A late `freshness` refusal of the goal, or its late admission, stays inconclusive, never a pass.
+        with self.assertRaises(RunnerDelay) as delay:
+            self.late_renewal_until_send(ticks={5_300: [refused("freshness")]})()
+        self.assertEqual(delay.exception.evidence["cause"], "verifier_freshness_refusal")
+        with self.assertRaises(RunnerDelay) as delay:
+            self.late_renewal_until_send(ticks={5_300: [goal_row(5_295, 1_285)]})()
+        self.assertEqual(delay.exception.evidence, {"cause": "goal_motion_not_witnessed_inside_goal_lease",
+                                                    "accepted_delta": 0})
 
     def test_motion_checks_fail_on_motion_except_after_the_replay_duplicates_refusal(self):
         hold = {"drift_after_refusal": 0.0}
@@ -1380,23 +1604,34 @@ class ProbeFunctionsTest(unittest.TestCase):
         quiet = dict(wait_for=lambda *args, **kwargs: None, stopped=None, processes={},
                      time=SimpleNamespace(monotonic=lambda: 0.0), refused_motion=refused_motion)
         for target, case in PERMIT_NEGATIVES[:-1]:
-            def check(moved, target=target, case=case):
+            judged = []
+            def counted(*args):
+                judged.append(args[1:])
+                return hold
+            def check(moved, target=target, case=case, hold_check=counted):
                 return load(("negative", "check_motion"), **quiet, target=target, case=case,
-                           stage=target + " " + case, pose=[0.0, 0.0], joints=[0.0] * 4, mark=0, hold_after=0,
+                           stage=target + " " + case, pose=[0.0, 0.0], joints=[0.0] * 4, mark=7, hold_after=0,
                            world=SimpleNamespace(pose=lambda: [moved, 0.0], arm_positions=lambda: [moved, 0, 0, 0]),
-                           arm_hold=lambda *args: hold, since=lambda *args: [],
-                           negative_witness={"sent_wall_ns": 1, "rejected_before": 4})()
+                           arm_hold=hold_check, negative_witness={"sent_wall_ns": 1, "rejected_before": 4})()
             replay = (target, case) == ("arm", "replay")
-            self.assertEqual(check(.01), (.01, hold if replay else None), (target, case))
+            # Every arm negative is judged with its own counted refusal and prompt hold, from the
+            # telemetry mark taken before the packet left.
+            self.assertEqual(check(.01), (.01, hold if target == "arm" else None), (target, case))
+            self.assertEqual(judged, [(7, 1, 4, 0)] if target == "arm" else [], (target, case))
             with self.assertRaises(RunnerDelay if replay else AssertionError, msg=(target, case)):
                 check(DRIFT_LIMIT + .001)
+            if target == "arm":
+                # A goal the controller never counted fails on every path, whatever the drift.
+                def uncounted(*args, stage=target + " " + case):
+                    raise AssertionError(stage + ": no controller refusal and hold bound the arm's motion")
+                with self.assertRaisesRegex(AssertionError, "no controller refusal and hold", msg=(target, case)):
+                    check(0.0, hold_check=uncounted)
         for moved in (.01, DRIFT_LIMIT + .001):
             positions = iter(([0.0] * 4, [moved, 0.0, 0.0, 0.0]))
             def late_check():
                 return load(("late_renewal", "check_motion"), **quiet, stage="arm renewal_delay", mark=0, sent=1,
                            hold_after=0, world=SimpleNamespace(arm_positions=lambda: next(positions)),
-                           arm_hold=lambda *args: hold, since=lambda *args: [],
-                           negative_witness={"rejected_before": 4})()
+                           arm_hold=lambda *args: hold, negative_witness={"rejected_before": 4})()
             if moved <= DRIFT_LIMIT:
                 self.assertEqual(late_check(), (moved, hold))
             else:
@@ -1416,14 +1651,20 @@ class ProbeFunctionsTest(unittest.TestCase):
                     self.assertEqual(recovery_check(), moved)
         refused = arm(5_130, 1_120, rejected=5, reason="binding")
         prompt = held(5_140, 1_130, 5_131, 1_130, reason="binding")
-        starts = []
+        starts, judged_waits = [], []
         def arm_hold(found, moved):
             def motion_after(samples, start_ns, final_positions):
                 starts.append(start_ns)
                 return moved
+            def wait_judged(target, mark, judge, timeout, description):
+                judged_waits.append((target, mark, timeout, description))
+                verdict = judge([])
+                if verdict is None:
+                    raise TimeoutError(description)
+                return verdict
             return load(("arm_hold",), json=json, DRIFT_LIMIT=DRIFT_LIMIT, joint_history=lambda: [],
-                        world=SimpleNamespace(arm_positions=lambda: [0.0] * 4),
-                        refusal_hold=lambda *args: found, motion_after=motion_after)("arm replay", [], 1, 4, 0)
+                        world=SimpleNamespace(arm_positions=lambda: [0.0] * 4), wait_judged=wait_judged,
+                        refusal_hold=lambda *args: found, motion_after=motion_after)("arm replay", 7, 1, 4, 0)
         for found, moved, failure in ((None, 0.0, "no controller refusal and hold"),
                                       ((refused, prompt), DRIFT_LIMIT + .001, "moved after the controller refused"),
                                       ((refused, prompt), None, "moved after the controller refused")):
@@ -1436,6 +1677,8 @@ class ProbeFunctionsTest(unittest.TestCase):
         self.assertEqual(arm_hold((refused, earlier), .01)["hold_cutoff_ms"], 1_110)
         # Motion counts from the refusal row's update (1120 ms), or from the hold if it began earlier.
         self.assertEqual(starts, [1_120 * MS, 1_110 * MS])
+        # The arm's telemetry since the caller's mark gets the conclusive path's 2 s to show them.
+        self.assertEqual(set(judged_waits), {("arm", 7, 2, "arm replay counted refusal and prompt hold")})
 
 
 class ProbeStructureTest(unittest.TestCase):
@@ -1456,9 +1699,13 @@ class ProbeStructureTest(unittest.TestCase):
         def calls(node, names):
             return [call for call in ast.walk(node) if isinstance(call, ast.Call)
                     and isinstance(call.func, ast.Name) and call.func.id in names]
-        judged = calls(tree, ("wait_judged",))
+        waits = calls(tree, ("wait_judged",))
+        judged = [call for call in waits if flat(call.args[2].body).startswith("refusal(")]
         # The negatives (including the replay duplicate), the late renewal and the recovery.
         self.assertEqual(len(judged), 3)
+        # The only other judgement wait is arm_hold's, which those motion checks call.
+        self.assertEqual([call for call in waits if call not in judged],
+                         calls(nested("arm_hold", tree=tree), ("wait_judged",)))
         # The refusal's timing checks after wait_judged can raise RunnerDelay as well (a refusal
         # near the lease or stale-permit end, a late-renewal hold at the goal lease end), so they
         # sit in the same block: the drift and hold checks still run first.
@@ -1542,9 +1789,9 @@ class ProbeStructureTest(unittest.TestCase):
                                                  "negative_timing('arm','renewal_delay'),goal,stage,hold_after)")
         self.assertEqual(judged("recover"), "refusal(target,rows,witness,RECOVERY_REASONS[target],"
                                             "('freshness',)iftarget=='base'else(),None,stage+'recovery')")
-        # ...and the values those names are bound to (reviewer case: governing = None skipped every
-        # lapse before a refusal; the reset lease for the replay duplicate turned a premature lapse
-        # of the admitted first copy into runner delay). Tuple elements are compared, because
+        # ...and the values those names are bound to: governing = None would skip every lapse
+        # before a refusal, and using the reset lease for the replay duplicate would turn a premature
+        # lapse of the admitted first copy into runner delay. Tuple elements are compared, because
         # ast.unparse parenthesizes tuple targets on Python 3.9 only.
         def bindings(function, names):
             tree = nested(function)
@@ -1582,8 +1829,53 @@ class ProbeStructureTest(unittest.TestCase):
             self.assertNotIn("RunnerDelay", names, path)
         self.assertIn("ifguard(target).get('accepted',0)!=witness['accepted_before']:raiseAssertionError('automaticrecovery')",
                       flat(nested("recover")))
-        self.assertIn("refused_motion(stage,drift,hold),hold", flat(nested("negative", "check_motion")))
-        self.assertIn("refused_motion(stage,drift),arm_hold(", flat(nested("late_renewal", "check_motion")))
+        # Every arm negative needs its counted refusal and prompt hold; only the replay's hold
+        # can make drift over the limit inconclusive.
+        negative_motion = flat(nested("negative", "check_motion"))
+        self.assertIn("iftarget=='arm':hold=arm_hold(stage,mark,negative_witness['sent_wall_ns'],"
+                      "negative_witness['rejected_before'],hold_after)", negative_motion)
+        self.assertIn("refused_motion(stage,drift,holdifcase=='replay'elseNone),hold", negative_motion)
+        self.assertIn("refused_motion(stage,drift),arm_hold(stage,mark,sent,negative_witness['rejected_before'],"
+                      "hold_after)", flat(nested("late_renewal", "check_motion")))
+        # arm_hold gives the counted refusal and prompt hold the conclusive path's 2 s, then fails.
+        hold = flat(nested("arm_hold"))
+        self.assertIn("wait_judged('arm',mark,lambdarows:refusal_hold(rows,sent_ns,rejected_before,hold_after,"
+                      "stage),2,", hold)
+        self.assertRegex(hold, r"exceptTimeoutError:raiseAssertionError\(stage\+[\"']:nocontrollerrefusalandholdbound")
+
+    def test_valid_arm_goal_waits_need_the_goal_counted_before_an_inconclusive_outcome(self):
+        tree = ast.parse(self.source())
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        def wrapper(node):
+            while node in parents and not isinstance(node, ast.With):
+                node = parents[node]
+            return flat(node.items[0].context_expr) if isinstance(node, ast.With) else None
+        def sites(function, kind, text):
+            return [node for node in ast.walk(nested(function, tree=tree)) if isinstance(node, kind)
+                    and text in ast.unparse(node)]
+        # The goal's admission wait, the arm replay's first copy and the late-renewal goal,
+        # including that goal's own "not seen moving" outcome. That outcome is raised before any
+        # controller event made the attempt inconclusive, so the event counted afterwards is judged.
+        late_goal = "goal_counted(lambda:(require_counted('arm',before,stage+'goal'),settle(late,stage+'goal')))"
+        for function, kind, text, counted in (
+                ("arm_positive", ast.Call, "'trusted controller admits signed arm goal'",
+                 "goal_counted(lambda:require_counted('arm',before,'signedarmphysicallymoves'))"),
+                ("negative", ast.Call, "' replay first packet actually admitted'",
+                 "goal_counted(lambda:require_counted(target,witnessed,stage+'firstpacket'))"),
+                ("late_renewal", ast.Call, "' arm moving under its live goal'", late_goal),
+                ("late_renewal", ast.Raise, "goal_motion_not_witnessed_inside_goal_lease", late_goal)):
+            found = sites(function, kind, text)
+            self.assertEqual(len(found), 1, (function, text))
+            self.assertEqual(wrapper(found[0]), counted, (function, text))
+        # The counters are read before the goal leaves.
+        for function in ("arm_positive", "late_renewal"):
+            body = ast.unparse(nested(function, tree=tree))
+            self.assertLess(body.index("before = guard('arm')"), body.index("send_timely("), function)
+        # require_counted: arm goals only, the 1 s admission wait, then a failure, never a retry.
+        counted = flat(nested("require_counted", tree=tree))
+        self.assertIn("iftarget!='arm':return", counted)
+        self.assertIn(",1,processes,stage+':validarmgoalcounted')exceptTimeoutError:raiseAssertionError(", counted)
+        self.assertNotIn("RunnerDelay", counted)
 
     def test_harness_delays_before_a_refused_packet_leaves_judge_controller_events_first(self):
         tree = ast.parse(self.source())

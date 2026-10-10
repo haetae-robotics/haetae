@@ -16,7 +16,10 @@ or, for an arm goal refused after admission, that goal's 50 ms window. Any
 other reason, any lock before such a bound, and any admission of a packet that
 must be refused fail at once. The same rule judges a lapse that the controller
 published before a negative packet's refusal, and any lapse already visible
-when the harness itself is delayed before a packet leaves.
+when the harness itself is delayed before a packet leaves. Arm goals travel on
+a reliable action whose ingress counts every goal, so an arm goal that the
+controller never counts fails even where the outcome would otherwise be
+inconclusive (goal_counted, and the probe's arm hold check).
 """
 import contextlib
 import json
@@ -570,6 +573,23 @@ def fail_closed_settled(settle_events):
         raise
 
 
+@contextlib.contextmanager
+def goal_counted(require_counted):
+    """After a valid arm goal has left, an inconclusive outcome still needs the controller to have counted it.
+
+    Arm goals travel on a reliable action whose ingress counts every goal, even
+    one that arrives after a lapse (as `rejected`), so a valid goal that the
+    controller never counts is a fault, not runner delay: require_counted()
+    raises (AssertionError) for it. Base commands and renewals travel on
+    best-effort topics and get no such check. Nothing else is caught.
+    """
+    try:
+        yield
+    except RunnerDelay:
+        require_counted()
+        raise
+
+
 class AttemptLog:
     """Non-blocking timing record. Writing it can never fail or pass a case."""
 
@@ -613,7 +633,10 @@ class AttemptLog:
 
 
 def bounded_attempts(case, body, log, attempts=MAX_ATTEMPTS, clock=time.monotonic):
-    """Run body() (which begins with its own maintenance reset); retry only RunnerDelay."""
+    """Run body() (which begins with its own maintenance reset); retry only RunnerDelay.
+
+    When every attempt was inconclusive, the case fails, and the record says so.
+    """
     inconclusive = []
     for attempt in range(1, attempts + 1):
         started = clock()
@@ -623,7 +646,8 @@ def bounded_attempts(case, body, log, attempts=MAX_ATTEMPTS, clock=time.monotoni
             inconclusive.append({"attempt": attempt, "stage": delay.stage, **delay.evidence})
             log.record(case, attempt, "inconclusive", delay.stage, delay.evidence,
                        (clock() - started) * 1000)
-            print("Inconclusive controller permit attempt, retrying from reset: " + case + " #"
+            print("Inconclusive controller permit attempt, "
+                  + ("retrying from reset: " if attempt < attempts else "no attempts left: ") + case + " #"
                   + str(attempt) + " " + str(delay), file=sys.stderr, flush=True)
             continue
         except BaseException as exc:
@@ -632,6 +656,9 @@ def bounded_attempts(case, body, log, attempts=MAX_ATTEMPTS, clock=time.monotoni
             raise
         log.record(case, attempt, "passed", wall_ms=(clock() - started) * 1000)
         return dict(row, attempt=attempt)
-    raise AssertionError(case + ": all " + str(attempts) + " attempts were inconclusive under "
-                         "runner delay; inconclusive never counts as a pass: "
-                         + json.dumps(public(inconclusive), sort_keys=True))
+    failure = AssertionError(case + ": all " + str(attempts) + " attempts were inconclusive under "
+                             "runner delay; inconclusive never counts as a pass: "
+                             + json.dumps(public(inconclusive), sort_keys=True))
+    log.record(case, attempts, "failed", type(failure).__name__,
+               {"cause": "all_attempts_inconclusive", "error": str(failure)})
+    raise failure

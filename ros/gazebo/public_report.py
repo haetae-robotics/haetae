@@ -32,7 +32,9 @@ HOLD_UPDATES = 3
 # leads the harness's /clock view by at most one more 10 ms update when a
 # permit is signed, a real lease lapse is not visible earlier than this before
 # the signed wall end. A larger lead makes a real lapse look premature, which
-# fails a case rather than passing it.
+# fails a case whose lapse is published rather than passing it; a lapse that a
+# refusal overwrites before the next 20 ms base row stays invisible, and that
+# case can then pass without showing the refusal's own latch.
 LAPSE_ALLOWANCE_NS = 20_000_000
 DRIFT_LIMIT = .02
 
@@ -154,7 +156,8 @@ def negative_row_passed(target, case, value):
             and within(row.get("recovery_drift"), DRIFT_LIMIT) and within(row.get("drift"), DRIFT_LIMIT)
             and (case != "replay" or replay_admitted_then_rejected(row.get("replay_admission")))
             and (case not in ("delay", "renewal_delay") or stale_permit_refused_in_window(row))
-            and (target != "arm" or case not in ("replay", "renewal_delay") or arm_hold_prompt(row))
+            # Every arm negative records the arm's own counted refusal and prompt hold.
+            and (target != "arm" or arm_hold_prompt(row))
             and (case != "renewal_delay" or late_renewal_witnessed(row)))
 
 

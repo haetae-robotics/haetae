@@ -30,10 +30,11 @@ def permit_cases():
     for key in ('base_delay', 'arm_delay', 'arm_renewal_delay'):
         cases[key]['stale_permit'] = {'wall_ns': ms(60), 'wall_end_ns': ms(260),
                                       'sim_ns': 1_000_000_000, 'sim_end_ns': 1_200_000_000}
-    # The arm's own hold after it refused (controller simulation clock, ms).
-    for key in ('arm_replay', 'arm_renewal_delay'):
-        cases[key]['controller_hold'] = {'refusal_stamp_ms': 1_100, 'hold_cutoff_ms': 1_110,
-                                         'drift_after_refusal': 0.}
+    # The arm's own hold after it refused (controller simulation clock, ms), in every arm negative.
+    for target, case in PERMIT_NEGATIVES:
+        if target == 'arm':
+            cases[target + '_' + case]['controller_hold'] = {'refusal_stamp_ms': 1_100, 'hold_cutoff_ms': 1_110,
+                                                             'drift_after_refusal': 0.}
     cases['arm_renewal_delay']['controller_hold']['lease_sim_end_ns'] = 1_200_000_000
     cases['arm_renewal_delay'].update({'moving_before_late_renewal': {'joint1_displacement_rad': .01},
                                        'controller_stop_wall_ns': ms(125)})
@@ -192,9 +193,9 @@ class PublicReportTest(unittest.TestCase):
             cases[key].pop('stale_permit')
             self.assertEqual(permit_check(value)['status'], 'failed', key)
             cases[key]['stale_permit'] = stale
-        # The arm must hold within three controller updates of its refusal row and
-        # move at most 0.02 rad from it; the late renewal also before the goal's simulation end.
-        for key in ('arm_replay', 'arm_renewal_delay'):
+        # In every arm negative the arm must hold within three controller updates of its refusal
+        # row and move at most 0.02 rad from it; the late renewal also before the goal's simulation end.
+        for key in [target + '_' + case for target, case in PERMIT_NEGATIVES if target == 'arm']:
             hold = cases[key]['controller_hold']
             for field, invalid in (('hold_cutoff_ms', 1_131), ('drift_after_refusal', .021),
                                    ('drift_after_refusal', None), ('refusal_stamp_ms', None), ('hold_cutoff_ms', 1.0)):

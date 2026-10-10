@@ -29,7 +29,7 @@ from run_scenario import fixture
 from product_model import ARM_JOINTS, arm_policy
 from role_isolation import fresh_fixture, UIDS
 from permit_attempts import (PENDING, TIMING_FILE, VERIFIER_WINDOW_NS, AttemptLog, GrantChain, RunnerDelay,
-                             bounded_attempts, check_timely, fail_closed_settled, late_stop_verdict,
+                             bounded_attempts, check_timely, fail_closed_settled, goal_counted, late_stop_verdict,
                              motion_after, motion_checked, negative_timing, permit_age_ns, permit_fields,
                              precondition_miss, refusal, refusal_hold, refused_motion, require_fresh_witness,
                              require_live, require_no_fail_closed, require_refused_inside_lease,
@@ -183,14 +183,30 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         return [(msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec,
                  [msg.position[list(msg.name).index(j)] for j in ARM_JOINTS])
                 for _, msg in list(world.joint_measurements) if all(j in msg.name for j in ARM_JOINTS)]
-    def arm_hold(stage, rows, sent_ns, rejected_before, hold_after):
-        # The arm's prompt hold after it refused a packet, and its motion from the update
-        # stamped on the first telemetry row that shows the refusal, or from the hold if
-        # earlier (simulation clock, so receipt delay cannot hide it).
-        found = refusal_hold(rows, sent_ns, rejected_before, hold_after, stage)
-        if found is None:
+    def require_counted(target, before, stage):
+        # Arm goals travel on a reliable action whose ingress counts every goal, even one that
+        # arrives after a lapse, so a valid arm goal that the controller does not count (admit
+        # or refuse) within the 1 s admission wait fails. Base commands travel on a
+        # best-effort topic and are not checked.
+        if target != "arm":
+            return
+        try:
+            wait_for(lambda: guard(target).get("accepted", 0) > before.get("accepted", 0)
+                     or guard(target).get("rejected", 0) > before.get("rejected", 0),
+                     1, processes, stage + ": valid arm goal counted")
+        except TimeoutError:
+            # Chained to the inconclusive outcome that triggered this check, for the CI log.
+            raise AssertionError(stage + ": the controller never counted a valid arm goal")
+    def arm_hold(stage, mark, sent_ns, rejected_before, hold_after):
+        # The arm's counted refusal of a packet and its prompt hold, and its motion from the
+        # update stamped on the first telemetry row that shows the refusal, or from the hold if
+        # earlier (simulation clock, so receipt delay cannot hide it). As on the conclusive
+        # path, the refusal gets 2 s to show before it counts as never counted.
+        try:
+            refused, held = wait_judged("arm", mark, lambda rows: refusal_hold(
+                rows, sent_ns, rejected_before, hold_after, stage), 2, stage + " counted refusal and prompt hold")
+        except TimeoutError:
             raise AssertionError(stage + ": no controller refusal and hold bound the arm's motion")
-        refused, held = found
         start = min(refused["stamp_ms"], held["cutoff_ms"]) * 1_000_000
         moved = motion_after(joint_history(), start, world.arm_positions())
         if moved is None or moved > DRIFT_LIMIT:
@@ -427,16 +443,19 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         grant = reset()["arm"]
         chain = GrantChain(grant["fields"], grant["accepted"] - 1)
         initial = world.arm_positions()
-        accepted = guard("arm").get("accepted", 0)
+        before = guard("arm")
+        accepted = before.get("accepted", 0)
         late = fail_closed_check("arm", chain, grant["unlocked_wall_ns"], "signed arm physically moves")
         with fail_closed_settled(lambda: settle(late, "signed arm physically moves")):
             packet, digest = arm_packet()
             send_timely(packet, packet["arm"]["permit"], "arm goal", chain)
         # Renewal uses a later sequence on a different DDS route. Wait for
         # controller admission of the goal before any renewal can overtake it.
-        wait_for(lambda: late() or (not late.pending and guard("arm").get("accepted", 0) > accepted and
-                 not guard("arm").get("holding", True)),
-                 1, processes, "trusted controller admits signed arm goal")
+        # An inconclusive outcome still needs the controller to have counted the goal.
+        with goal_counted(lambda: require_counted("arm", before, "signed arm physically moves")):
+            wait_for(lambda: late() or (not late.pending and guard("arm").get("accepted", 0) > accepted and
+                     not guard("arm").get("holding", True)),
+                     1, processes, "trusted controller admits signed arm goal")
         def renew():
             # The world response already rechecks the same Rust goal. A second
             # audited tick adds IPC/commit delay without adding authorization.
@@ -552,26 +571,33 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
             wait_for(lambda:time.monotonic()>=until,2,processes,"negative control observation")
             drift=abs(world.pose()[0]-pose[0]) if target=="base" else max(abs(a-b) for a,b in zip(joints,world.arm_positions()))
             hold = None
-            if target == "arm" and case == "replay":
-                # The admitted first goal moves until the duplicate's refusal locks the
-                # controller; from that refusal on the arm may not move (arm_hold raises).
-                hold = arm_hold(stage, since(target, mark), negative_witness["sent_wall_ns"],
+            if target == "arm":
+                # Arm goals travel on a reliable action, and its ingress counts every goal, even one
+                # that arrives after a lapse (controller.cpp). So on every path, inconclusive ones
+                # included, the arm must show this goal's counted refusal and prompt hold, and may not
+                # move from that refusal on (arm_hold raises); a goal the controller has not counted
+                # when arm_hold's 2 s wait ends fails.
+                hold = arm_hold(stage, mark, negative_witness["sent_wall_ns"],
                                 negative_witness["rejected_before"], hold_after)
-            return refused_motion(stage, drift, hold), hold
+            # Drift over the limit can be inconclusive only in the replay, where the admitted first
+            # goal may move until the duplicate's refusal.
+            return refused_motion(stage, drift, hold if case == "replay" else None), hold
         send(packet)
         replay_admission = None
         replay_sent = None
         if case=="replay":
             # Rejection alone cannot prove replay protection: require
             # this exact packet's first admission before duplicating it.
-            admitted = wait_row(target, lambda row: first_late() or (not first_late.pending
-                         and row.get("published_wall_ns", 0) >= first_sent
-                         and row.get("nonce") == signer.challenges[target]
-                         and row.get("accepted", 0) == accepted_before + 1
-                         and row.get("rejected", 0) == prior
-                         and row.get("reason") == "accepted"
-                         and row.get("holding") is False),
-                         1, target + " replay first packet actually admitted")
+            # An inconclusive outcome still needs an arm controller to have counted the first copy.
+            with goal_counted(lambda: require_counted(target, witnessed, stage + " first packet")):
+                admitted = wait_row(target, lambda row: first_late() or (not first_late.pending
+                             and row.get("published_wall_ns", 0) >= first_sent
+                             and row.get("nonce") == signer.challenges[target]
+                             and row.get("accepted", 0) == accepted_before + 1
+                             and row.get("rejected", 0) == prior
+                             and row.get("reason") == "accepted"
+                             and row.get("holding") is False),
+                             1, target + " replay first packet actually admitted")
             replay_admission = {"accepted_before": accepted_before,
                 "accepted_after_first": admitted["accepted"],
                 "rejected_before": prior, "rejected_after_first": admitted["rejected"],
@@ -646,27 +672,33 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         grant = reset()["arm"]
         chain = GrantChain(grant["fields"], grant["accepted"] - 1)
         initial = world.primary_joint()
-        accepted = guard("arm").get("accepted", 0)
+        before = guard("arm")
+        accepted = before.get("accepted", 0)
         late = fail_closed_check("arm", chain, grant["unlocked_wall_ns"], stage + " goal")
         with fail_closed_settled(lambda: settle(late, stage + " goal")):
             packet, digest = arm_packet()
             send_timely(packet, packet["arm"]["permit"], stage + " goal", chain)
         goal = chain.last()
         mark = len(telemetry("arm"))
-        try:
-            witnessed = wait_row("arm", lambda row: late() or (not late.pending
-                and row.get("accepted", 0) == accepted + 1 and row.get("holding") is False
-                and row.get("reason") == "accepted" and row.get("active_digest") == digest
-                and 0 <= time.monotonic_ns() - row.get("published_wall_ns", 0) < VERIFIER_WINDOW_NS
-                and abs(world.primary_joint() - initial) > .005
-                and time.monotonic_ns() < goal["wall_end_ns"] and now() * 1_000_000 < goal["sim_end_ns"]),
-                .2, stage + " arm moving under its live goal")
-        except TimeoutError:
-            settle(late, stage + " goal")
-            if guard("arm").get("accepted", 0) not in (accepted, accepted + 1):
-                raise AssertionError(stage + " controller admitted unexpected traffic: " + json.dumps(guard("arm")))
-            raise RunnerDelay(stage, {"cause": "goal_motion_not_witnessed_inside_goal_lease",
-                                      "accepted_delta": guard("arm").get("accepted", 0) - accepted})
+        # An inconclusive outcome still needs the controller to have counted the goal. Its "not
+        # seen moving" outcome can come before that count, so the event the controller then counted
+        # is judged too: a refusal for another reason or a premature lock fails, never a retry.
+        with goal_counted(lambda: (require_counted("arm", before, stage + " goal"),
+                                   settle(late, stage + " goal"))):
+            try:
+                witnessed = wait_row("arm", lambda row: late() or (not late.pending
+                    and row.get("accepted", 0) == accepted + 1 and row.get("holding") is False
+                    and row.get("reason") == "accepted" and row.get("active_digest") == digest
+                    and 0 <= time.monotonic_ns() - row.get("published_wall_ns", 0) < VERIFIER_WINDOW_NS
+                    and abs(world.primary_joint() - initial) > .005
+                    and time.monotonic_ns() < goal["wall_end_ns"] and now() * 1_000_000 < goal["sim_end_ns"]),
+                    .2, stage + " arm moving under its live goal")
+            except TimeoutError:
+                settle(late, stage + " goal")
+                if guard("arm").get("accepted", 0) not in (accepted, accepted + 1):
+                    raise AssertionError(stage + " controller admitted unexpected traffic: " + json.dumps(guard("arm")))
+                raise RunnerDelay(stage, {"cause": "goal_motion_not_witnessed_inside_goal_lease",
+                                          "accepted_delta": guard("arm").get("accepted", 0) - accepted})
         moved = abs(world.primary_joint() - initial)
         hold_after = witnessed["published_wall_ns"]
         negative_witness = {"nonce_before": witnessed["nonce"], "holding_before": witnessed["holding"],
@@ -689,7 +721,7 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
             wait_for(lambda:time.monotonic()>=until,2,processes,"late renewal hold observation")
             drift = max(abs(a-b) for a,b in zip(settled, world.arm_positions()))
             return (refused_motion(stage, drift),
-                    arm_hold(stage, since("arm", mark), sent, negative_witness["rejected_before"], hold_after))
+                    arm_hold(stage, mark, sent, negative_witness["rejected_before"], hold_after))
         send({"heartbeat": stale})
         with motion_checked(check_motion):
             rejection, held = wait_judged("arm", mark, lambda rows: refusal(

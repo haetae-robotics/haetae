@@ -5,11 +5,11 @@ Reads controller-timing.json written by controller_probes.py, prints nearest-ran
 p50/p95/max for each row of SERIES (world_admission_ms appears only inside the
 pooled renewal_path_ms), warns when the p95 of a row with at least MIN_SAMPLES
 samples reaches the 50 ms verifier window (a smaller row gets a notice), warns
-about inconclusive (retried) probe attempts, and lists the attempts that did not
-pass (each inconclusive attempt, which was retried, and the failed attempt when a
-case failed). It always exits 0: these numbers describe the shared runner and
-never decide a required check. The controller's 50 ms and 200 ms limits are
-unchanged.
+about inconclusive probe attempts, and lists the attempts that did not pass
+(each inconclusive attempt and, when a case failed, its failure, including a
+case whose attempts were all inconclusive). It always exits 0: these numbers
+describe the shared runner and never decide a required check. The controller's
+50 ms and 200 ms limits are unchanged.
 """
 import json
 import math
@@ -68,7 +68,7 @@ def summarize(data, limit_ms=LIMIT_MS):
     attempts = data.get("attempts") if isinstance(data.get("attempts"), list) else []
     inconclusive = [row for row in attempts if isinstance(row, dict) and row.get("outcome") == "inconclusive"]
     if inconclusive:
-        notes.append(("warning", "%d inconclusive probe attempt(s) retried from reset, never counted as a pass: %s"
+        notes.append(("warning", "%d inconclusive probe attempt(s), never counted as a pass: %s"
                       % (len(inconclusive), ", ".join(sorted({"%s#%s" % (row.get("case"), row.get("attempt"))
                                                               for row in inconclusive})))))
     if data.get("complete") is not True:
@@ -83,7 +83,7 @@ def render(rows, data, limit_ms=LIMIT_MS):
              % limit_ms, "", "| series | n | p50 ms | p95 ms | max ms |", "|---|---:|---:|---:|---:|"]
     lines += ["| %s | %d | %.1f | %.1f | %.1f |" % row for row in rows]
     attempts = data.get("attempts") if isinstance(data.get("attempts"), list) else []
-    # Every attempt that did not pass: each inconclusive (retried) one and a case's failed one.
+    # Every attempt that did not pass: each inconclusive one and a failed case's failure.
     not_passed = [row for row in attempts if isinstance(row, dict) and row.get("outcome") != "passed"]
     if not_passed:
         lines += ["", "| case | attempt | outcome | stage | cause |", "|---|---:|---|---|---|"]
