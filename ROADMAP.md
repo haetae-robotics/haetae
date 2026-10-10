@@ -2,7 +2,7 @@
 
 As of 2026-10-10. Haetae is pre-alpha and not safety-rated.
 
-NOW lists the approved current work. Only the maintainer adds or changes NOW items.
+NOW lists the approved current work. Only the maintainer changes the NOW, NEXT, THEN and FROZEN lists.
 AI coding agents follow [AGENTS.md](AGENTS.md).
 
 ## NOW
