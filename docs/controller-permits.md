@@ -149,6 +149,9 @@ hatch is supplied. This removes two runtime programming entry paths;
 `verify` checks portable crypto, epoch model, protocol attacks, actual Rust
 authorizer and relay failures. Hazards require positive ON and intended fault
 evidence; early failure cannot pass. Software/physical USB reports are separate.
+A fail-closed timing loss before the fault restarts the scenario with a fresh
+emulator, authorizer and relay, at most three attempts; it never counts as a
+pass ([timing-inconclusive attempts](uno-r4-bench.md#timing-inconclusive-attempts)).
 
 Linux root may run `sudo -E env PATH="$PATH" python3 haetae-permit verify-isolation`.
 Authorizer UID2001, gateway2003 and AI2004 test key read/write/signal denials,

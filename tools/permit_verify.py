@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives import serialization
 
+from bench_evidence import Inconclusive, TimingRecord, bounded_attempts, device_settled, h2_timing_loss
 from bench_verify import wait_for
 from permit_checks import require
 from permit_keys import private_bytes, provision
@@ -119,12 +120,30 @@ def protocol_case(directory, config, name, attack, reason):
         device.close()
 
 
-def host_case(directory, config, name, scenario="allow", pause=False, kill_authorizer=False):
+def host_case(directory, config, name, scenario="allow", pause=False, kill_authorizer=False, timing=None):
+    """One host scenario, restarted only after a timing-inconclusive attempt (never a pass).
+
+    Each attempt is a fresh device emulator, authorizer (new BenchGate, Rust enforcer and
+    role keys) and relay (new HELLO generation and BIND session key) with its own logs.
+    """
+    timing = TimingRecord("H2") if timing is None else timing
+    # This case's retry logs from an earlier local run would sit beside this run's attempts. No case
+    # name contains "-retry", so the pattern matches no other case's logs.
+    for stale in OUT.glob(name + "-retry[0-9]*"):
+        stale.unlink()
+    return bounded_attempts(name, lambda label: host_attempt(directory, config, label, scenario, pause,
+                                                             kill_authorizer),
+                            timing, lambda label: OUT / (label + ".jsonl"),
+                            "fresh device emulator, authorizer and relay")
+
+
+def host_attempt(directory, config, name, scenario="allow", pause=False, kill_authorizer=False):
     device = Device(config, directory / "controller.seed", name)
     with tempfile.TemporaryDirectory(prefix="haetae-h2-ipc-") as tmp:
         tmp = Path(tmp)
         socket_path, ready, relay_ready = tmp / "auth.sock", tmp / "auth.ready", tmp / "relay.ready"
         authorizer = relay = None
+        killed = False
         try:
             with (OUT / (name + "-authorizer.log")).open("w") as auth_log, (OUT / (name + "-relay.log")).open("w") as relay_log:
                 authorizer = subprocess.Popen([sys.executable, str(ROOT / "haetae-permit"), "authorizer",
@@ -139,8 +158,39 @@ def host_case(directory, config, name, scenario="allow", pause=False, kill_autho
                 relay = subprocess.Popen([sys.executable, str(ROOT / "haetae-permit"), "relay", "--port", device.port,
                     "--deployment", str(directory / "deployment.json"), "--authorizer-socket", str(socket_path),
                     "--ready-file", str(relay_ready)], stdout=relay_log, stderr=relay_log)
+                def final_logs():
+                    # Only final logs are read: the relay has exited. A live authorizer may still
+                    # print its terminal or trace, so it gets up to 1 s to exit by itself (its own
+                    # cleanup closes the Rust enforcer). A killed one cannot, and stop_pair must
+                    # still signal its whole session, so it is never reaped here first. The third
+                    # value says whether the authorizer exited by itself, so its log is complete.
+                    exited = False
+                    if not killed:
+                        try:
+                            exited = authorizer.wait(timeout=1) >= 0  # not ended by a signal
+                        except subprocess.TimeoutExpired:
+                            pass
+                    stop_pair(authorizer, relay)
+                    return Path(relay_log.name).read_text(), Path(auth_log.name).read_text(), exited
+                def timing_loss(code, relay_text, auth_text, auth_exited):
+                    # Inconclusive only for a fail-closed timing loss before any fault, delivered
+                    # stop decision, pause or kill; anything else stays an ordinary failure below.
+                    # The authorizer prints a terminal only after sending it, so the log of one that
+                    # stop_pair had to kill may lack a stop decision that reached the relay.
+                    if not auth_exited:
+                        return
+                    time.sleep(.05)  # rows for bytes the relay wrote just before it exited
+                    evidence = h2_timing_loss(relay_text, code, auth_text, device.events())
+                    if evidence is not None:
+                        raise Inconclusive(evidence)
                 def positive_ready():
                     if relay.poll() is not None:
+                        # Before ON the pause or kill was never applied, so all seven cases classify.
+                        try:
+                            wait_for(lambda: device_settled(device.events()), 1)
+                        except AssertionError:
+                            pass  # no stop evidence: h2_timing_loss returns None
+                        timing_loss(relay.returncode, *final_logs())
                         raise AssertionError("relay failed before ON: " + str(relay_log.name))
                     return relay_ready.exists() and device.on()
                 positive = wait_for(positive_ready)
@@ -150,12 +200,15 @@ def host_case(directory, config, name, scenario="allow", pause=False, kill_autho
                     os.kill(relay.pid, signal.SIGCONT)
                 if kill_authorizer:
                     authorizer.kill()
+                    killed = True
                 code = relay.wait(timeout=4)
+                relay_text, auth_text, auth_exited = final_logs()
                 stopped = wait_for(lambda: device.stopped(positive["device_ms"]))
                 require(stopped and (not pause and (not kill_authorizer) or code != 0), 'permit_verify.py: qualification predicate failed')
                 if not pause and not kill_authorizer:
+                    if code != 0:
+                        timing_loss(code, relay_text, auth_text, auth_exited)
                     require(code == 0, 'scenario failed: ' + str(relay_log.name))
-                    auth_text = Path(auth_log.name).read_text()
                     if scenario == "allow":
                         require('Authorizer terminal: operator_complete' in auth_text, 'permit_verify.py: qualification predicate failed')
                     else:
@@ -185,6 +238,7 @@ def main():
     report["source_dirty"] = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip())
     sources = sorted((ROOT / "hardware/uno_r4_permit").rglob("*"))
     report["firmware_sha256"] = {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources if p.is_file()}
+    timing = TimingRecord("H2")  # non-blocking; never a pass/fail input
     try:
         subprocess.run(["cargo", "build", "--release", "--locked", "-p", "haetae"], cwd=ROOT, check=True)
         report["gate_sha256"] = hashlib.sha256((ROOT / "target/release/haetae").read_bytes()).hexdigest()
@@ -210,11 +264,13 @@ def main():
             for name, attack, reason in attacks:
                 report["cases"].append(protocol_case(directory, config, name, attack, reason))
             for scenario in ("allow", "person", "world-loss", "replay", "invalid-signature"):
-                report["cases"].append(host_case(directory, config, scenario, scenario))
-            report["cases"].append(host_case(directory, config, "relay-pause-resume", pause=True))
-            report["cases"].append(host_case(directory, config, "authorizer-kill", kill_authorizer=True))
+                report["cases"].append(host_case(directory, config, scenario, scenario, timing=timing))
+            report["cases"].append(host_case(directory, config, "relay-pause-resume", pause=True, timing=timing))
+            report["cases"].append(host_case(directory, config, "authorizer-kill", kill_authorizer=True, timing=timing))
         report["passed"] = True
     finally:
+        # Per-attempt cadence and every inconclusive attempt's evidence, also when a case failed.
+        report["timing"] = timing.payload()
         (OUT / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print("Signed controller software bench passed: " + str(len(report["cases"])) + " cases; no physical/motor claim.")
 

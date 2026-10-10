@@ -107,5 +107,61 @@ The Rust-kill case requires an observed `stop` event; a lease timeout cannot
 pass that STOP-delivery check. The signed-controller socket uses bounded bulk
 reads and complete writes against each frame's original monotonic deadline.
 Failures retain the last four request/gate/sign/response stage timestamps.
-Its operational request/acknowledgment
-budget remains 50 ms; a socket timeout still fails the named scenario.
+Its operational request/acknowledgment budget remains 50 ms.
+
+### Timing-inconclusive attempts
+
+Shared CI runners can stretch the host's 25 ms wait between renewals (macOS
+timer coalescing) or pause the whole VM. In the H1 bench and the signed H2
+bench, a scenario attempt is timing-inconclusive only when all of these hold:
+
+- The host or relay exited with one of the bounded deadline or lease messages
+  (a 50 ms gate, IPC or USB deadline, or a locked controller after its 200 ms
+  lease).
+- No fault had been injected, no stop decision had reached the host or relay,
+  and the H2 authorizer had logged no terminal. A STOP that fails after the H1
+  host's gate stop or allow completion therefore does not count.
+- Neither H2 process crashed with a Python traceback, and the H2 authorizer
+  exited by itself, so its log is complete.
+- If the H2 relay received the authorizer's reply to its last request but the
+  controller never acknowledged that request (the relay's last stage has
+  `response_received_ns` but no `controller_ack_ns`), the authorizer's
+  failure trace holds the stage that read that request (the first stage
+  whose `request_first_byte_ns` is at or after the relay's
+  `request_send_started_ns`), and that stage has `response_sent_ns`. The
+  authorizer prints a terminal only after its send returns, and the send
+  checks its deadline once more after writing the reply, so a terminal can
+  reach the relay with no terminal line in the log. A completed send means
+  any terminal it carried was logged.
+- The device stopped fail-closed, and no ON follows. Its first OFF is the
+  lease, or a RUN refused because the lease had ended, at 200 ms or more after
+  the last renewal. After a deadline it may instead be the host's or relay's
+  STOP or a stale refusal, but only within 300 ms of the last renewal, the
+  bound every passing attempt meets. The emulator writes at most one row per
+  loop pass, so a lease that ends in the same pass as a STOP can show only as
+  the STOP. A later STOP or stale refusal with no lease before it fails at
+  once.
+
+The harness sees decisions that reached the host or relay, and every terminal
+the H2 authorizer logged. A decision made after the deadline that the harness
+cannot see does not prevent a restart. For H2 this is an authorizer terminal
+(a gate denial, gate expiry, authorizer failure or allow completion) that the
+authorizer could not finish sending, so its log has no terminal line, and that
+the relay did not receive before its own deadline. A terminal the authorizer
+logged fails the attempt even if the relay never read it. For H1 it is a gate
+reply that came after the host's 50 ms wait had ended. A denial before the
+fault that coincides with such a delay is therefore restarted rather than
+failed.
+
+An inconclusive attempt never counts as a pass. The scenario restarts with a
+fresh device emulator and fresh processes, at most three attempts, and three
+inconclusive attempts fail it. Every other failure, any loss after the fault
+was injected or after a stop decision reached the host or relay, and any ON
+after a stop fail at once. The interruption cases (host kill, host pause, Rust
+kill, relay pause, authorizer kill) restart only for a loss before positive
+control; after the interruption they run once. A passing attempt keeps every
+existing check, including the 300 ms observation band. `report.json` records
+each attempt's renewal gaps, ARM-to-first-RUN time and STATUS-to-RUN-verified
+time, and the evidence of each inconclusive attempt, as a non-blocking
+measurement. The bench prints one GitHub Actions warning per inconclusive
+attempt. The 50 ms and 200 ms limits are unchanged.
