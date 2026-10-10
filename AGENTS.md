@@ -103,7 +103,8 @@ Never do these without the maintainer's explicit approval. Prepare the text or c
 ## Secrets and local evidence
 
 - Never copy, publish or commit private device material: seeds (`*.seed`), generated permit headers, firmware
-  build directories or device images (for example `artifacts/controller-permit-device-*`).
+  build directories or device images (anything under the git-ignored `artifacts/`, such as
+  `artifacts/controller-permit-build/` or the folder passed to `--device-directory`).
 - Never commit `.omx/` or `.omc/`; they hold local tool state. Do not delete `.omc/`. Stage files by path, not
   with `git add -A`.
 - Do not copy local-only notes, reports or `.omx/` paths into public files, commit messages, issues or PR
