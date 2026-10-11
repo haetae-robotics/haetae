@@ -165,17 +165,18 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
             raise AssertionError(description + ": controller event without hold evidence") from None
     def positive_motion(target, chain, late, moved, timeout, description, action):
         # A RunnerDelay from the action (approval, budget, send checks) leaves only after
-        # the controller's own fail-closed events were judged.
+        # settle() judged the first refusal or lock published since the checkpoint.
         with fail_closed_settled(lambda: settle(late, description)):
             wait_for(lambda: moved() or late(), timeout, processes, description, action=action)
         # Motion may cross its threshold while the last permit is still in flight. Wait until
-        # the controller counted it (late() raises for its refusal or a lapse), then judge every
-        # event published since the checkpoint: a non-timing refusal or premature lock still
-        # fails, and a timing outcome is inconclusive, never a pass.
+        # the controller counted it (late() raises for its refusal or a lapse), then judge the
+        # first refusal or lock published since the checkpoint: a non-timing refusal or premature
+        # lock there still fails, and a timing outcome is inconclusive, never a pass.
         wait_for(lambda: late() or not chain.in_flight(guard(target).get("accepted")), 1, processes,
                  description + ": last permit counted")
-        # Exactly the permits this harness sent were admitted; a count past them fails
-        # before any timing outcome is judged.
+        # Exactly the permits this harness sent were admitted; a count past them fails before
+        # settle() judges any event still pending. An event that late() already raised during
+        # the waits leaves first.
         chain.admitted(guard(target).get("accepted"), description)
         settle(late, description)
     def joint_history():
@@ -197,6 +198,15 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
         except TimeoutError:
             # Chained to the inconclusive outcome that triggered this check, for the CI log.
             raise AssertionError(stage + ": the controller never counted a valid arm goal")
+        # A correct controller refuses a valid goal only at its action ingress or handshake
+        # (`rejected`), for its age (`freshness`) or when its lease lapsed as accept() ran
+        # (`locked`). Only that goal reaches the arm before this check and a refusal latches
+        # its reason, so any other reason fails here, even when an earlier lapse at the lease
+        # end made the attempt inconclusive.
+        counted = guard(target)
+        if (counted.get("rejected", 0) > before.get("rejected", 0)
+                and counted.get("reason") not in ("freshness", "rejected", "locked")):
+            raise AssertionError(stage + ": the controller refused a valid arm goal for " + str(counted.get("reason")))
     def arm_hold(stage, mark, sent_ns, rejected_before, hold_after):
         # The arm's counted refusal of a packet and its prompt hold, and its motion from the
         # update stamped on the first telemetry row that shows the refusal, or from the hold if
@@ -618,7 +628,8 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                 settle(first_late, stage + " first packet")
                 raise AssertionError(stage + ": controller held after admitting the first copy without an event")
             first_grant = permit_fields(data["permit"])
-            # As before the first copy: the first packet's events are judged before a harness delay.
+            # A harness delay before the duplicate leaves is inconclusive only after settle() judged
+            # the first refusal or lock published since the checkpoint taken before the first copy left.
             with fail_closed_settled(lambda: settle(first_late, stage + " first packet")):
                 replay_sent = time.monotonic_ns()
                 require_fresh_witness(stage + " duplicate", before.get("published_wall_ns", 0), replay_sent)
@@ -680,11 +691,17 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
             send_timely(packet, packet["arm"]["permit"], stage + " goal", chain)
         goal = chain.last()
         mark = len(telemetry("arm"))
-        # An inconclusive outcome still needs the controller to have counted the goal. Its "not
-        # seen moving" outcome can come before that count, so the event the controller then counted
-        # is judged too: a refusal for another reason or a premature lock fails, never a retry.
-        with goal_counted(lambda: (require_counted("arm", before, stage + " goal"),
-                                   settle(late, stage + " goal"))):
+        def goal_judged():
+            # An inconclusive outcome still needs the controller to have counted the goal, and to have
+            # refused it, if at all, only for a reason a correct controller gives a valid goal
+            # (require_counted). Its "not seen moving" outcome can come before that count. Only this
+            # goal reaches the arm before the late renewal, so once it is counted, an admission past it
+            # fails before settle() judges the first refusal or lock published since the reset.
+            require_counted("arm", before, stage + " goal")
+            if guard("arm").get("accepted", 0) not in (accepted, accepted + 1):
+                raise AssertionError(stage + " controller admitted unexpected traffic: " + json.dumps(guard("arm")))
+            settle(late, stage + " goal")
+        with goal_counted(goal_judged):
             try:
                 witnessed = wait_row("arm", lambda row: late() or (not late.pending
                     and row.get("accepted", 0) == accepted + 1 and row.get("holding") is False
@@ -694,19 +711,19 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
                     and time.monotonic_ns() < goal["wall_end_ns"] and now() * 1_000_000 < goal["sim_end_ns"]),
                     .2, stage + " arm moving under its live goal")
             except TimeoutError:
-                settle(late, stage + " goal")
-                if guard("arm").get("accepted", 0) not in (accepted, accepted + 1):
-                    raise AssertionError(stage + " controller admitted unexpected traffic: " + json.dumps(guard("arm")))
+                # goal_counted() runs goal_judged() before this leaves. The admission count is read
+                # here, when the wait ended, before goal_judged() waits for the goal's count.
                 raise RunnerDelay(stage, {"cause": "goal_motion_not_witnessed_inside_goal_lease",
-                                          "accepted_delta": guard("arm").get("accepted", 0) - accepted})
+                                          "accepted_delta_at_wait_end": guard("arm").get("accepted", 0) - accepted})
         moved = abs(world.primary_joint() - initial)
         hold_after = witnessed["published_wall_ns"]
         negative_witness = {"nonce_before": witnessed["nonce"], "holding_before": witnessed["holding"],
             "reason_before": witnessed["reason"], "before_published_wall_ns": hold_after,
             "accepted_before": witnessed["accepted"], "rejected_before": witnessed["rejected"],
             "lease_wall_end_ns": goal["wall_end_ns"]}
-        # A harness delay before the late renewal leaves is inconclusive only once the goal's
-        # own events were judged: a premature lapse of the goal lease fails.
+        # A harness delay before the late renewal leaves is inconclusive only once settle() judged
+        # the first refusal or lock published since the checkpoint. The wait for the witness saw
+        # none, so a premature lapse of the goal lease that comes next fails.
         with fail_closed_settled(lambda: settle(late, stage + " goal")):
             stale, stale_fields = stale_permit("arm", "lease", digest, stage)
             sent = time.monotonic_ns()

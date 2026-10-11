@@ -1246,6 +1246,13 @@ class ProbeFunctionsTest(unittest.TestCase):
         with self.assertRaises(RunnerDelay) as delay:
             self.arm_positive_until_renewals({**lapse, **late_goal})()
         self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed")
+        # Counted after the lapse for a reason a correct controller never gives a valid goal: that
+        # refusal fails, although the lapse before it is runner delay.
+        for reason in ("binding", "signature", "sequence"):
+            with self.assertRaisesRegex(AssertionError, "signed arm physically moves: the controller refused a "
+                                                        "valid arm goal for " + reason):
+                self.arm_positive_until_renewals({**lapse, 5_300: [
+                    held(5_300, 1_290, stop_ms=5_181, cutoff_ms=1_176, reason=reason)]})()
         # The 1 s admission wait: a goal counted only later still fails.
         with self.assertRaisesRegex(AssertionError, "never counted a valid arm goal"):
             self.arm_positive_until_renewals({**lapse, 6_300: late_goal[5_300]})()
@@ -1270,6 +1277,9 @@ class ProbeFunctionsTest(unittest.TestCase):
         with self.assertRaises(RunnerDelay) as delay:
             replay("arm", arm_lapse + [held(5_240, 1_230, stop_ms=5_181, cutoff_ms=1_181, reason="rejected")])
         self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed")
+        with self.assertRaisesRegex(AssertionError, "arm replay first packet: the controller refused a valid arm "
+                                                    "goal for binding"):
+            replay("arm", arm_lapse + [held(5_240, 1_230, stop_ms=5_181, cutoff_ms=1_181, reason="binding")])
         with self.assertRaises(RunnerDelay) as delay:
             replay("base", [row(5_165, reason="expired", holding=True)])
         self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed")
@@ -1567,25 +1577,60 @@ class ProbeFunctionsTest(unittest.TestCase):
         # (b) One more admission than the goal, with no fail-closed event.
         with self.assertRaisesRegex(AssertionError, "controller admitted unexpected traffic"):
             self.late_renewal_until_send(ticks={**admitted, 5_060: [goal_row(5_060, 1_050, accepted=5)]})()
+        # It fails wherever it first shows: inside the 0.2 s wait, or only while the harness then waits
+        # for the goal's count (5300 ms), and also next to a late `freshness` refusal of the goal, which
+        # alone would be inconclusive (below). Simulation stamps run 4010 ms behind the wall clock.
+        for shown in (5_060, 5_300):
+            for refusal_row in ({}, dict(rejected=5, reason="freshness", holding=True, stop_ms=shown - 6,
+                                         cutoff_ms=shown - 4_016)):
+                with self.assertRaisesRegex(AssertionError, "controller admitted unexpected traffic"):
+                    self.late_renewal_until_send(ticks={shown: [goal_row(shown - 5, shown - 4_015, accepted=5,
+                                                                         **refusal_row)]})()
         # (c) Only time passed: the attempt is inconclusive.
         with self.assertRaises(RunnerDelay) as delay:
             self.late_renewal_until_send(ticks=admitted)()
         self.assertEqual(delay.exception.evidence, {"cause": "goal_motion_not_witnessed_inside_goal_lease",
-                                                    "accepted_delta": 1})
-        # (d) The controller counts the goal only after that wait and settle()'s poll (5250 ms), so the
-        # event it counted is judged too, once counted. A refusal for another reason, published before
-        # the reset lease (ends 1175 ms sim / 5180 ms wall) could end, fails instead of being retried.
+                                                    "accepted_delta_at_wait_end": 1})
+        # (d) A refusal of the goal for another reason, published before the reset lease (ends
+        # 1175 ms sim / 5180 ms wall) could end, fails instead of being retried: inside the 0.2 s wait
+        # as the first event since the reset, and when the controller counts the goal only after that
+        # wait (5260 or 5300 ms), as soon as it is counted.
         def refused(reason):
             return arm(5_175, 1_165, rejected=5, reason=reason, holding=True, stop_ms=5_176, cutoff_ms=1_166)
         for reason in ("binding", "signature", "sequence"):
+            with self.assertRaisesRegex(AssertionError, "goal: timely permit rejected for " + reason):
+                self.late_renewal_until_send(ticks={5_100: [arm(5_095, 1_085, rejected=5, reason=reason,
+                                                                holding=True, stop_ms=5_094, cutoff_ms=1_084)]})()
             for shown in (5_260, 5_300):
-                with self.assertRaisesRegex(AssertionError, "goal: timely permit rejected for " + reason):
+                with self.assertRaisesRegex(AssertionError, "goal: the controller refused a valid arm goal for "
+                                            + reason):
                     self.late_renewal_until_send(ticks={shown: [refused(reason)]})()
         # So does a lapse 70 ms before the reset lease could end, shown before the goal's ingress refusal.
         early = {5_260: [held(5_110, 1_100, stop_ms=5_101, cutoff_ms=1_091, rejected=4, reason="expired")],
                  5_300: [held(5_200, 1_190, stop_ms=5_101, cutoff_ms=1_091, reason="rejected")]}
         with self.assertRaisesRegex(AssertionError, r"goal: controller locked \(expired\) before any signed bound"):
             self.late_renewal_until_send(ticks=early)()
+        # (e) The reset lease lapses at its end (hold stamps 5181 ms wall / 1176 ms sim) before the goal
+        # is counted, shown inside the 0.2 s wait or only while the harness then waits for the goal's
+        # count (from 5250 ms). That lapse alone is runner delay, but the goal's own refusal still has
+        # to give a reason a correct controller gives a valid goal: any other reason fails, never a retry.
+        lapses = ({5_180: [arm(5_180, 1_170, reason="expired")],
+                   5_190: [held(5_190, 1_180, stop_ms=5_181, cutoff_ms=1_176, rejected=4, reason="expired")]},
+                  {5_250: [held(5_250, 1_240, stop_ms=5_181, cutoff_ms=1_176, rejected=4, reason="expired")]},
+                  {5_270: [arm(5_265, 1_255, reason="expired")],
+                   5_280: [held(5_275, 1_265, stop_ms=5_181, cutoff_ms=1_176, rejected=4, reason="expired")]})
+        for lapse in lapses:
+            def counted(reason, lapse=lapse):
+                return self.late_renewal_until_send(ticks={**lapse, 5_300: [
+                    held(5_295, 1_285, stop_ms=5_181, cutoff_ms=1_176, reason=reason)]})
+            for reason in ("binding", "signature", "sequence"):
+                with self.assertRaisesRegex(AssertionError, "goal: the controller refused a valid arm goal for "
+                                            + reason):
+                    counted(reason)()
+            for reason in ("rejected", "locked", "freshness"):
+                with self.assertRaises(RunnerDelay) as delay:
+                    counted(reason)()
+                self.assertEqual(delay.exception.evidence["cause"], "governing_lease_lapsed", (lapse, reason))
         # A late `freshness` refusal of the goal, or its late admission, stays inconclusive, never a pass.
         with self.assertRaises(RunnerDelay) as delay:
             self.late_renewal_until_send(ticks={5_300: [refused("freshness")]})()
@@ -1593,7 +1638,7 @@ class ProbeFunctionsTest(unittest.TestCase):
         with self.assertRaises(RunnerDelay) as delay:
             self.late_renewal_until_send(ticks={5_300: [goal_row(5_295, 1_285)]})()
         self.assertEqual(delay.exception.evidence, {"cause": "goal_motion_not_witnessed_inside_goal_lease",
-                                                    "accepted_delta": 0})
+                                                    "accepted_delta_at_wait_end": 0})
 
     def test_motion_checks_fail_on_motion_except_after_the_replay_duplicates_refusal(self):
         hold = {"drift_after_refusal": 0.0}
@@ -1760,8 +1805,8 @@ class ProbeStructureTest(unittest.TestCase):
         self.assertIn("positive_motion('arm',chain,late,lambda:abs(world.primary_joint()-initial[0])>0.08,3,",
                       flat(nodes["arm_positive"]))
         # positive_motion: the action's RunnerDelay is settled first, then the last permit is
-        # counted, the admission count must match the permits sent, and every event since the
-        # checkpoint is judged.
+        # counted, the admission count must match the permits sent, and the first refusal or lock
+        # since the checkpoint is judged.
         body = nodes["positive_motion"].body
         self.assertEqual(len(body), 4)
         self.assertEqual([settled_first(call) for call in calls("positive_motion", "wait_for")], [True, False])
@@ -1855,8 +1900,18 @@ class ProbeStructureTest(unittest.TestCase):
                     and text in ast.unparse(node)]
         # The goal's admission wait, the arm replay's first copy and the late-renewal goal,
         # including that goal's own "not seen moving" outcome. That outcome is raised before any
-        # controller event made the attempt inconclusive, so the event counted afterwards is judged.
-        late_goal = "goal_counted(lambda:(require_counted('arm',before,stage+'goal'),settle(late,stage+'goal')))"
+        # controller event made the attempt inconclusive, so once the goal is counted (and its
+        # refusal reason judged), an admission past it fails before settle() judges the first
+        # refusal or lock since the reset. The wait's own timeout only raises; goal_judged() judges.
+        late_goal = "goal_counted(goal_judged)"
+        self.assertEqual([flat(statement) for statement in nested("late_renewal", "goal_judged", tree=tree).body],
+                         ["require_counted('arm',before,stage+'goal')",
+                          "ifguard('arm').get('accepted',0)notin(accepted,accepted+1):raiseAssertionError(stage+"
+                          "'controlleradmittedunexpectedtraffic:'+json.dumps(guard('arm')))",
+                          "settle(late,stage+'goal')"])
+        timeout = [handler for handler in ast.walk(nested("late_renewal", tree=tree))
+                   if isinstance(handler, ast.ExceptHandler) and flat(handler.type) == "TimeoutError"]
+        self.assertEqual([[type(statement) for statement in handler.body] for handler in timeout], [[ast.Raise]])
         for function, kind, text, counted in (
                 ("arm_positive", ast.Call, "'trusted controller admits signed arm goal'",
                  "goal_counted(lambda:require_counted('arm',before,'signedarmphysicallymoves'))"),
@@ -1871,10 +1926,14 @@ class ProbeStructureTest(unittest.TestCase):
         for function in ("arm_positive", "late_renewal"):
             body = ast.unparse(nested(function, tree=tree))
             self.assertLess(body.index("before = guard('arm')"), body.index("send_timely("), function)
-        # require_counted: arm goals only, the 1 s admission wait, then a failure, never a retry.
+        # require_counted: arm goals only, the 1 s admission wait, then a failure, never a retry. A
+        # counted refusal must give a reason a correct controller gives a valid goal.
         counted = flat(nested("require_counted", tree=tree))
         self.assertIn("iftarget!='arm':return", counted)
         self.assertIn(",1,processes,stage+':validarmgoalcounted')exceptTimeoutError:raiseAssertionError(", counted)
+        self.assertIn("counted=guard(target)ifcounted.get('rejected',0)>before.get('rejected',0)and"
+                      "counted.get('reason')notin('freshness','rejected','locked'):raiseAssertionError(stage+"
+                      "':thecontrollerrefusedavalidarmgoalfor'+str(counted.get('reason')))", counted)
         self.assertNotIn("RunnerDelay", counted)
 
     def test_harness_delays_before_a_refused_packet_leaves_judge_controller_events_first(self):

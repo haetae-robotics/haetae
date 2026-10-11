@@ -15,11 +15,11 @@ time bound could first close: the end of the lease the controller relied on,
 or, for an arm goal refused after admission, that goal's 50 ms window. Any
 other reason, any lock before such a bound, and any admission of a packet that
 must be refused fail at once. The same rule judges a lapse that the controller
-published before a negative packet's refusal, and any lapse already visible
-when the harness itself is delayed before a packet leaves. Arm goals travel on
-a reliable action whose ingress counts every goal, so an arm goal that the
-controller never counts fails even where the outcome would otherwise be
-inconclusive (goal_counted, and the probe's arm hold check).
+published before a negative packet's refusal, and a lapse that is the first
+refusal or lock visible when the harness itself is delayed before a packet
+leaves. Arm goals travel on a reliable action whose ingress counts every goal,
+so an arm goal that the controller never counts fails even where the outcome
+would otherwise be inconclusive (goal_counted, and the probe's arm hold check).
 """
 import contextlib
 import json
@@ -556,15 +556,19 @@ def motion_checked(check_motion):
 
 @contextlib.contextmanager
 def fail_closed_settled(settle_events):
-    """A harness-side RunnerDelay leaves only after the controller's events are judged.
+    """A harness-side RunnerDelay leaves only after the first refusal or lock since the checkpoint is judged.
 
     Used around a positive case's sends and before a negative packet leaves.
-    settle_events() classifies what the controller published since the case's
-    checkpoint (require_no_fail_closed, or reset_lease_events before a negative
-    packet): AssertionError for a failure, RunnerDelay for a timing outcome. When
-    there is nothing to judge it returns and the original RunnerDelay is re-raised,
-    so a slow approval or send check cannot turn a refusal or premature lock that
-    is already visible into a retry. Nothing else is caught.
+    settle_events() classifies the first refusal or lock that the controller
+    published since the checkpoint (require_no_fail_closed): AssertionError for
+    a failure, RunnerDelay for a timing outcome. Around the late-renewal case's
+    sends and before the replay's duplicate leaves, that is all it judges.
+    Before any other negative packet, and before the replay's first copy, it
+    also requires that only time passed since the reset (reset_lease_events):
+    the same nonce, counters and reason, apart from a lapse. When there is
+    nothing to judge it returns and the original RunnerDelay is re-raised, so a
+    slow approval or send check cannot turn a premature lock or a refusal for
+    another reason that came first into a retry. Nothing else is caught.
     """
     try:
         yield

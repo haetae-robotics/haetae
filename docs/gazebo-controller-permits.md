@@ -276,12 +276,16 @@ an arm goal signed before the controller's last hold cutoff, or any positive
 permit once the last lease it sent has ended. Positive permits leave one at a
 time, so each refusal is observed on its own. A delay in the harness itself, in
 a positive case or before a negative packet leaves, counts as inconclusive only
-after the refusals and locks that the controller already published were judged;
-before a negative packet leaves, only the passing of time may show at the
-controller. Once the motion threshold is reached, the harness still waits for
+after the first refusal or lock the controller already published was judged.
+Before the packet of a negative case leaves (for `replay`, its first copy),
+only the passing of time may show at the controller; before the replay's
+duplicate and the late renewal leave, only that first refusal or lock is
+judged. Once the motion threshold is reached, the harness still waits for
 the controller to admit or refuse the last permit it sent, or for the current
 lease to lapse, and judges that outcome too. An admission count past the
-permits the harness sent then fails at once.
+permits the harness sent then fails at once, unless an inconclusive refusal or
+lock, such as a `freshness` refusal, already ended the attempt while the
+harness waited; that attempt is retried, never passed.
 Beyond these harness-side delays, an attempt is inconclusive only in these
 cases:
 
@@ -306,15 +310,18 @@ cases:
 - an arm goal that the verifier admitted and the action handshake then refused,
   with the controller's hold stamped no more than one 10 ms update before the
   goal's own 50 ms simulation window closed;
-- a live-lease window that closed before a negative packet left, when nothing
-  but time changed at the controller: the same nonce and counters, and any
-  `expired` lock placed at or after the lease end by the same evidence;
+- a live-lease window that closed before the packet of a negative case left
+  (for `replay`, its first copy), when nothing but time changed at the
+  controller: the same nonce and counters, and any `expired` lock placed at or
+  after the lease end by the same evidence;
 - in the late-renewal case, a goal that was not admitted, or not seen moving
   the arm more than 0.005 rad while the goal's own lease was live, within
-  0.2 s of the goal's send and with a telemetry row under 50 ms old, once
-  nothing beyond that goal was admitted and the controller counted the goal
-  (below), and once the refusals and locks that the controller published by
-  then, the goal's own refusal included, were judged;
+  0.2 s of the goal's send and with a telemetry row under 50 ms old. This is
+  inconclusive only once the controller counted the goal (below) and, read
+  after that count, had admitted at most one packet (only the goal was sent),
+  and once the first refusal or lock published since the reset was judged as
+  in this list. A refusal of the goal that comes after a lapse is judged by
+  its reason (below);
 - a property-specific rejection observed only after that lease ended (for the
   base, within 20 ms of its wall end, where a lapse may come first and the
   refusal's reason then replaces `expired`) or too close to a stale permit's
@@ -342,7 +349,11 @@ arrives after a lapse (as `rejected`), so on every path, inconclusive ones
 included, an arm goal that the controller does not count fails. For a valid
 goal (the positive control's, the late-renewal case's or the arm replay's
 first copy) the harness waits at least one second after its send (the
-probe's admission wait for a valid goal) for its admission or refusal. For a
+probe's admission wait for a valid goal) for its admission or refusal. That
+refusal must give a reason a correct controller gives a valid goal: `rejected`
+at the action ingress or handshake, `freshness`, or `locked` when the
+controller's lease lapsed as the goal arrived. Any other reason fails, even
+when an earlier lapse at that lease's end made the attempt inconclusive. For a
 goal that must be refused it waits at least two seconds, as the conclusive
 path does, for that goal's counted refusal and a hold no later than three
 updates after the first telemetry row that shows it. A late renewal that the
@@ -370,9 +381,13 @@ the approval round trip, the age that the verifier would compute for each
 permit at the harness's pre-send freshness check (positive permits, reset
 packets, the signature and replay negatives and the base recovery packet),
 including permits withheld there because they were already 50 ms old, and every
-attempt with its outcome. A CI step reports nearest-rank p50/p95/max for four
-rows: `renewal_path_ms` (the live renewals pooled with the world-admission
-steps, which have no row of their own), `renewal_ms`, `actuation_admission_ms`
+attempt with its outcome. Attempts are recorded for the 15 cases that may be
+retried; the base and arm expiry checks run once, outside the retry loop, so
+they are not in `controller-timing.json`; their rows in
+`controller-permits.json` and `result.json` carry attempt 1. A CI step
+reports nearest-rank p50/p95/max for four rows: `renewal_path_ms` (the live
+renewals pooled with the world-admission steps, which have no row of their
+own), `renewal_ms`, `actuation_admission_ms`
 and `send_age_ms`. It emits a warning when the p95 of a row with at least 20
 samples reaches 50 ms, and only a notice when a row with fewer samples does. Any
 inconclusive attempt also emits a warning. Other notices flag a row without
