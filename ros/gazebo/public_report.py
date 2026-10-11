@@ -5,6 +5,39 @@ import math
 import re
 from safe_evidence import read_evidence
 
+# Controller-permit acceptance contract. controller_probes.py imports these, so
+# the Gazebo job and the alpha package judge one definition.
+NEGATIVE_REASONS = {"unsigned": "binding", "altered": "binding", "signature": "signature",
+                    "replay": "sequence", "delay": "freshness", "target": "binding",
+                    "renewal_delay": "freshness"}
+# A fresh valid packet reaching a latched controller: the base reaches the
+# latch check, the arm action ingress refuses a held controller first.
+RECOVERY_REASONS = {"base": "locked", "arm": "rejected"}
+PERMIT_NEGATIVES = tuple((target, case) for target in ("base", "arm")
+                         for case in ("unsigned", "altered", "signature", "replay", "delay", "target")
+                         ) + (("arm", "renewal_delay"),)
+# At most this many attempts run per case, each from a fresh reset; a row
+# records the attempt that passed.
+PERMIT_MAX_ATTEMPTS = 3
+# Verifier limits, mirrored and never tuned: permit.hpp refuses a permit 50 ms
+# old and a lease longer than 200 ms (controller_permits.MAX_LEASE_NS).
+VERIFIER_WINDOW_NS = 50_000_000
+MAX_LEASE_NS = 200_000_000
+# controllers.yaml update_rate: 100. The arm controller holds at its first
+# update after its guard locks; a hold later than HOLD_UPDATES updates fails.
+CONTROLLER_UPDATE_NS = 10_000_000
+HOLD_UPDATES = 3
+# A signed simulation end precedes the signed wall end by
+# SIM_ORDERING_BACKDATE_NS (10 ms). Assuming the controller's simulation clock
+# leads the harness's /clock view by at most one more 10 ms update when a
+# permit is signed, a real lease lapse is not visible earlier than this before
+# the signed wall end. A larger lead makes a real lapse look premature, which
+# fails a case whose lapse is published rather than passing it; a lapse that a
+# refusal overwrites before the next 20 ms base row stays invisible, and that
+# case can then pass without showing the refusal's own latch.
+LAPSE_ALLOWANCE_NS = 20_000_000
+DRIFT_LIMIT = .02
+
 
 def mapping(value):
     return value if isinstance(value, dict) else {}
@@ -52,12 +85,80 @@ def negative_permit_rejected(value, case):
     return (isinstance(nonce, str) and re.fullmatch(r"[0-9a-f]{32}", nonce) is not None
             and nonce == row.get("nonce_after") and row.get("holding_before") is False
             and row.get("reason_before") == "accepted"
-            and row.get("rejection_reason") == {"unsigned": "binding", "altered": "binding",
-                "signature": "signature", "replay": "sequence", "delay": "freshness", "target": "binding"}.get(case)
+            and row.get("rejection_reason") == NEGATIVE_REASONS.get(case)
             and row["accepted_after"] == row["accepted_before"]
             and row["rejected_after"] == row["rejected_before"] + 1
-            and 0 <= row["sent_wall_ns"] - row["before_published_wall_ns"] < 50_000_000
+            and 0 <= row["sent_wall_ns"] - row["before_published_wall_ns"] < VERIFIER_WINDOW_NS
             and row["sent_wall_ns"] <= row["rejection_published_wall_ns"] < row["lease_wall_end_ns"])
+
+
+def refused_inside_lease(target, value):
+    """No lapse of the lease the controller relied on can have come before the refusal.
+
+    A refusal overwrites `expired` on a lapsed guard, so the base, which has no hold
+    stamps, needs its refusal published more than LAPSE_ALLOWANCE_NS before the
+    signed wall end; the arm's refusal must be published before the wall end (its
+    hold stamps are checked by the probe).
+    """
+    witness = mapping(value)
+    published, end = witness.get("rejection_published_wall_ns"), witness.get("lease_wall_end_ns")
+    return (type(published) is int and type(end) is int
+            and published < end - (LAPSE_ALLOWANCE_NS if target == "base" else 0))
+
+
+def stale_permit_refused_in_window(value):
+    """A deliberately stale permit was at least 50 ms old when sent, stayed inside the
+    200 ms lease bound, and was refused while its own ends were still ahead, so only
+    the verifier's age bound can have refused it."""
+    row = mapping(value)
+    stale = mapping(row.get("stale_permit"))
+    witness = mapping(row.get("negative_admission"))
+    values = (stale.get("sim_ns"), stale.get("wall_ns"), stale.get("sim_end_ns"), stale.get("wall_end_ns"),
+              witness.get("sent_wall_ns"), witness.get("rejection_published_wall_ns"))
+    if not all(type(item) is int and 0 <= item < 2**63 for item in values):
+        return False
+    sim, wall, sim_end, wall_end, sent, refused = values
+    return (sent - wall >= VERIFIER_WINDOW_NS and 0 < sim_end - sim <= MAX_LEASE_NS
+            and 0 < wall_end - wall <= MAX_LEASE_NS and refused < wall_end - LAPSE_ALLOWANCE_NS)
+
+
+def arm_hold_prompt(value):
+    """The arm held within HOLD_UPDATES controller updates of the refusal row (simulation
+    clock) and moved at most DRIFT_LIMIT rad from that update on."""
+    hold = mapping(mapping(value).get("controller_hold"))
+    stamp, cutoff = hold.get("refusal_stamp_ms"), hold.get("hold_cutoff_ms")
+    return (all(type(item) is int and 0 <= item < 2**53 for item in (stamp, cutoff))
+            and cutoff <= stamp + HOLD_UPDATES * CONTROLLER_UPDATE_NS // 1_000_000
+            and within(hold.get("drift_after_refusal"), DRIFT_LIMIT))
+
+
+def late_renewal_witnessed(value):
+    """The arm moved under a live goal, then held after the late renewal and before
+    that goal's lease could end on either clock."""
+    row = mapping(value)
+    witness = mapping(row.get("negative_admission"))
+    hold = mapping(row.get("controller_hold"))
+    stop, sent, end = row.get("controller_stop_wall_ns"), witness.get("sent_wall_ns"), witness.get("lease_wall_end_ns")
+    cutoff, sim_end = hold.get("hold_cutoff_ms"), hold.get("lease_sim_end_ns")
+    return ((number(mapping(row.get("moving_before_late_renewal")).get("joint1_displacement_rad")) or 0) > .005
+            and all(type(item) is int and 0 <= item < 2**63 for item in (stop, sent, end, cutoff, sim_end))
+            and sent <= stop < end and cutoff * 1_000_000 < sim_end - CONTROLLER_UPDATE_NS)
+
+
+def negative_row_passed(target, case, value):
+    """One negative permit row, judged identically by the probe and by report()."""
+    row = mapping(value)
+    return (row.get("ok") is True and row.get("controller_rejection_observed") is True
+            and negative_permit_rejected(row.get("negative_admission"), case)
+            and refused_inside_lease(target, row.get("negative_admission"))
+            and row.get("recovery_did_not_rearm") is True and row.get("recovery_rejection_observed") is True
+            and row.get("recovery_rejection_reason") == RECOVERY_REASONS.get(target)
+            and within(row.get("recovery_drift"), DRIFT_LIMIT) and within(row.get("drift"), DRIFT_LIMIT)
+            and (case != "replay" or replay_admitted_then_rejected(row.get("replay_admission")))
+            and (case not in ("delay", "renewal_delay") or stale_permit_refused_in_window(row))
+            # Every arm negative records the arm's own counted refusal and prompt hold.
+            and (target != "arm" or arm_hold_prompt(row))
+            and (case != "renewal_delay" or late_renewal_witnessed(row)))
 
 
 def report(result=None, revision="unknown", run_id="unknown", failed=False):
@@ -133,8 +234,8 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
     signer_denied = mapping(boundaries.get("signer_credentials_unreadable"))
     services_denied = mapping(boundaries.get("denied_services"))
     expected = {"base_positive", "arm_positive", "base_expiry", "arm_expiry"} | {
-        target + "_" + case for target in ("base", "arm")
-        for case in ("unsigned", "altered", "signature", "replay", "delay", "target")}
+        target + "_" + case for target, case in PERMIT_NEGATIVES}
+    attempts = [mapping(row).get("attempt") for row in permit_checks.values()]
     check("controller_permits", "바퀴·팔 제어기의 동작별 허가 검사 · 침해된 전달자 계정", bool(permits),
           permits.get("ok") is True and permits.get("attacker_uid") == 2005 and
           permits.get("scope") == "gazebo_exact_action_permits_with_compromised_relay_uid" and
@@ -148,22 +249,19 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
                "/diff_drive_base_controller/set_parameters_atomically",
                "/joint_trajectory_controller/set_parameters_atomically")) and
           set(permit_checks) == expected and all(mapping(row).get("ok") is True for row in permit_checks.values()) and
+          # Every row passed on a conclusive attempt inside the bounded retry budget.
+          all(type(value) is int and 1 <= value <= PERMIT_MAX_ATTEMPTS for value in attempts) and
           (number(mapping(permit_checks.get("base_positive")).get("moved_m")) or 0) > .03 and
           (number(mapping(permit_checks.get("arm_positive")).get("moved_rad")) or 0) > .08 and
           all(mapping(permit_checks.get(target + "_expiry")).get("old_goal_did_not_resume") is True and
               mapping(permit_checks.get(target + "_expiry")).get("expiry_hold_observed") is True and
               within(mapping(permit_checks.get(target + "_expiry")).get("expiry_drift"), .02)
               for target in ("base", "arm")) and
-          all(mapping(permit_checks.get(target + "_" + case)).get("controller_rejection_observed") is True and
-              negative_permit_rejected(mapping(permit_checks.get(target + "_" + case)).get("negative_admission"), case) and
-              mapping(permit_checks.get(target + "_" + case)).get("recovery_did_not_rearm") is True and
-              mapping(permit_checks.get(target + "_" + case)).get("recovery_rejection_observed") is True and
-              within(mapping(permit_checks.get(target + "_" + case)).get("recovery_drift"), .02) and
-              within(mapping(permit_checks.get(target + "_" + case)).get("drift"), .02)
-              for target in ("base", "arm") for case in ("unsigned", "altered", "signature", "replay", "delay", "target")) and
-          all(replay_admitted_then_rejected(mapping(permit_checks.get(target + "_replay")).get("replay_admission"))
-              for target in ("base", "arm")),
-          {"checks": len(permit_checks)})
+          all(negative_row_passed(target, case, permit_checks.get(target + "_" + case))
+              for target, case in PERMIT_NEGATIVES),
+          {"checks": len(permit_checks),
+           "inconclusive_attempts": sum(value - 1 for value in attempts
+                                        if type(value) is int and 1 <= value <= PERMIT_MAX_ATTEMPTS)})
     status = ("failed" if failed or (result and result.get("ok") is not True) or
               any(row["status"] == "failed" for row in checks) else
               "passed" if all(row["status"] == "passed" for row in checks) else "incomplete" if completed else "pending")
