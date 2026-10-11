@@ -31,8 +31,6 @@ deleting it also needs the entry changed, and the change gets reviewed again.
 Output: one "path:line: rule: text" line per finding. Exit status 1 when there are findings, otherwise 0.
 Usage: python tools/check_public_wording.py [ROOT]. Standard library only; Python 3.9 or later.
 """
-from __future__ import annotations
-
 import os
 import re
 import sys
@@ -54,7 +52,7 @@ TEXT_SUFFIXES = (".md", ".html", ".htm", ".js", ".mjs", ".cjs", ".css", ".py", "
 
 BANNED = re.compile("|".join((
     # AGENTS.md "Do not use"
-    r"safety\s*(?:&amp;|&|and)\s*security\s+stack", r"safety\s+stack", r"force\s*/\s*workspace",
+    r"safety\s*(?:&amp;|&|and|/)\s*security\s+stack", r"safety\s+stack", r"force\s*/\s*workspace",
     r"tamper[-\s]?proof", r"compl(?:ian(?:ce|t)|ie[sd]|y)", r"haetae\s+signatures?",
     # AGENTS.md "Do not claim". "AI Act compliant" and "Machinery Regulation compliant" are covered above, where
     # compliance, compliant, comply, complies and complied all count.
@@ -62,8 +60,8 @@ BANNED = re.compile("|".join((
     r"safety[-\s]devices?", r"e-?stop\s*(?:/|or)\s*sto(?![a-z])", r"\be-stop", r"\bsto(?![a-z])",
     r"protect(?:s|ing)?\s+people", r"collision[-\s]prevention", r"certification[-\s]ready",
     r"first\s+to\s+verify\s+signatures", r"M3\s+completes\s+real\s+controller\s+permits",
-    r"detects?\s+six\s+household\s+hazards", r"protects?\s+keys",
-    r"safe\s+even\s+if\s+the\s+authorizer", r"safe\s+under\s+policy-PC\s+root\s+compromise",
+    r"detect(?:s|ed|ing)?\s+(?:six|6)\s+household\s+hazards", r"protects?\s+keys",
+    r"safe\s+even\s+if\s+the\s+(?:authorizer|gate\s+MCU)", r"safe\s+under\s+policy-PC\s+root\s+compromise",
     # Korean equivalents, with or without a particle (충돌을 방지, 규정을 준수, 위변조가 불가능). 준수 counts only after
     # a rule word: 규정, 규제, 표준, 법, 법규, 법령 (AI법을 준수) or the English Act or Regulation (AI Act를 준수).
     r"안전\s*스택", r"안전\s*장치", r"사람(?:들)?(?:을)?\s*보호", r"충돌(?:을|이)?\s*방지", r"비상\s*정지\s*장치",

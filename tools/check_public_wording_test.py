@@ -54,14 +54,16 @@ class WordingTest(unittest.TestCase):
     def test_banned_phrases_fail_even_when_negated(self):
         lines = (
             "Haetae is a robot safety & security stack.", "a safety &amp; security stack",
-            "a safety and security stack", "the safety stack",
+            "a safety and security stack", "a robot safety/security stack", "the safety stack",
             "force/workspace limits", "a tamper-proof log", "AI Act compliant", "Machinery Regulation compliant",
             "regulatory compliance", "check the Haetae signature", "an E-stop/STO", "E-stop or STO",
             "Haetae protects people.", "collision prevention", "certification-ready", "a safety device",
             "Haetae is an E-stop.", "Haetae is an STO.", "해태는 STO입니다.",
             "the first to verify signatures at the actuator", "M3 completes real controller permits",
-            "detects six household hazards", "it protects keys", "Haetae is not a safety device.",
-            "safe even if the authorizer or gate MCU is compromised", "safe under policy-PC root compromise",
+            "detects six household hazards", "Haetae detects 6 household hazards.", "detected six household hazards",
+            "detecting six household hazards", "it protects keys", "Haetae is not a safety device.",
+            "safe even if the authorizer or gate MCU is compromised", "safe even if the gate MCU is compromised",
+            "safe under policy-PC root compromise",
             "해태는 안전 스택입니다.", "해태는 안전장치입니다.", "사람을 보호합니다.", "충돌 방지 기능",
             "비상 정지 장치", "규정 준수", "위변조 불가능한 기록", "E-stop/STO가 아닙니다.", "해태는 충돌을 방지합니다.",
             "EU 기계 규정을 준수합니다.", "위변조가 불가능한 기록", "해태는 사람 보호 장치입니다.",
@@ -77,7 +79,7 @@ class WordingTest(unittest.TestCase):
     def test_ordinary_text_passes(self):
         lines = ("Haetae judges each proposal.", "the estop mode", "safety-rated controllers", "a stop button",
                  "a STOP sign", "restored stock", "a one-stop shop", "the project manifesto", "서명 변조 시험",
-                 "변조된 서명을 거부했습니다.", "사람 곁에선 천천히", "충돌 시험", "maekju", "ataxias", "complex",
+                 "변조된 서명을 거부했습니다.", "사람 곁에선 천천히", "충돌 시험", "maekju", "somaek", "ataxias", "complex",
                  "completed", "complimentary", "an accomplishment", "the compiler", "라이선스 준수", "contract를 준수")
         self.write("docs/page.md", "\n".join(lines) + "\n")
         self.assertEqual(self.found(), [])
@@ -129,7 +131,8 @@ class WordingTest(unittest.TestCase):
         split = CONDITION.replace("only against", "only\n//! against")  # joined without the comment marks
         self.write("crates/haetae/src/lib.rs", f"//! {TAG}\n//!\n//! The log is tamper-evident\n//! {split}.\n")
         self.write("sim/js/ok.js", f"/**\n * The log is tamper-evident\n * {CONDITION}.\n */\n")  # "*": comment mark
-        self.write("docs/ok.md", f"Tamper-evident,\n{CONDITION.capitalize()}.\n실록은 위변조를 탐지합니다 ({CONDITION}).\n\n"
+        self.write("docs/ok.md", f"Tamper-evident,\n{CONDITION.capitalize()}.\n\n"  # the condition in any case
+                                 f"실록은 위변조를 탐지합니다 ({CONDITION}).\n\n"
                                  f"- The log is tamper-evident\n  {CONDITION}.\n\n"
                                  f"* The log is tamper-evident\n  {CONDITION}.\n\n"
                                  f"The log is tamper-evident\n**{CONDITION}**.\n\n"  # bold, not a bullet
@@ -146,6 +149,7 @@ class WordingTest(unittest.TestCase):
             ("docs/e.md", f"1. It holds {CONDITION}.\n2. The log is tamper-evident.\n", 2),
             ("docs/e2.md", f"* The log is tamper-evident.\n* It holds {CONDITION}.\n", 1),
             ("docs/e3.md", f"* It holds {CONDITION}.\n* The log is tamper-evident.\n", 2),
+            ("docs/e4.md", f"+ The log is tamper-evident.\n+ It holds {CONDITION}.\n", 1),
             ("python/haetae/f.py", f"# The log is tamper-evident.\n#\n# It holds {CONDITION}.\n", 1),
             ("sim/g.html", f'<p class="claim">The log is tamper-evident.</p>\n<!-- {CONDITION} -->\n', 1),
             ("sim/js/h.js", f"/**\n * The log is tamper-evident.\n *\n * It holds {CONDITION}.\n */\n", 2),

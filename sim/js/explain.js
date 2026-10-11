@@ -65,7 +65,7 @@ export function simTime(ms) {
 
 /** Korean text for an ActionKind (null → "없음"). */
 export function actionText(a) {
-  if (!a) return '없음 (실행하지 않음)';
+  if (!a) return '없음';
   switch (a.type) {
     case 'move_to': return `이동 → ${pt(a.goal)} @ ${num(a.speed)} m/s`;
     case 'grasp': return `집기 ${objectLabel(a.object)} @ ${pt(a.at)}`;

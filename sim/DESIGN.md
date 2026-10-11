@@ -1,6 +1,6 @@
 # Haetae Simulator Redesign: final spec, "해태가 막는다"
 
-The simulator is rebuilt as an attack demo. The map is the stage. A visitor picks an attack card, watches an untrusted AI command reach the robot, and sees the real Rust gate (running as WASM) stamp its verdict on the map, at the spot where the action was stopped.
+The simulator is rebuilt as an attack demo. The map is the stage. A visitor picks an attack card, watches an untrusted AI command reach the robot, and sees the verdict of the real Rust gate (running as WASM) drawn on the map at the commanded action's location.
 
 **Scope labels.** Every attack card is a scripted scene, and the commands in the knife and child scenes are scripted adversarial proposals (스크립트된 적대적 제안), including the hijacked peer robot's knife command in card 5; the intro button, the note above the card list and the help dialog say so. Card and lab actions (`move_to`, `grasp`, `place`) are judge-only: the strip's motor and the robot drawing show the gate's verdict, not an enforcement path. The note above the card list says so in every layout and in `?kiosk=1`, which never shows the intro. The open lab sheet covers that note, so the lab's 직접 명령 how-to and its `실험실 모드 · 판정만` map chip (§8) say so as well. The strip's `aria-label`, the intro footnote and the help dialog say so too.
 
@@ -598,7 +598,7 @@ Numbers are formatted with `num()`.
 | invalid:world | 센서 값 오류 | 센서 데이터가 잘못됐어요 (신뢰도가 0~1 밖 등). |
 | other rule id | 정책 규칙 {id} | `describeRule(rule)` |
 | other zone / builtin | 구역 '{id}' / 내장 검사 | `explainFired(name, policy).text` |
-| yun, nothing fired | 문제 없음 | 걸린 조건이 없어 그대로 실행해요. 해태는 필요할 때만 막습니다. |
+| yun, nothing fired | 문제 없음 | 걸린 조건이 없어 그대로 통과해요. 해태는 필요할 때만 차단합니다. |
 | yun, stop | 멈춤 | '멈춤'은 모드와 상관없이 항상 통과해요. |
 
 Where the numbers come from:
@@ -617,7 +617,7 @@ The **verdict word** is always `통과` / `감속` / `차단`, with `yun/jeol/bu
 3. **자세히 sheet**:
    - the verdict glyph, word and technical name
    - every fired row: label, sentence, the name in mono, and a kind badge (`내장 검사` / `구역` / `정책 규칙`)
-   - `요청 → 실행`: `actionText(proposal.action)` → `actionText(decision.action)`, with speeds struck through when they differ
+   - `요청 → 허용`: `actionText(proposal.action)` → `actionText(decision.action)`, with speeds struck through when they differ
    - `speed_cap`, `mode`, `proposal_id`
    - a `원본 JSON` disclosure with the proposal, world, now and decision
    - **이번 장면 대본**, the transcript: every beat so far with its narration, command and recorded verdict sentence
@@ -1289,9 +1289,9 @@ The English ids `yun` / `jeol` / `bul` remain in code, CSS class names and small
 - Plain-text symbols are used only where markup cannot go: log-chip `textContent`, `title` attributes and console tables. They are text-presentation symbols found in system fonts, so they do not turn into OS-specific emoji.
 - Icons are always `aria-hidden`; the Korean word carries the meaning.
 - Legend `title` / `aria-label` values:
-  - "통과: 그대로 실행"
-  - "감속: 속도를 줄여 실행"
-  - "차단: 실행하지 않음"
+  - "통과: 그대로 허용"
+  - "감속: 속도 상한을 낮춰 허용"
+  - "차단: 거부"
 
 **Brand refresh (2026-10-04).** The user-approved A seated guardian replaces the old shield-and-horn header, favicon and pipeline mark. Canonical vectors and the adaptive external `#mark` symbol are in `brand/haetae/`; see root `DESIGN.md` and `docs/brand.md`. The historical v3.9 robot badge geometry is an illustrative legacy model decoration, not the current identity.
 

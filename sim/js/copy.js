@@ -10,9 +10,9 @@ import { num, MODE_KO, pt, describeRule, explainFired } from './explain.js';
 // One vocabulary everywhere: a Korean word, a non-Han icon (SVG <symbol> in
 // index.html), a plain-text symbol for places markup cannot go, and a shape.
 export const VERDICT_UI = {
-  yun: { icon: 'v-yun', sym: '✓', word: '통과', ko: '통과', title: '통과: 그대로 실행' },
-  jeol: { icon: 'v-jeol', sym: '⇊', word: '감속', ko: '감속', title: '감속: 속도를 줄여 실행' },
-  bul: { icon: 'v-bul', sym: '⊘', word: '차단', ko: '차단', title: '차단: 실행하지 않음' },
+  yun: { icon: 'v-yun', sym: '✓', word: '통과', ko: '통과', title: '통과: 그대로 허용' },
+  jeol: { icon: 'v-jeol', sym: '⇊', word: '감속', ko: '감속', title: '감속: 속도 상한을 낮춰 허용' },
+  bul: { icon: 'v-bul', sym: '⊘', word: '차단', ko: '차단', title: '차단: 거부' },
 };
 
 /** The verdict icon as inline SVG (always aria-hidden; the word carries the meaning). */
@@ -183,7 +183,7 @@ function capEnd(limit, decision) {
 /** Full sentence for the caption and the detail sheet. */
 export function sentence(name, ctx) {
   const { policy, proposal, world, now, decision } = ctx;
-  if (name === '·none') return '걸린 조건이 없어 그대로 실행해요. 해태는 필요할 때만 막습니다.';
+  if (name === '·none') return '걸린 조건이 없어 그대로 통과해요. 해태는 필요할 때만 차단합니다.';
   if (name === '·stop') return "'멈춤'은 모드와 상관없이 항상 통과해요.";
   const r = rule(policy, name);
   if (r) {
@@ -259,9 +259,9 @@ export function sentence(name, ctx) {
   }
 }
 
-/** Korean text for an action (null → not executed). */
+/** Korean text for an action (null → "없음": a bul decision allows no action). */
 export function actionText(a) {
-  if (!a) return '실행 안 함';
+  if (!a) return '없음';
   switch (a.type) {
     case 'move_to': return `${pt(a.goal)} 이동 ${num(a.speed)} m/s`;
     case 'grasp': return `${objectName(a.object)} 집기 ${pt(a.at)}`;
