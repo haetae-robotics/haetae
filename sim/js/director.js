@@ -703,7 +703,7 @@ export class Director {
       kind: 'proposal',
       verdict: d.verdict,
       text: `#${rec.proposal.id} ${rec.proposal.source}: ${actionText(rec.proposal.action)}`,
-      detail: `fired: ${d.fired.join(', ') || '없음'} · 실행: ${actionText(d.action)} · 상한: ${d.speed_cap == null ? '없음' : `${num(d.speed_cap)} m/s`} · 모드: ${d.mode}`,
+      detail: `fired: ${d.fired.join(', ') || '없음'} · 허용: ${actionText(d.action)} · 상한: ${d.speed_cap == null ? '없음' : `${num(d.speed_cap)} m/s`} · 모드: ${d.mode}`,
       json: { proposal: rec.proposal, world: rec.world, now: rec.now, decision: d },
     });
   }
@@ -1266,7 +1266,7 @@ export class Director {
       }
       const req = actionText(rec.proposal.action);
       const ex = actionText(d.action);
-      html += `<h3>요청 → 실행</h3><p class="dt-flow"><span class="intent">${esc(req)}</span> → <span class="${req !== ex ? 'changed' : ''}">${esc(ex)}</span></p>`;
+      html += `<h3>요청 → 허용</h3><p class="dt-flow"><span class="intent">${esc(req)}</span> → <span class="${req !== ex ? 'changed' : ''}">${esc(ex)}</span></p>`;
       html += `<dl class="dt-meta"><dt>속도 상한 (speed_cap)</dt><dd>${d.speed_cap == null ? '없음' : `${num(d.speed_cap)} m/s`}</dd><dt>모드</dt><dd>${esc(MODE_KO[d.mode] ?? d.mode)} <code>${esc(d.mode)}</code></dd><dt>명령 id</dt><dd>${d.proposal_id}</dd></dl>`;
       if (rec.card?.footnote) html += `<p class="dt-foot">${esc(rec.card.footnote)}</p>`;
       html += `<details class="dt-json"><summary>원본 JSON</summary><pre>${esc(JSON.stringify({ proposal: rec.proposal, world: rec.world, now: rec.now, decision: d }, null, 2))}</pre></details>`;

@@ -699,7 +699,7 @@ export class Overlay {
         if (c.side === 'above' || c.side === 'below') cands.push({ ...c, x: c.x - w * 0.4, w, h }, { ...c, x: c.x + w * 0.4, w, h });
         else cands.push({ ...c, y: c.y + h * 0.5 + 4, w, h }, { ...c, y: c.y - h * 0.6, w, h });
       }
-      // The people the rule protects and the verdict effect itself (barrier,
+      // The people the rule refers to and the verdict effect itself (barrier,
       // dome, speed gate) must stay visible: they weigh as much as the anchor.
       const obs = this.sceneObstacles(this.calloutScene ?? {}, { pathW: this.mobile ? 0.35 : 1, humanW: 6 });
       obs.push({ x: A.x - 12, y: A.y - 12, w: 24, h: 24, wgt: 6 });
@@ -718,7 +718,7 @@ export class Overlay {
       // Still over the scene (more than ~40% of the tag on what matters)? Dock it to
       // the map's top or bottom edge; the leader keeps it tied to its anchor.
       // cover: the larger of (share of the tag over the scene) and (share of the
-      // most-hidden protected person / verdict effect under the tag).
+      // most-hidden person the rule refers to / verdict effect under the tag).
       const heavy = obs.filter((o) => (o.wgt ?? 1) >= 3);
       const key = obs.filter((o) => (o.wgt ?? 1) >= 6 && o.w * o.h > 600);
       const cover = (r) => Math.max(

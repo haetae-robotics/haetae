@@ -6,7 +6,7 @@ these crates; nothing here may depend on ROS.
 ```
 crates/
   haetae-core/   # gate: ActionProposal + WorldSnapshot + Policy -> Decision   (owner: Claude)
-  sillok/        # tamper-evident recorder: sacho ring buffer + signed hash chain (owner: Devin)
+  sillok/        # incident recorder: sacho ring buffer + signed hash chain    (owner: Devin)
   haetae/        # umbrella crate + `haetae` CLI, wires the two together           (owner: Claude)
 ```
 

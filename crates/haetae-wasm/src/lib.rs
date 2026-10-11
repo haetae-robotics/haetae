@@ -1,7 +1,7 @@
 //! WebAssembly bindings for the Haetae gate, used by the browser simulator
 //! in `sim/`.
 //!
-//! The boundary is JSON strings in, JSON strings out, so every safety
+//! The boundary is JSON strings in, JSON strings out, so every gate
 //! decision is made by the same `haetae-core` code the tests cover; the
 //! simulator only draws what the gate returns.
 

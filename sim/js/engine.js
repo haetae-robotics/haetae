@@ -1,7 +1,7 @@
 // Thin wrapper over the WebAssembly build of haetae-core.
 //
 // Every verdict, fired list, clamped action and speed cap in the simulator
-// comes from Gate.judge() below. Nothing in JS re-implements a safety check.
+// comes from Gate.judge() below. Nothing in JS re-implements a gate check.
 
 let wasm = null;
 

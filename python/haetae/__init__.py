@@ -1,7 +1,8 @@
-"""Haetae (해태): robot safety & security stack for physical AI (pre-alpha).
+"""A permit gate for AI-driven robots: actuators accept only exactly-authorized, fresh commands, and incidents leave a verifiable record. Pre-alpha, not safety-rated.
 
-Model output is untrusted. Every proposed action is judged by the gate
-and receives exactly one Verdict.
+Haetae (해태): model output is untrusted. Every proposed action is judged by
+the gate and receives exactly one Verdict. This package currently ships only
+the Verdict type; the gate is implemented in the Rust crates.
 """
 from enum import IntEnum
 

@@ -1,15 +1,18 @@
 // Words for what the gate returned. Presentation only: these functions select
 // among decision.fired and read numbers from the policy, the inputs or the
 // decision's speed_cap. They never compute, change or drop a verdict.
+// In the attack cards, the knife and child commands that these captions
+// describe are scripted adversarial proposals (스크립트된 적대적 제안);
+// index.html labels the cards.
 
 import { num, MODE_KO, pt, describeRule, explainFired } from './explain.js';
 
 // One vocabulary everywhere: a Korean word, a non-Han icon (SVG <symbol> in
 // index.html), a plain-text symbol for places markup cannot go, and a shape.
 export const VERDICT_UI = {
-  yun: { icon: 'v-yun', sym: '✓', word: '통과', ko: '통과', title: '통과: 그대로 실행' },
-  jeol: { icon: 'v-jeol', sym: '⇊', word: '감속', ko: '감속', title: '감속: 속도를 줄여 실행' },
-  bul: { icon: 'v-bul', sym: '⊘', word: '차단', ko: '차단', title: '차단: 실행하지 않음' },
+  yun: { icon: 'v-yun', sym: '✓', word: '통과', ko: '통과', title: '통과: 그대로 허용' },
+  jeol: { icon: 'v-jeol', sym: '⇊', word: '감속', ko: '감속', title: '감속: 속도 상한을 낮춰 허용' },
+  bul: { icon: 'v-bul', sym: '⊘', word: '차단', ko: '차단', title: '차단: 거부' },
 };
 
 /** The verdict icon as inline SVG (always aria-hidden; the word carries the meaning). */
@@ -180,13 +183,13 @@ function capEnd(limit, decision) {
 /** Full sentence for the caption and the detail sheet. */
 export function sentence(name, ctx) {
   const { policy, proposal, world, now, decision } = ctx;
-  if (name === '·none') return '걸린 조건이 없어 그대로 실행해요. 해태는 필요할 때만 막습니다.';
+  if (name === '·none') return '걸린 조건이 없어 그대로 통과해요. 해태는 필요할 때만 차단합니다.';
   if (name === '·stop') return "'멈춤'은 모드와 상관없이 항상 통과해요.";
   const r = rule(policy, name);
   if (r) {
     const hw = r.when?.human_within;
     if (name === 'knife-near-child' && hw && r.then === 'bul') {
-      return `칼을 든 채 아이 ${num(hw.distance)} m 안으로는 갈 수 없어요.`;
+      return `칼을 든 채 아이 ${num(hw.distance)} m 안으로 가는 명령은 차단돼요.`;
     }
     if (name === 'slow-near-human' && hw && r.then?.jeol) {
       return `사람 ${num(hw.distance)} m 안을 지나요. ${capEnd(r.then.jeol.max_speed, decision)}`;
@@ -215,7 +218,7 @@ export function sentence(name, ctx) {
   }
   if (name.startsWith('mode:')) {
     const m = MODE_KO[name.slice(5)] ?? name.slice(5);
-    return `${m} 모드예요. '멈춤' 말고는 아무 동작도 하지 않아요.`;
+    return `${m} 모드예요. '멈춤' 말고는 모든 명령을 차단해요.`;
   }
   const f = fresh(policy);
   switch (name) {
@@ -230,15 +233,15 @@ export function sentence(name, ctx) {
     case 'envelope:workspace':
       return '목표 지점이 로봇이 일하는 공간 밖이에요.';
     case 'envelope:pose':
-      return '로봇의 현재 위치가 작업 공간 밖이라 움직이지 않아요.';
+      return '로봇의 현재 위치가 작업 공간 밖이라 움직이는 명령은 차단돼요.';
     case 'source:not-allowed': {
       const s = sourceName(proposal?.source);
-      return `허가 목록(${allowedList(policy)})에 없는 '${s}'의 명령은 따르지 않아요.`;
+      return `허가 목록(${allowedList(policy)})에 없는 '${s}'의 명령은 차단돼요.`;
     }
     case 'stop:unvetted-source':
-      return "출처는 미등록이지만 '멈춤'은 가장 안전한 명령이라 따르고, 기록을 남겨요.";
+      return "출처는 미등록이지만 '멈춤'은 누가 보내도 허용되는 명령이라 통과시키고, 기록을 남겨요.";
     case 'stale:world':
-      return `인식 정보가 ${secs(now - world.stamp_ms)}초 전 것이라 기준 ${num(f.world / 1000)}초를 넘었어요. 낡은 화면으로는 움직이지 않아요.`;
+      return `인식 정보가 ${secs(now - world.stamp_ms)}초 전 것이라 기준 ${num(f.world / 1000)}초를 넘었어요. 낡은 화면으로 움직이는 명령은 차단돼요.`;
     case 'stale:proposal':
       return `${secs(now - proposal.timestamp_ms)}초 전에 만든 명령이에요(기준 ${num(f.proposal / 1000)}초). 녹화된 명령을 다시 보낸 것일 수 있어요.`;
     case 'invalid:timestamp': {
@@ -256,9 +259,9 @@ export function sentence(name, ctx) {
   }
 }
 
-/** Korean text for an action (null → not executed). */
+/** Korean text for an action (null → "없음": a bul decision allows no action). */
 export function actionText(a) {
-  if (!a) return '실행 안 함';
+  if (!a) return '없음';
   switch (a.type) {
     case 'move_to': return `${pt(a.goal)} 이동 ${num(a.speed)} m/s`;
     case 'grasp': return `${objectName(a.object)} 집기 ${pt(a.at)}`;

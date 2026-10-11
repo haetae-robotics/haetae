@@ -1,7 +1,7 @@
 // Haetae simulator — bootstrap. Loads the WASM gate and the policy, builds the
 // mission gate, and wires the stage, overlay, director and lab together.
 //
-// HARD RULE: JavaScript never decides, alters or fakes a safety verdict.
+// HARD RULE: JavaScript never decides, alters or fakes a gate verdict.
 // Every verdict, fired list, clamped action and speed cap shown comes from
 // gate.judge() (the real haetae-core compiled to WebAssembly).
 
@@ -335,7 +335,7 @@ async function boot() {
     return;
   }
   app.defaultPolicyText = policyText;
-  $('intro-foot').textContent = `판정은 전부 실제 Rust 게이트(WebAssembly v${version})가 내립니다.`;
+  $('intro-foot').textContent = `판정은 전부 실제 Rust 게이트(WebAssembly v${version})가 내립니다. 이동·집기·놓기는 판정만 받는 명령이며, 모터와 로봇 그림은 판정 결과를 그린 것입니다.`;
 
   app.stage = createStage(kind);
   app.overlay = new Overlay(app.stage);

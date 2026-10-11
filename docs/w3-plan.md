@@ -32,8 +32,8 @@ to zero velocity.
 Two items come over from the trust-first draft because they are cheap and affect
 safety:
 
-- **Mode persistence with a safe start.** An E-stop survives a restart. A missing
-  or corrupt state file starts the gate in `Hold`.
+- **Mode persistence with a safe start.** A raised `estop` mode survives a
+  restart. A missing or corrupt state file starts the gate in `Hold`.
 - **A bridge that runs all the logic in Rust.** The ROS node is a thin rclpy
   process around `haetae enforce --stdio`. Everything that decides can then be
   tested on macOS. r2r and its libclang, codegen and lockfile risk move to W4.
@@ -346,7 +346,7 @@ The node (`sim_node.py`):
 | D1 | `docs/w3-contract.md` | Fixes §4, the timing budget and the ROS facts from the probe job. Devin has reviewed it. |
 | D2 | core `Velocity`, `Base`, `sweep.rs` | Test vectors (straight, left and right arcs, in place, reverse). A thin zone is never skipped between samples. The clamp keeps curvature. Every `Base` validate error has a case. All W1/W2 tests are unchanged and green. |
 | D3 | runtime `rejudge`, `start_mode`, deferred `commit` | `rejudge` bypasses dedup; a bul is a `revoke` incident; the log verifies `fully_sealed` after `commit`. |
-| D4 | `haetae-enforce` | Every row of §4.3 has a test. Also tested: tighten-only; nothing is judged while unarmed; `publish_now` before `commit`; missing or corrupt state gives Hold; E-stop survives reopen; the state file is `0o600`; a second `open` fails on the lock. |
+| D4 | `haetae-enforce` | Every row of §4.3 has a test. Also tested: tighten-only; nothing is judged while unarmed; `publish_now` before `commit`; missing or corrupt state gives Hold; a raised `estop` mode survives reopen; the state file is `0o600`; a second `open` fails on the lock. |
 | D5 | CLI `enforce --stdio`, `state show/set` | A macOS integration test: spawn, raise to estop, SIGKILL, respawn, estop is reported, twists get 0. `state set` fails while the gate runs and succeeds after. |
 | D6 | `ros/haetae_gate` (`bridge.py` + `node.py`) | `bridge.py` passes its unittests against a fake child (timeout, EOF, malformed line). The node survives a flood of malformed messages. |
 | D7 | `ros/haetae_sim` | The pure core's unittests pass on macOS `python3`. |
@@ -356,7 +356,7 @@ The node (`sim_node.py`):
 **E2E scenarios.** Parameters: v = 0.8 m/s, `max_decel` = 1.0 m/s², r = 0.25 m,
 `world_max_age_ms` = 200, TTL = 200 ms, deadman = 250 ms. After every scenario,
 `haetae sillok verify` reports `fully_sealed: true`, except scenario 1, which leaves
-no log.
+no log. The VLA commands are scripted adversarial proposals, and the humans are scripted.
 
 | # | scenario | pass condition |
 |---|---|---|
@@ -380,7 +380,7 @@ Ground rules:
 - Claude edits the existing crates, implements the critical path, runs every build
   and test, and iterates on CI.
 - The two never edit the same file on the same day.
-- On the safety-critical path, Claude implements and Devin writes the tests, on
+- On the enforcement path, Claude implements and Devin writes the tests, on
   purpose, so each checks the other.
 
 | day | Claude | Devin |
@@ -448,6 +448,7 @@ and the contract.
 ## 10. End-of-week demo
 
 Reproduced by green PR CI. Artifacts: SVG trajectories, `result.json`, sillok logs.
+The VLA commands are scripted adversarial proposals, and the humans are scripted.
 
 1. A "compromised VLA" drives the base with TwistStamped, and a child steps into the
    path. Haetae revokes the command it already approved and outputs zero within
@@ -456,9 +457,9 @@ Reproduced by green PR CI. Artifacts: SVG trajectories, `result.json`, sillok lo
    denied based on the disc footprint.
 3. Perception dropout, upstream silence and a Hold fault each stop the base. It does
    not resume while the VLA keeps streaming.
-4. `kill -9` of the gate: the base deadman stops it within 250 ms. After an estop and
-   a restart, the gate comes back in estop. `haetae state set` is refused while the
-   gate runs.
+4. `kill -9` of the gate: the base deadman stops it within 250 ms. After the mode is
+   raised to `estop` and the gate restarts, it comes back in `estop`. `haetae state set`
+   is refused while the gate runs.
 5. `haetae sillok replay` shows the sealed `revoke` and `stop` evidence.
 
 The demo does not show safety certification, real hardware, authenticated inputs,

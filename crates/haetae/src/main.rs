@@ -24,7 +24,7 @@ const EXIT_INCOMPLETE: u8 = 3;
 #[command(
     name = "haetae",
     version,
-    about = "Supervisory policy gate for AI-driven robots (non-safety-rated, pre-alpha)"
+    about = "A permit gate for AI-driven robots: actuators accept only exactly-authorized, fresh commands, and incidents leave a verifiable record. Pre-alpha, not safety-rated."
 )]
 struct Cli {
     #[command(subcommand)]
