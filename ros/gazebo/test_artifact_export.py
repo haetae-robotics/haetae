@@ -34,6 +34,7 @@ class ExportTest(unittest.TestCase):
             (root / 'key.pem').write_text('private')
             (root / 'world.json').write_text('raw')
             (root / 'verification-report.json').write_text('{"status":"failed"}')
+            (root / 'controller-timing.json').write_text('{"attempts":[]}')
             arm = root / 'arm-kill'
             arm.mkdir()
             (arm / 'result.json').write_text('{"ok":true}')
@@ -41,7 +42,8 @@ class ExportTest(unittest.TestCase):
             (arm / 'controller.key').write_text('private')
             export_artifacts(root, output)
             self.assertEqual({p.relative_to(output).as_posix() for p in output.rglob('*') if p.is_file()},
-                             {'verification-report.json', 'arm-kill/result.json', 'arm-kill/preparation-diagnostics.json'})
+                             {'verification-report.json', 'controller-timing.json',
+                              'arm-kill/result.json', 'arm-kill/preparation-diagnostics.json'})
             (root / 'verification-report.json').write_text('{"status":"passed"}')
             export_artifacts(root, output)
             self.assertEqual(json.loads((output / 'verification-report.json').read_text())['status'], 'passed')
@@ -51,6 +53,15 @@ class ExportTest(unittest.TestCase):
                 final_export(root, output)
             self.assertEqual(json.loads((output / 'verification-report.json').read_text())['status'], 'failed')
             self.assertEqual(json.loads((output / 'arm-kill/preparation-diagnostics.json').read_text()), {'attempts': []})
+
+    def test_failed_probe_run_still_exports_its_timing_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, output = Path(directory) / 'run', Path(directory) / 'out'
+            root.mkdir()
+            (root / 'controller-timing.json').write_text('{"complete": false, "series": {}}')
+            (root / 'error.json').write_text('{"error": "synthetic failure"}')
+            self.assertTrue(final_export(root, output, prior_failure=True))
+            self.assertEqual(json.loads((output / 'controller-timing.json').read_text())['complete'], False)
 
     def test_final_export_preserves_existing_failure_but_rejects_success(self):
         with patch('artifact_export.export_artifacts', side_effect=ValueError('unsafe diagnostic')):
