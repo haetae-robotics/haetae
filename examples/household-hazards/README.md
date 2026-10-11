@@ -16,6 +16,22 @@ the completed profile's unsigned report. Never use real hazardous materials.
 | Contents | The same bottle fixture is relabelled as a second incompatible cleaner, approaching a vessel retaining the first cleaner | Relabelled item moves away |
 | Fall volume | End effector enters an excluded volume | End effector moves away |
 
+All six cases share one geometry. Each case starts with joint1 within 0.1 rad
+of 0 and the other joints at the lab start posture. The rejected plan turns
+joint1 by +0.75 rad with the other joints held, and the case's target fixture
+is placed at the end effector's position at the end of that plan, with the same
+0.12 × 0.12 × 0.18 m checked region around it. The allowed control turns
+joint1 0.3 rad the other way.
+The checked region is centered on the target fixture's observed position, which
+is the rejected plan's end point in every case. Between cases only the injected
+item, region and contents labels and the fixtures' shapes and colors change,
+and the five non-chemical cases also keep the empty chemicals container
+registered in the gate's facts, parked 5 m below the scene.
+The fixtures have no collision elements, so their shapes are visual only. The
+six cases are therefore six label combinations on one trajectory, not six
+different geometries. The contents case first runs its measured transfer and
+retreat along the same joint1 arc.
+
 The human/fall cases are end-effector keepouts. They do not demonstrate human
 recognition, knife-tip orientation checks, whole-arm collision prevention,
 edge detection, base stability, pushing, dropping or throwing prevention.
@@ -117,6 +133,13 @@ accepted signed arm outcomes, measured tracking, the contents transfer and
 retreat sequence and stale/unknown/missing
 coverage controls. Missing/duplicate cases cannot pass. The legacy transport,
 fault/independent-stop and intrusion results are reported separately.
+
+The `stale`, `unknown_item` and `missing_coverage` rows are judge-only
+diagnostics (verdict only, no measured arm motion), and their report titles
+carry that label. For each, the lab changes one fact in a request built from
+current measurements and sends it only to the trusted-adapter `hazard-judge`.
+Nothing is sent to the signed gate or the arm, so the row records the judge's
+verdict and no measurements. They remain among the report's 13 checks.
 
 General household hazard categories were discussed after viewing
 [RoboHarm](https://github.com/robocurve/roboharm). No benchmark code, assets or

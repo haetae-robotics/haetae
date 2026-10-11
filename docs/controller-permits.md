@@ -179,3 +179,27 @@ The exact reviewed commit and final CI evidence are recorded in
 These results use MCU USB replies and trusted synthetic inputs. They do not
 measure GPIO/electrical output, watchdog reset, flash power-cut behavior,
 motors, real perception, or resistance to physical reset/debugger/host root.
+
+## Scope of the H2 evidence
+
+The H2 board tools, `verify-usb` (whose 13 checks are the recorded board
+result) and the `run` operator session, run on one computer under one user
+account (same UID). Where they start the authorizer, which holds
+`authorizer.seed`, and the USB relay, both run under that account. In the five
+permit cases and the STATUS-without-renewal case of `verify-usb`, one test
+process loads that key and writes the frames to the board itself. Any program
+under that account can read the seeds in the device directory, so these runs
+do not test keeping the key from the relay. The
+17-case software `verify` bench also runs under one account, with an emulated
+controller. Its 7 host cases start the authorizer and relay as separate
+processes under that account. In its 10 protocol cases, the test process loads
+`authorizer.seed` and writes the frames to the emulator itself, as in those
+`verify-usb` cases. Only `verify-isolation` runs the authorizer and relay under
+separate accounts (UIDs 2001 and 2003, still on one computer), and it uses the
+emulated controller, not the board.
+
+The board checks take the LED state from the MCU's own USB replies (`ON`,
+`LOCKED`), not from the LED pin; the firmware sets the LED from the same
+internal state it reports. The LED itself was checked visually by a person,
+without measuring instruments such as an oscilloscope, logic analyzer or light
+sensor, so its on/off timing and electrical output were not measured.

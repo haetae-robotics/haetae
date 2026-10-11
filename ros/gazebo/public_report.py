@@ -287,6 +287,14 @@ def render_report(value):
             f"<table><tr><th>검증</th><th>결과</th><th>측정</th></tr>{rows}</table><p><a href=/report.json>JSON 저장</a> · <a href=/>시뮬레이터로 돌아가기</a></p></html>").encode()
 
 
+# For the stale/unknown_item/missing_coverage controls, the lab builds one
+# request from current measurements. For each control it changes one fact in a
+# copy of that request and sends the copy only to the trusted-adapter
+# `haetae hazard-judge`. Nothing reaches the signed gate or the arm, so these
+# rows record a verdict and no measurements.
+JUDGE_ONLY_LABEL = "judge-only diagnostic (verdict only, no measured arm motion)"
+
+
 def household_report(result, revision="unknown", run_id="unknown", failed=False):
     def motion_passed(row):
         return (row.get("allowed") is True
@@ -330,7 +338,7 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
     controls=mapping(result.get("negative_controls"))
     for identifier,reason in {"stale":"perception:stale","unknown_item":"item:unknown","missing_coverage":"perception:coverage-unknown"}.items():
         row=mapping(controls.get(identifier))
-        checks.append({"id":identifier,"title":identifier,"status":"not_run" if not row else
+        checks.append({"id":identifier,"title":identifier + " · " + JUDGE_ONLY_LABEL,"status":"not_run" if not row else
                        "passed" if row.get("allowed") is False and row.get("reason")==reason else "failed","measurements":{}})
     gate_controls = mapping(result.get("mandatory_gate_controls"))
     for identifier, reason in {"missing_binding": "household:missing-binding",
