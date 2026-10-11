@@ -5,7 +5,43 @@
 
 # Haetae (해태) /hɛ.tʰɛ/ "heh-teh"
 
-**A supervisory policy gate for AI-driven robots.**
+**A permit gate for AI-driven robots: actuators accept only exactly-authorized, fresh commands, and incidents leave a verifiable record. Pre-alpha, not safety-rated.**
+
+**Who it is for:** robotics developers and researchers who let a VLA or another foundation model propose robot actions
+and want an independent check on what reaches the actuators. Today it runs as a CLI, in simulators and on an LED bench.
+
+**In 30 seconds:** model output is untrusted input. The gate gives each proposed action one verdict: `yun` (allow),
+`jeol` (allow with a lower speed cap) or `bul` (deny). In the Gazebo simulation reference, the simulated wheel and arm
+controllers accept only a fresh, valid permit for the exact allowed command; a UNO R4 Minima bench does the same for its
+built-in LED. With `--sillok`, each incident (a denial, or a fault that forces stop-only) and the records around it go
+into a hash-chained, Ed25519-sealed log.
+
+## Quickstart
+
+Needs macOS or Linux, git, a C linker (Xcode Command Line Tools on macOS, `build-essential` on Debian/Ubuntu) and a
+current stable Rust ([rustup](https://rustup.rs)). It runs a scripted scenario through the gate, including
+scripted adversarial proposals (a VLA proposes carrying a knife toward a child); no robot is involved.
+
+```bash
+git clone https://github.com/haetae-robotics/haetae.git && cd haetae
+cargo build
+D=$(mktemp -d)
+PK=$(target/debug/haetae keygen --out "$D/key.seed")
+target/debug/haetae judge --policy examples/dinner-party/policy.json --world examples/dinner-party/world.json \
+  --proposals examples/dinner-party/proposals.jsonl --sillok "$D/sillok.jsonl" --key "$D/key.seed"
+target/debug/haetae sillok replay --log "$D/sillok.jsonl" --pubkey "$PK"
+```
+
+Expect seven verdicts (`yun=3 jeol=1 bul=3`), then `sillok verified: 26 entries, 5 seals, 0 unsealed` and a timeline.
+`$D` holds a secret key seed and a log with people's positions; delete it after use.
+
+**What Haetae does not do:** it is not a certified safety function, an emergency stop (E-stop) or Safe Torque Off (STO),
+a perception system, collision checking or motion planning. It does no force or torque limiting, has not been validated
+on a real robot, and does not enforce `move_to`, `grasp` or `place`: those actions only get a verdict. The 0.0.1
+packages on PyPI and crates.io are placeholders. Use Haetae alongside a robot's certified safety functions, never
+instead of them.
+
+## How the gate judges
 
 Haetae treats VLA / foundation-model output as *untrusted input*. Every proposed
 robot action passes through a single policy gate that returns one of three verdicts:
@@ -55,49 +91,44 @@ between a model and a person. Not done yet:
 - `sillok` (실록): hash-chained, Ed25519-sealed incident log with `verify` and `replay`.
 - `haetae`: the CLI (`keygen`, `judge`, `sillok verify`, `sillok replay`).
 
-Planned: `maek` (self-diagnosis), `jangseung` (physical-space consent),
-`amhaeng` (red-team harness).
+## The dinner-party example
 
-## Try it: the dinner-party attack
-
-```bash
-cargo build
-D=$(mktemp -d)   # the key seed is secret and the log holds people's positions
-PK=$(target/debug/haetae keygen --out "$D/key.seed")
-target/debug/haetae judge \
-  --policy examples/dinner-party/policy.json \
-  --world examples/dinner-party/world.json \
-  --proposals examples/dinner-party/proposals.jsonl \
-  --sillok "$D/sillok.jsonl" --key "$D/key.seed"
-target/debug/haetae sillok replay --log "$D/sillok.jsonl" --pubkey "$PK"
-```
-
-`keygen` and log creation never overwrite an existing file, so a rerun needs a
-fresh directory (run the block again from `D=$(mktemp -d)`).
+The [quickstart](#quickstart) runs `examples/dinner-party`. `keygen` and log creation never overwrite an existing
+file, so a rerun needs a fresh directory (run the block again from `D=$(mktemp -d)`).
 
 The scenario has four parts:
 
-- A compromised VLA tries to carry a knife toward a child.
-- A spoofed tag sends the robot into the child's room at 2 m/s.
-- A lidar fault raises the mode to `caution`, then to `hold`.
-- Haetae denies (`bul`) or speed-clamps (`jeol`) each unsafe step. The incident
-  windows are sealed into a tamper-evident `sillok` log, which `replay` verifies
-  before printing.
+- Scripted adversarial proposal: a compromised VLA proposes carrying a knife toward a child.
+- Scripted adversarial proposal: after a spoofed tag, the VLA proposes driving into the child's room at 2 m/s.
+- Two lidar faults raise the mode to `caution`, then to `hold`.
+  The replay marks these faults with `maek`, a log label, not a crate.
+- Haetae denies (`bul`) or speed-clamps (`jeol`) each unsafe step. The incident windows are sealed into a signed,
+  hash-chained `sillok` log, tamper-evident before external anchoring, only against adversaries without host access.
+  `replay` verifies the log before printing.
+
+These are verdicts only: `judge` drives nothing. `move_to` and `grasp` are judge-only actions that no controller
+enforces, so the replay's `exec=` field shows what the gate allowed, not what a robot did. In the ROS 2 and Gazebo
+references, only base velocity commands and arm joint trajectories are enforced.
 
 ## Browser simulator
 
 `sim/` is an interactive 3D miniature-house simulator that runs the **real** `haetae-core` gate compiled to WebAssembly. The page only draws what the gate returns; it is a demo, not part of the gate.
 
-- Pick an attack card (knife toward a child, spoofed tag, hijacked peer robot, …) and watch Haetae judge it.
+- Pick an attack card (scripted adversarial proposals such as a knife toward a child, a spoofed tag or a hijacked peer robot) and watch Haetae judge it.
 - Compare with "해태 없이 보기", the model's raw command executed unfiltered.
 - Use the lab to send your own commands, inject faults, and edit the policy live.
 
+The cards and the lab use judge-only actions (`move_to`, `grasp`, `place`): the robot animation draws the gate's
+verdict, not an enforced stop.
+
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.129   # must match Cargo.lock
+cargo install wasm-bindgen-cli --version 0.2.129
 sim/build.sh
-python3 -m http.server -d sim 8000                  # then open http://localhost:8000/
+python3 -m http.server -d sim 8000
 ```
+
+The `wasm-bindgen-cli` version must match `Cargo.lock`. Then open http://localhost:8000/.
 
 Layout: `crates/haetae-core` (gate), `crates/haetae-runtime` (gate loop), `crates/sillok` (recorder), `crates/haetae-wasm` (simulator bindings), `crates/haetae` (CLI).
 Design contracts: [`docs/w1-contract.md`](docs/w1-contract.md) (gate, sillok),
@@ -128,7 +159,7 @@ The [Gazebo runbook](docs/gazebo-reference.md) has the native Ubuntu command. Th
 references still cannot establish a real robot's stop behavior or arm
 collision safety.
 
-> Status: **simulator evaluation alpha; core 0.0.x**. Not a certified safety device or a protective physical-robot deployment.
+> Status: **pre-alpha (core 0.0.x)**; the Docker simulator is an evaluation build. Not a safety device or a protective physical-robot deployment.
 
 A separate [household hazard lab](examples/household-hazards/README.md) starts with
 `./haetae-demo hazards`: six end-effector fixture hazards and measured normal
@@ -144,7 +175,10 @@ trusted-adapter preflight checks; it is not physical safety qualification.
 `./haetae-permit verify` tests the actual Rust gate and controller crypto.
 The [H2 setup guide](docs/controller-permits.md) covers private provisioning,
 hardened USB firmware, physical USB qualification and LED sessions. The
-controller checks each authenticated permit even if the relay is compromised.
+controller checks each authenticated permit. In the board runs the relay and
+the key-holding authorizer shared one user account, so those runs do not test
+key separation (see
+[Scope of the H2 evidence](docs/controller-permits.md#scope-of-the-h2-evidence)).
 This remains a built-in LED reference, without motor or electrical stop proof.
 
 ### H1 trusted USB legacy bench

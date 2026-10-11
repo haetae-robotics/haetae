@@ -13,7 +13,7 @@ use serde_json::Value;
 pub enum Inbound {
     /// New facts from the trusted safety-perception path.
     World(WorldSnapshot),
-    /// A fault reported by maek (self-diagnosis). Can only raise the mode.
+    /// A fault reported by a self-diagnosis source. Can only raise the mode.
     Fault(Fault),
     /// An action proposal from the untrusted side.
     Proposal(ActionProposal),
@@ -51,7 +51,7 @@ impl Inbound {
     }
 }
 
-/// A fault reported by maek (self-diagnosis).
+/// A fault reported by a self-diagnosis source.
 ///
 /// `timestamp_ms` is the reporter's claim; it is kept inside log payloads
 /// only. The log entry's `ts_ms` is always the trusted receive time.

@@ -15,7 +15,9 @@ import { VERDICTS, pt, objectLabel, SOURCE_KO, actionText, MODE_KO } from './exp
 const DWELL_MS = 1500;
 
 // Narration keyed by proposal id / fault code. Captions describe intent only;
-// the verdict is appended from the gate's decision.
+// the verdict is appended from the gate's decision. Proposals 3 and 4 (knife
+// toward the child, the child's room) are scripted adversarial proposals
+// (스크립트된 적대적 제안), as the note above the card list says.
 export const PROPOSAL_CAPTIONS = {
   1: '① 플래너가 식탁 쪽 (3, 3)으로 이동 제안',
   2: '② AI 모델이 식탁 위의 칼 🔪을 집으려 함',

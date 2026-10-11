@@ -160,16 +160,25 @@ jobs:
             --policy examples/dinner-party/policy.json \
             --world examples/dinner-party/world.json \
             --proposals examples/dinner-party/proposals.jsonl \
-            --sillok "$RUNNER_TEMP/sillok.jsonl" --key "$RUNNER_TEMP/key.seed"
+            --sillok "$RUNNER_TEMP/sillok.jsonl" --key "$RUNNER_TEMP/key.seed" \
+            2> "$RUNNER_TEMP/judge.err" || { cat "$RUNNER_TEMP/judge.err" >&2; exit 1; }
+          cat "$RUNNER_TEMP/judge.err" >&2
           target/debug/haetae sillok verify --log "$RUNNER_TEMP/sillok.jsonl" --pubkey "$PK" \
             | tee "$RUNNER_TEMP/report.json"
           grep -q '"fully_sealed": true' "$RUNNER_TEMP/report.json"
+          target/debug/haetae sillok replay --log "$RUNNER_TEMP/sillok.jsonl" --pubkey "$PK" \
+            > "$RUNNER_TEMP/replay.txt"
           {
             echo '### Dinner-party replay'
             echo '```'
-            target/debug/haetae sillok replay --log "$RUNNER_TEMP/sillok.jsonl" --pubkey "$PK"
+            cat "$RUNNER_TEMP/replay.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # The README quickstart tells readers to expect exactly this output; check both sides.
+          grep -q '^yun=3 jeol=1 bul=3 ' "$RUNNER_TEMP/judge.err"
+          test "$(head -n 1 "$RUNNER_TEMP/replay.txt")" = 'sillok verified: 26 entries, 5 seals, 0 unsealed'
+          grep -qF 'yun=3 jeol=1 bul=3' README.md
+          grep -qF 'sillok verified: 26 entries, 5 seals, 0 unsealed' README.md
 
   python:
     name: Python package
@@ -179,6 +188,16 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.9"
+      # AGENTS.md "Public wording" rules on public product text; runs before any build output exists.
+      # Reviewed exceptions live in tools/public_wording_allow.txt. The step takes under a second; the timeout
+      # only stops a hang, it is not a timing check.
+      # The test module is named so that the UNO bench's `-p 'test_*.py'` discovery does not run it. It runs as a
+      # script: a missing or renamed file fails the step, where `unittest discover` on Python 3.9 would pass on 0 tests.
+      - name: Public wording check
+        timeout-minutes: 5
+        run: |
+          python tools/check_public_wording_test.py
+          python tools/check_public_wording.py
       - run: python -m pip install build
       - run: python -m build python/
       - run: |

@@ -1,6 +1,6 @@
 # Haetae (해태) /hɛ.tʰɛ/ "heh-teh"
 
-**A supervisory policy gate for AI-driven robots** (non-safety-rated, pre-alpha).
+**A permit gate for AI-driven robots: actuators accept only exactly-authorized, fresh commands, and incidents leave a verifiable record. Pre-alpha, not safety-rated.**
 
 Haetae treats VLA / foundation-model output as *untrusted input*. Every proposed
 robot action passes through a single policy gate that returns one of three verdicts:
@@ -14,4 +14,4 @@ robot action passes through a single policy gate that returns one of three verdi
 This Python package currently ships only the `Verdict` type. The gate, the runtime loop and the
 `sillok` signed incident log are implemented in Rust: https://github.com/haetae-robotics/haetae
 
-> Status: **pre-alpha (0.0.x)**. Not a certified safety device.
+> Status: **pre-alpha (0.0.x)**. Not a safety device.

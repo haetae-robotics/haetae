@@ -1,8 +1,8 @@
 [package]
 name = "haetae"
-description = "Supervisory policy gate for AI-driven robots: judges untrusted model output before it reaches actuators (non-safety-rated, pre-alpha)"
+description = "A permit gate for AI-driven robots: actuators accept only exactly-authorized, fresh commands, and incidents leave a verifiable record. Pre-alpha, not safety-rated."
 readme = "README.md"
-keywords = ["robotics", "safety", "security", "ros2", "guardrail"]
+keywords = ["robotics", "authorization", "security", "ros2", "guardrail"]
 categories = ["science::robotics"]
 version.workspace = true
 edition.workspace = true

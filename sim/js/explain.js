@@ -16,7 +16,7 @@ export const MODE_KO = {
   caution: '주의',
   hold: '홀드',
   safe_park: '안전 주차',
-  estop: '비상 정지',
+  estop: '최고 단계',
 };
 
 export const OBJECTS = {
@@ -106,7 +106,7 @@ function builtinText(name, policy) {
     'mode:caution': '주의 모드: 속도 상한을 낮춤 (실제 적용 상한은 위의 “속도 상한” = 게이트 speed_cap)',
     'mode:hold': '홀드 모드: 정지 외 모든 동작 거부',
     'mode:safe_park': '안전 주차 모드: 정지 외 모든 동작 거부',
-    'mode:estop': '비상 정지 모드: 정지 외 모든 동작 거부',
+    'mode:estop': '최고 단계 모드(estop, 물리적 비상 정지 아님): 정지 외 모든 동작 거부',
     'envelope:pose': '로봇의 현재 위치가 작업 공간 밖',
     'envelope:workspace': '목표 지점이 작업 공간 밖',
     'envelope:max_speed': `요청 속도가 최대 속도 ${num(maxSpeed)} m/s를 초과 → 감속`,

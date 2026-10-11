@@ -7,7 +7,7 @@ async function showReport() {
     const response = await fetch('/report.json');
     if (!response.ok) return;
     const report = await response.json();
-    $('report-status').textContent = report.status === 'passed' ? '모든 시뮬레이터 시험 통과 · 실물 로봇 보호 성능은 별도 검증이 필요합니다.' :
+    $('report-status').textContent = report.status === 'passed' ? '모든 시뮬레이터 시험 통과 · 실물 로봇에서는 시험하지 않았습니다.' :
       report.status === 'failed' ? '시험 실패 · 리포트에서 미완료 항목을 확인하세요.' : '일부 시험 미실행 · 리포트에서 검증 범위를 확인하세요.';
     $('report-view').hidden = false;
     $('report-download').hidden = false;

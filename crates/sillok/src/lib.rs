@@ -1,5 +1,6 @@
-//! sillok (실록, "veritable records") — the tamper-evident recorder of the
-//! Haetae supervisory policy gate.
+//! sillok (실록, "veritable records") — the signed, hash-chained incident
+//! recorder of the Haetae supervisory policy gate. A log is tamper-evident
+//! before external anchoring, only against adversaries without host access.
 //!
 //! A sillok log is a JSON Lines file where every line is an [`Entry`]. Each
 //! entry carries the SHA-256 hash of its canonical body plus the hash of its

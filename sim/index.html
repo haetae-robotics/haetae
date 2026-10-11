@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>해태가 막는다 · Haetae 시뮬레이터</title>
-  <meta name="description" content="해킹된 AI의 로봇 명령을 실제 Rust 안전 게이트(WebAssembly)가 모터 앞에서 막는 공격 데모">
+  <meta name="description" content="A permit gate for AI-driven robots: actuators accept only exactly-authorized, fresh commands, and incidents leave a verifiable record. Pre-alpha, not safety-rated.">
   <link rel="icon" type="image/svg+xml" href="./brand/haetae/favicon.svg">
   <link rel="stylesheet" href="./style.css">
 </head>
@@ -72,7 +72,7 @@
           <h2 id="stage-title">해태가 막는다</h2>
         </div>
 
-        <div class="strip" id="strip" data-state="idle" role="img" aria-label="AI 모델의 명령은 해태의 심사를 거쳐야 모터에 닿습니다">
+        <div class="strip" id="strip" data-state="idle" role="img" aria-label="AI 모델의 명령을 해태가 판정합니다. 이 데모의 모터는 판정 결과를 그린 것입니다.">
           <span class="node node-src" id="strip-src"><span class="src-icon"></span><span class="src-name">AI 모델</span><span class="src-note" hidden></span><span class="src-log" hidden>기록됨</span></span>
           <span class="link link-in"><span class="packet"></span></span>
           <span class="node node-gate"><svg class="gate-mark" aria-hidden="true" focusable="false"><use href="./brand/haetae/mark-adaptive.svg#mark"/></svg> 해태</span>
@@ -88,23 +88,23 @@
             <div class="fx fx-haze" id="fx-haze" aria-hidden="true"></div>
             <div class="fx fx-vignette" id="fx-vignette" aria-hidden="true"></div>
             <div class="ctx-chips" id="ctx-chips" aria-hidden="true"></div>
-            <ol class="ladder" id="ladder" hidden aria-label="안전 모드 단계"></ol>
+            <ol class="ladder" id="ladder" hidden aria-label="게이트 모드 단계"></ol>
             <div class="ghost-banner" id="ghost-banner" hidden>⚠ 비교 재생 · 해태 없음 — 모델의 원래 명령을 필터 없이 실행하면 (판정 없음)</div>
-            <div class="lab-chip" id="lab-chip" hidden>실험실 모드</div>
+            <div class="lab-chip" id="lab-chip" hidden>실험실 모드 · 판정만</div>
             <div class="overlay" id="overlay" aria-hidden="true"></div>
           </div>
 
           <div class="intro" id="intro" hidden>
             <h1>AI가 해킹당해 위험한 명령을 내리면?</h1>
-            <p>해태는 AI가 로봇에게 내린 모든 명령을 <strong>모터에 닿기 전에</strong> 심사합니다. 옳고 그름을 가리는 상상의 동물, 해태처럼.</p>
+            <p>해태는 AI가 로봇에게 내린 명령을 하나하나 심사해 판정합니다. 옳고 그름을 가리는 상상의 동물, 해태처럼.</p>
             <ul class="legend-chips" aria-label="판정 종류">
               <li class="v-yun"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-yun"/></svg> 통과</li>
               <li class="v-jeol"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-jeol"/></svg> 감속</li>
               <li class="v-bul"><svg class="vi" aria-hidden="true" focusable="false"><use href="#v-bul"/></svg> 차단</li>
             </ul>
-            <button type="button" class="btn-primary big" id="intro-cta">▶ 첫 공격 보기 — 칼 든 로봇</button>
+            <button type="button" class="btn-primary big" id="intro-cta"><span>▶ 첫 공격 보기 — 칼 든 로봇</span><span class="cta-label">스크립트된 적대적 제안</span></button>
             <p class="intro-links"><button type="button" class="linkbtn" id="intro-list">공격 목록 보기</button> · <button type="button" class="linkbtn" id="intro-lab">직접 해 보기 (실험실)</button> · <a href="./gazebo-replay.html">ROS·Gazebo 실제 기록 보기</a></p>
-            <p class="foot-chip" id="intro-foot">판정은 전부 실제 Rust 게이트(WebAssembly)가 내립니다.</p>
+            <p class="foot-chip" id="intro-foot">판정은 전부 실제 Rust 게이트(WebAssembly)가 내립니다. 이동·집기·놓기는 판정만 받는 명령이며, 모터와 로봇 그림은 판정 결과를 그린 것입니다.</p>
           </div>
 
           <div class="endcard" id="endcard" hidden></div>
@@ -137,6 +137,7 @@
 
     <nav class="rail" aria-label="공격 고르기">
       <div class="rail-head"><h2 id="rail-title">공격 고르기</h2><span class="watched" id="watched">본 0/8</span></div>
+      <p class="rail-note">모든 공격 카드는 스크립트된 장면이며, 칼·아이 장면의 명령은 스크립트된 적대적 제안입니다. 이동·집기·놓기 명령은 판정만 받으며, 모터와 로봇 그림은 판정 결과를 보여 줄 뿐입니다.</p>
       <ol class="cards" id="cards"></ol>
     </nav>
   </div>
@@ -157,7 +158,8 @@
     <div class="sheet-head"><h2 id="help-title">해태 시뮬레이터 쓰는 법</h2><button type="button" class="icon-btn" id="help-close" aria-label="닫기">✕</button></div>
     <div class="sheet-body">
       <p>AI 모델(VLA)이 로봇에게 내리는 명령은 <strong>믿을 수 없는 입력</strong>입니다. 해태는 모델과 모터 사이의 관문에서 모든 명령을 심사해 <b>통과</b>, <b>감속</b>(예: 더 느리게), <b>차단</b> 가운데 하나로 판정합니다.</p>
-      <p>오른쪽(모바일은 아래) 공격 카드를 고르면, 해킹된 명령이 로봇에게 닿는 순간과 해태가 그것을 막는 장면이 모형 집 위에서 펼쳐집니다. 모든 판정은 실제 Rust 게이트를 WebAssembly로 돌린 결과입니다.</p>
+      <p>오른쪽(모바일은 아래) 공격 카드를 고르면, 해킹된 AI의 명령과 해태의 판정이 모형 집 위에서 펼쳐집니다. 카드는 모두 스크립트된 장면이며, 칼·아이 장면의 명령은 스크립트된 적대적 제안입니다. 모든 판정은 실제 Rust 게이트를 WebAssembly로 돌린 결과입니다.</p>
+      <p>카드와 실험실의 이동·집기·놓기 명령은 판정만 받습니다. 모터와 로봇 그림은 판정 결과를 그린 것입니다. 해태에는 이 명령을 실제 로봇에서 실행하거나 막는 경로가 없고, 실행기(haetae-enforce)는 이 명령을 받지 않습니다.</p>
       <p>시점: 드래그로 돌리기 · Ctrl(⌘)+스크롤로 확대 · 두 손가락으로 돌리고 확대 · V 시점 초기화</p>
       <p><button type="button" class="btn-secondary" id="help-intro">처음 소개 다시 보기</button></p>
       <h3>단축키</h3>
@@ -194,7 +196,7 @@
     </div>
     <div class="sheet-body">
       <div role="tabpanel" id="panel-cmd" aria-labelledby="tab-cmd">
-        <p class="howto">이렇게 써요: 바닥을 누르면 명령, 오른쪽 드래그(두 손가락)로 돌려 보기. 동작을 고른 뒤 바닥을 가리키면 실제 판정 미리보기가 뜹니다.</p>
+        <p class="howto">이렇게 써요: 바닥을 누르면 명령, 오른쪽 드래그(두 손가락)로 돌려 보기. 동작을 고른 뒤 바닥을 가리키면 실제 판정 미리보기가 뜹니다. 이동·집기·놓기는 판정만 받는 명령이며, 모터와 로봇 그림은 판정 결과를 그린 것입니다.</p>
         <fieldset class="seg">
           <legend>동작</legend>
           <label><input type="radio" name="lab-action" value="move_to" checked> 이동</label>
@@ -218,7 +220,7 @@
           <li><button type="button" class="btn-secondary" data-raise="caution">주의로 올리기</button><span class="raise-out"></span></li>
           <li><button type="button" class="btn-secondary" data-raise="hold">홀드로 올리기</button><span class="raise-out"></span></li>
           <li><button type="button" class="btn-secondary" data-raise="safe_park">안전 주차로 올리기</button><span class="raise-out"></span></li>
-          <li><button type="button" class="btn-secondary" data-raise="estop">비상 정지로 올리기</button><span class="raise-out"></span></li>
+          <li><button type="button" class="btn-secondary" data-raise="estop">최고 단계로 올리기</button><span class="raise-out"></span></li>
         </ul>
         <div class="btn-row"><button type="button" class="btn-secondary" id="lab-reset">운영자 리셋</button><button type="button" class="btn-secondary" id="lab-stop">■ 정지 보내기</button></div>
       </div>

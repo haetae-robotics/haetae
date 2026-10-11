@@ -2,6 +2,8 @@
 
 The simulator is rebuilt as an attack demo. The map is the stage. A visitor picks an attack card, watches an untrusted AI command reach the robot, and sees the real Rust gate (running as WASM) stamp its verdict on the map, at the spot where the action was stopped.
 
+**Scope labels.** Every attack card is a scripted scene, and the commands in the knife and child scenes are scripted adversarial proposals (스크립트된 적대적 제안), including the hijacked peer robot's knife command in card 5; the intro button, the note above the card list and the help dialog say so. Card and lab actions (`move_to`, `grasp`, `place`) are judge-only: the strip's motor and the robot drawing show the gate's verdict, not an enforcement path. The note above the card list says so in every layout and in `?kiosk=1`, which never shows the intro. The open lab sheet covers that note, so the lab's 직접 명령 how-to and its `실험실 모드 · 판정만` map chip (§8) say so as well. The strip's `aria-label`, the intro footnote and the help dialog say so too.
+
 **Base design and grafts.** The judges' winner, "clarity", is the base. Grafted in:
 - From "story": the colour grammar, the seal anchoring, the 차단(bul) drama, the Haetae badge, the time-compression badge, the verdict-picked outros, the mode ladder, the end card and filmstrip, the hazard-framed counterfactual, and the transcript.
 - From "play": the real-judge attract teaser, the pipeline strip, the "slower, still blocked" beat, the with/without summary, the "정책 수정됨" honesty, the lab aim preview, a separate lab Sim, and `?kiosk`.
@@ -37,15 +39,15 @@ Pick a card → the card plays 1–3 beats (command → gate → seal → execut
 | 0.0 s | The page renders with the house already alive: the robot at the table **holding the knife** and the child playing at (2, 6). This is card 1's opening world. The pipeline strip reads `AI 모델 ──▶ [표식] 해태 ──▶ 모터`. The intro card is on screen: bottom-right of the map on desktop, in the transport slot under the map on mobile. |
 | 0.4 s | **Attract teaser, once per page load, muted.** A violet dashed intent path draws from the robot toward (2.5, 5.2). Then a **real** `judge()` call runs on a throwaway `Gate` built from the default policy, using card 1 beat 1 data exactly. The returned seal lands on the map using the normal seal code, and the callout appears. A small tag under the seal reads **"실제 판정"**. If the call throws, the teaser is skipped silently. |
 | 3.4 s | The teaser seal and path fade (400 ms). The CTA pulses once (not under reduced motion). |
-| any time | **▶ 첫 공격 보기 — 칼 든 로봇** fades the intro (200 ms) and starts card 1. The first real 차단(bul) lands about 1.8 s later (beat timeline §3f). Focus stays on the transport's primary button, which is now **다음 ▶**. |
+| any time | **▶ 첫 공격 보기 — 칼 든 로봇** (second line: 스크립트된 적대적 제안) fades the intro (200 ms) and starts card 1. The first real 차단(bul) lands about 1.8 s later (beat timeline §3f). Focus stays on the transport's primary button, which is now **다음 ▶**. |
 
 Intro card content (copy is final):
 - H1: **AI가 해킹당해 위험한 명령을 내리면?**
-- Body: 해태는 AI가 로봇에게 내린 모든 명령을 **모터에 닿기 전에** 심사합니다. 옳고 그름을 가리는 상상의 동물, 해태처럼.
+- Body: 해태는 AI가 로봇에게 내린 명령을 하나하나 심사해 판정합니다. 옳고 그름을 가리는 상상의 동물, 해태처럼.
 - Legend chips: `통과` `감속` `차단`
-- Primary: **▶ 첫 공격 보기 — 칼 든 로봇**
+- Primary: **▶ 첫 공격 보기 — 칼 든 로봇**, with a smaller second line: 스크립트된 적대적 제안
 - Text links: `공격 목록 보기` (focuses the card list) · `직접 해 보기 (실험실)`
-- Footnote chip: 판정은 전부 실제 Rust 게이트(WebAssembly v{version()})가 내립니다.
+- Footnote chip: 판정은 전부 실제 Rust 게이트(WebAssembly v{version()})가 내립니다. 이동·집기·놓기는 판정만 받는 명령이며, 모터와 로봇 그림은 판정 결과를 그린 것입니다.
 
 When the intro appears:
 - It shows on every load. It is cheap to dismiss, and presenters need it.
@@ -59,7 +61,7 @@ Clicking the map outside the lab shows a one-time toast: "공격을 골라 보�
 
 | State | Primary (the only filled button) | Secondary (outlined / text) |
 |---|---|---|
-| S0 intro | ▶ 첫 공격 보기 — 칼 든 로봇 | 공격 목록 보기 · 직접 해 보기 (실험실) |
+| S0 intro | ▶ 첫 공격 보기 — 칼 든 로봇 / 스크립트된 적대적 제안 | 공격 목록 보기 · 직접 해 보기 (실험실) |
 | S1 beat animating | 다음 ▶. Pressing it mid-animation jumps to the revealed end state of this beat; it does **not** skip the verdict. | ❚❚ |
 | S2 beat revealed | 다음 ▶, with a countdown ring when auto-advance is on | 해태 없이 보기 (only after a 차단(bul) or 감속(jeol) beat) · ❚❚ |
 | S3 unfiltered replay | 해태 켜고 돌아가기 | none |
@@ -98,7 +100,7 @@ Vertical budget: header 56, strip 44, map 580, transport 76, padding 44.
 │          │         ╲ (로봇🔪)[식탁]  │칼 들고 아이 곁 불가│        │    │                     │
 │          │                           │+1 · 자세히 ▸     │        │    │                     │
 │          └───────────────────────────╰────────────────╯───────┘    │                     │
-│ ●○○  차단 · 칼을 든 채 아이 1.5 m 안으로는 갈 수 없어요.  자세히 ▸   │                     │ 76
+│ ●○○ 차단 · 칼을 든 채 아이 1.5 m 안으로 가는 명령은 차단돼요. 자세히 ▸│                     │ 76
 │      명령 · VLA 모델 → (2.5, 5.2) 이동 0.8 m/s    [해태 없이 보기] [❚❚] [ 다음 ▶ ◔ ]│         │
 └────────────────────────────────────────────────────────────────────┴─────────────────────┘
    stage column ≈ 900 px (map centred, ≈150 px each side for callouts)       rail 360 px
@@ -147,8 +149,8 @@ Vertical budget: header 56, strip 44, map 580, transport 76, padding 44.
 ││  [차단(bul) 칼 들고 아이 곁 불가]  │ │  label pill only, ≤12 chars
 │└──────────────────────────┘ │
 │ ●○○                          │
-│ 차단 · 칼을 든 채 아이     │ caption (verdict sentence)
-│ 1.5 m 안으로는 갈 수 없어요.  │
+│ 차단 · 칼을 든 채 아이 1.5 m  │ caption (verdict sentence)
+│ 안으로 가는 명령은 차단돼요.  │
 │ 명령 · VLA 모델 → (2.5, 5.2)  │ command line (violet)
 │ 이동 0.8 m/s      자세히 ▸   │
 │ [      다음 ▶  ◔       ] [❚❚]│ primary 48 px full width
@@ -259,6 +261,8 @@ Fonts: system stacks only, with no web fonts.
 ### 3c. The pipeline strip (DOM, above the map)
 
 `[source icon + name] ━━●━━▶ [[표식] 해태] ━━━━▶ [⚙ 모터]`
+
+The strip is `role="img"` with the `aria-label` "AI 모델의 명령을 해태가 판정합니다. 이 데모의 모터는 판정 결과를 그린 것입니다."
 
 | Beat moment | What the strip shows |
 |---|---|
@@ -401,7 +405,7 @@ Threat: "해킹된 AI가 칼을 든 로봇을 아이에게 보냅니다."
 - Raw consequence (unfiltered replay, neutral text):
   - Beat 1: "칼을 든 로봇이 아이 0.9 m 앞까지 갑니다."
   - Beat 2: "칼을 든 채 0.3 m/s로 아이 1.4 m 옆까지 갑니다."
-- `outro.bul`: "칼을 드는 건 괜찮아요. 하지만 칼을 든 채 아이 곁으로는, 빠르든 느리든, 갈 수 없습니다."
+- `outro.bul`: "칼을 드는 건 괜찮아요. 하지만 칼을 든 채 아이 곁으로 가는 명령은 빠르든 느리든 차단됩니다."
 
 **Card 2 · 가짜 태그** · tag `스푸핑` · B = 1727242000000
 Threat: "가짜 '충전소' 태그가 로봇을 잠든 아이의 방으로 부릅니다."
@@ -417,7 +421,7 @@ Humans: `SLEEPER = { id: 'kid', class: 'child', pos: { x: 9.3, y: 7.5 } }`.
 - Raw consequence:
   - Beat 1: "로봇이 잠든 아이의 방 안으로 들어갑니다."
   - Beat 2: "0.2 m/s로 아이 방 문턱을 넘어 들어섭니다."
-- `outro.bul`: "태그가 뭐라고 하든, 아이 방은 로봇이 들어갈 수 없는 곳입니다."
+- `outro.bul`: "태그가 뭐라고 하든, 아이 방으로 가는 명령은 차단됩니다."
 
 **Card 3 · 복도 질주** · tag `과속` · B = 1727242100000
 Threat: "AI가 최고 속도의 2.5배로 사람 옆을 질주하라고 합니다."
@@ -441,7 +445,7 @@ Threat: "라이다가 연달아 고장 나는데, 플래너는 계속 움직이�
 | 2 `key` | 고장이 커졌어요(M-LIDAR-022). 플래너는 또 움직이려 합니다. | `raise_mode('hold')` | `W(B+5000,3,1)`, now `B+5000`, `P(2,'planner',B+4950,mv(3,2,0.3))` | bul `[mode:hold]` |
 | 3 | 원격 조작자가 '정지'를 보냅니다. | none | `W(B+6000,3,1)`, now `B+6000`, `P(3,'teleop',B+5950,STOP)` | yun `[]`, cap null |
 
-- The mode ladder is always visible in this card: 정상 → 주의 → 홀드 → 안전 주차 → 비상 정지, with the lit rung read from `sim.mode()`. A fault beat shows a sensor glitch spark on the robot and the rung climbing (a clunk, 200 ms).
+- The mode ladder is always visible in this card: 정상 → 주의 → 홀드 → 안전 주차 → 최고 단계, with the lit rung read from `sim.mode()`. A fault beat shows a sensor glitch spark on the robot and the rung climbing (a clunk, 200 ms).
 - The end card adds `운영자 리셋`.
 - Raw consequence:
   - Beat 1: "라이다가 고장 난 채로 0.9 m/s로 움직입니다."
@@ -458,7 +462,7 @@ Threat: "해킹당한 옆집 배달 로봇이 우리 로봇에게 '칼을 집어
 
 - The strip source is `옆집 로봇 ⚠ 미등록`, and the slip flies along a violet zig-zag.
 - Raw consequence (beat 1): "옆집 로봇이 시키는 대로 칼을 집어 듭니다."
-- `outro.bul`: "모르는 출처의 명령은 듣지 않아요. 단, '멈춰'는 누가 말해도 듣습니다."
+- `outro.bul`: "모르는 출처의 명령은 차단돼요. 단, '멈춰'는 누가 보내도 통과합니다."
 
 **Card 6 · 흐린 눈, 멈춘 눈** · tag `인식` · B = 1727242400000
 Threat: "연기로 앞이 흐리고 카메라까지 멈췄는데, AI는 움직이려 합니다."
@@ -473,7 +477,7 @@ Threat: "연기로 앞이 흐리고 카메라까지 멈췄는데, AI는 움직�
 - Raw consequence:
   - Beat 1: "잘 보이지 않는 채로 0.6 m/s로 움직입니다."
   - Beat 2: "1.2초 전 화면만 믿고 아이가 있던 쪽으로 갑니다."
-- `outro.bul`: "잘 안 보이면 천천히, 멈춘 화면이면 아예 움직이지 않습니다."
+- `outro.bul`: "잘 안 보이면 감속, 멈춘 화면이면 차단입니다."
 
 **Card 7 · 녹화 명령 재전송** · tag `재전송` · B = 1727242500000
 Threat: "공격자가 가로챈 명령을 다시 틀고, 시각까지 위조합니다."
@@ -575,19 +579,19 @@ Numbers are formatted with `num()`.
 
 | Fired | Map label (≤12 chars) | Caption / sheet sentence |
 |---|---|---|
-| knife-near-child | 칼 들고 아이 곁 불가 | 칼을 든 채 아이 {1.5} m 안으로는 갈 수 없어요. |
+| knife-near-child | 칼 들고 아이 곁 불가 | 칼을 든 채 아이 {1.5} m 안으로 가는 명령은 차단돼요. |
 | slow-near-human | 사람 곁에선 천천히 | 사람 {1} m 안을 지나서 {0.2} m/s로 줄였어요. |
 | low-confidence | 잘 안 보여 천천히 | 인식 신뢰도가 {45}%로 기준 {60}%보다 낮아 {0.2} m/s로 줄였어요. |
 | zone (no_entry) | {아이 방} 출입 금지 | 경로가 출입 금지 구역 '{아이 방}'에 들어가요. |
 | zone (speed_limit) | {복도} {0.3} m/s 제한 | 속도 제한 구역 '{복도}'을 지나서 {0.3} m/s 이하로 줄였어요. |
 | envelope:max_speed | 최고 속도 {1} m/s | 이 로봇의 최고 속도는 {1} m/s예요. 요청한 {2.5} m/s는 줄였어요. |
 | envelope:workspace | 집 밖 목표 불가 | 목표 지점이 로봇이 일하는 공간 밖이에요. |
-| envelope:pose | 로봇이 공간 밖 | 로봇의 현재 위치가 작업 공간 밖이라 움직이지 않아요. |
-| source:not-allowed | 미등록 출처 | 허가 목록({VLA 모델·플래너·원격 조작})에 없는 '{다른 로봇}'의 명령은 따르지 않아요. |
-| stop:unvetted-source | 멈춤은 언제나 통과 | 출처는 미등록이지만 '멈춤'은 가장 안전한 명령이라 따르고, 기록을 남겨요. |
+| envelope:pose | 로봇이 공간 밖 | 로봇의 현재 위치가 작업 공간 밖이라 움직이는 명령은 차단돼요. |
+| source:not-allowed | 미등록 출처 | 허가 목록({VLA 모델·플래너·원격 조작})에 없는 '{다른 로봇}'의 명령은 차단돼요. |
+| stop:unvetted-source | 멈춤은 언제나 통과 | 출처는 미등록이지만 '멈춤'은 누가 보내도 허용되는 명령이라 통과시키고, 기록을 남겨요. |
 | mode:caution | 주의 모드: 절반 속도 | 센서 이상으로 주의 모드예요. 속도를 {0.5} m/s까지만 허용해요. |
-| mode:hold / safe_park / estop | {홀드}: 멈춤만 가능 | {홀드} 모드예요. '멈춤' 말고는 아무 동작도 하지 않아요. |
-| stale:world | 멈춘 화면 판단 거부 | 인식 정보가 {1.2}초 전 것이라 기준 {0.5}초를 넘었어요. 낡은 화면으로는 움직이지 않아요. |
+| mode:hold / safe_park / estop | {홀드}: 멈춤만 가능 | {홀드} 모드예요. '멈춤' 말고는 모든 명령을 차단해요. |
+| stale:world | 멈춘 화면 판단 거부 | 인식 정보가 {1.2}초 전 것이라 기준 {0.5}초를 넘었어요. 낡은 화면으로 움직이는 명령은 차단돼요. |
 | stale:proposal | 오래된 명령 차단 | {5.0}초 전에 만든 명령이에요(기준 {2}초). 녹화된 명령을 다시 보낸 것일 수 있어요. |
 | invalid:timestamp | 미래 시각 위조 의심 | 명령(또는 인식)에 신뢰 시계보다 {3.0}초 뒤 시각이 찍혀 있어요. 위조로 보고 막았어요. |
 | invalid:proposal | 명령 값 오류 | 명령 값이 잘못됐어요 (숫자가 아니거나 음수 속도). |
@@ -643,6 +647,7 @@ From left to right:
 
 ### 7b. Card list
 - An `<ol>` of `<button>`s in a `<nav aria-label="공격 고르기">`.
+- A note above the list reads "모든 공격 카드는 스크립트된 장면이며, 칼·아이 장면의 명령은 스크립트된 적대적 제안입니다. 이동·집기·놓기 명령은 판정만 받으며, 모터와 로봇 그림은 판정 결과를 보여 줄 뿐입니다." It stays visible in every layout and in `?kiosk=1`, which never shows the intro. Only the open lab sheet covers it; the lab's 직접 명령 how-to and the `실험실 모드 · 판정만` map chip repeat the judge-only line.
 - Each button's `aria-describedby` points to its threat line and status text, e.g. "본 장면: 막음, 막음, 통과" or "아직 안 봄".
 
 ### 7c. `?kiosk=1`
@@ -657,7 +662,7 @@ From left to right:
 **Opening.**
 - Header button, `L`, the intro link, or the card-8 end card.
 - Opening the lab stops any running card; it can be replayed. The map enters **sandbox mode**:
-  - a `실험실 모드` chip
+  - a `실험실 모드 · 판정만` chip, which repeats the judge-only line on the map on every lab tab; on phones (< 720 px) only while the drawer is collapsed, because the open drawer covers it
   - the canvas gets `role="application"` with the existing help text
   - the existing map pointer and keyboard handling from `app.js` / `map.js` (arrow cursor, Shift = 1 m, Enter to send, grab/drag humans, Esc)
 - The lab uses its own `labGate`, seeded from the currently displayed world. It mirrors the mission mode by calling `labGate.raise(missionGate.mode)`.
@@ -703,7 +708,7 @@ From left to right:
 - **One polite live region** (`role="status"`, `aria-atomic="true"`), with one message per step:
   1. the narrator line
   2. "명령: VLA 모델이 (2.5, 5.2)로 0.8 m/s 이동을 요청"
-  3. "해태 판정: 막음(차단(bul)). 칼을 든 채 아이 1.5 m 안으로는 갈 수 없어요. 함께 걸린 조건 1개."
+  3. "해태 판정: 막음(차단(bul)). 칼을 든 채 아이 1.5 m 안으로 가는 명령은 차단돼요. 함께 걸린 조건 1개."
 
   Unfiltered replay announces "비교 재생, 해태 없음, 판정 없음. {raw}". `role="alert"` is used only for WASM load failure.
 - **Keyboard.** Global shortcuts are inactive while a dialog is open or a text field has focus.
@@ -1010,7 +1015,7 @@ Existing tokens are reused unchanged: `--ink*`, `--line`, `--surface`, `--intent
 **Lab mode** (`stage.setLabMode(true)`):
 - `mouseButtons = { LEFT: null, MIDDLE: DOLLY, RIGHT: ROTATE }`, so left-click is the command and right-drag rotates.
 - `touchAction = 'none'`: one finger aims, taps or drags a human; two fingers orbit.
-- The lab's "이렇게 써요" line says: "바닥을 누르면 명령, 오른쪽 드래그(두 손가락)로 돌려 보기".
+- The lab's "이렇게 써요" line says: "바닥을 누르면 명령, 오른쪽 드래그(두 손가락)로 돌려 보기". On the 직접 명령 tab it ends with the judge-only line "이동·집기·놓기는 판정만 받는 명령이며, 모터와 로봇 그림은 판정 결과를 그린 것입니다.", because the open lab sheet covers the note above the card list.
 
 **View toolbar.**
 - DOM, top-right corner of the map, `role="toolbar"`, `aria-label="시점"`. Buttons are 44×44 with Korean `aria-label`s and `title`s.
@@ -1318,7 +1323,7 @@ The English ids `yun` / `jeol` / `bul` remain in code, CSS class names and small
 | 16 | `js/overlay.js:839` progress dots / filmstrip | `textContent = glyph` | small verdict-shape icon in the verdict colour |
 | 17 | `js/overlay.js:589` | comment | words |
 | 18 | `js/stage.js:811` (2D robot badge) | `fillText` U+736C; `SEAL_FONT` | drawn shield-and-horn path; constant removed |
-| 19 | `js/director.js:422` live region | "해태 판정: {word}({glyph})." | "해태 판정: {word}." e.g. "해태 판정: 차단. 칼을 든 채 아이 1.5 m 안으로는 갈 수 없어요. 함께 걸린 조건 1개." |
+| 19 | `js/director.js:422` live region | "해태 판정: {word}({glyph})." | "해태 판정: {word}." e.g. "해태 판정: 차단. 칼을 든 채 아이 1.5 m 안으로 가는 명령은 차단돼요. 함께 걸린 조건 1개." |
 | 20 | `js/director.js:1190–1193` rail badge | glyph spans + "✓" watched mark | verdict icons; the watched mark becomes the text chip **봄**, because ✓ now means 통과 |
 | 21 | `js/director.js:1213` detail head | glyph | icon + word + `bul` in mono |
 | 22 | `js/log.js:50` log chip | `{glyph} {verdict}` | `{sym} {word} · {verdict}` |

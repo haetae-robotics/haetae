@@ -9,7 +9,7 @@
 //!
 //! - [`Inbound::World`] replaces the trusted world
 //!   ([`Outcome::WorldUpdated`])
-//! - [`Inbound::Fault`] raises the safety mode ([`Outcome::ModeChanged`])
+//! - [`Inbound::Fault`] raises the gate mode ([`Outcome::ModeChanged`])
 //! - [`Inbound::Proposal`] is judged ([`Outcome::Decision`]). Before the
 //!   gate runs, the runtime applies its own checks: `stop` is always
 //!   allowed, proposals before the first snapshot are denied

@@ -1,0 +1,25 @@
+# Reviewed exceptions for tools/check_public_wording.py (AGENTS.md "Public wording", NOW-2).
+#
+# One entry per line: <path><TAB><the line's exact text, without leading and trailing whitespace>.
+# An entry exempts the "banned" and "planned-name" hits on that exact line, and nothing else.
+# Add only genuine negations and non-claims, with a comment that says why. Every entry is reviewed in its PR.
+# An entry that exempts no hit fails the check: when an exempted line changes, its entry must change too.
+
+# Status lines that say Haetae is not a safety device.
+README.md	> Status: **pre-alpha (core 0.0.x)**; the Docker simulator is an evaluation build. Not a safety device or a protective physical-robot deployment.
+crates/haetae/README.md	> Status: **pre-alpha (0.0.x)**. Not a safety device.
+python/README.md	> Status: **pre-alpha (0.0.x)**. Not a safety device.
+
+# "What Haetae does not do": it is not an emergency stop (E-stop) or Safe Torque Off (STO).
+README.md	**What Haetae does not do:** it is not a certified safety function, an emergency stop (E-stop) or Safe Torque Off (STO),
+
+# `maek` is the label the replay prints on fault lines; the sentence says it is not a crate.
+README.md	The replay marks these faults with `maek`, a log label, not a crate.
+crates/haetae/README.md	The replay marks these faults with `maek`, a log label, not a crate.
+
+# H2 scope: process separation under one user account does not keep keys from other programs of that account.
+docs/controller-permits.md	**not** protect keys from another program with that UID.
+
+# A zone label, not a claim: 사람 보호 공간 is the hazard lab's display name for the `human:protected-volume`
+# keepout (ros/gazebo/hazard_lab.py, FROZEN). The line says the gate denies signed commands into that zone.
+docs/simulator-alpha.md	`hazards`는 사람 보호 공간, 열원, 전기, 물, 세정제 이력, 추락 공간의 6개 위험한 서명 명령을 중앙 Rust 게이트에서 차단하고 정상 이동을 대조하는 별도 프로필입니다. 검사 참조 누락·잘못된 버전·물체 참조도 실제 서명 경로에서 거부합니다. 물체·기기 상태는 신뢰된 시험 입력입니다. [이력 검사](household-history.md)는 같은 작업의 새 카운터 재실행과 빈 용기 주장으로 내용물 이력을 지우는 경우도 거부합니다. 생활 위험 리포트는 13개 항목을 요구하며 실제 물질 이동의 성공을 기록하지 않습니다. 가상 바퀴·팔의 최종 제어기는 별도 [동작별 허가](gazebo-controller-permits.md)를 검사합니다. 실물 로봇에서는 시험하지 않았습니다. 실제 인지, 파지 성공 확인, 일반 화학 반응 판단, 사람 밀기 방지, 물건 떨어뜨리기·던지기 방지는 이 프로필이 다루지 않습니다. [생활 위험 실험의 범위](../examples/household-hazards/README.md)와 [필수 검사 계약](household-gate.md)을 확인하세요.

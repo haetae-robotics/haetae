@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Safety mode ladder. The gate only moves up this ladder on its own;
+/// Gate mode ladder. The gate only moves up this ladder on its own;
 /// moving down requires an explicit operator reset.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,

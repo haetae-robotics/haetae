@@ -5,6 +5,10 @@
 // sentence shown after a verdict is picked from the Decision the gate returned
 // (see copy.js / director.js). `expect` is read ONLY by selftest.js: it is
 // never rendered and never used to choose copy.
+//
+// Every card is a scripted scene. The commands in the knife and child scenes
+// are scripted adversarial proposals (스크립트된 적대적 제안); index.html says so
+// above the card list.
 
 const KID = { id: 'kid', class: 'child', pos: { x: 2, y: 6 } };
 const SLEEPER = { id: 'kid', class: 'child', pos: { x: 9.3, y: 7.5 } };
@@ -34,7 +38,7 @@ export const CARDS = [
     threat: '해킹된 AI가 칼을 든 로봇을 아이에게 보냅니다.',
     focus: ['kid', 'knife'],
     outro: {
-      bul: '칼을 드는 건 괜찮아요. 하지만 칼을 든 채 아이 곁으로는, 빠르든 느리든, 갈 수 없습니다.',
+      bul: '칼을 드는 건 괜찮아요. 하지만 칼을 든 채 아이 곁으로 가는 명령은 빠르든 느리든 차단됩니다.',
     },
     beats: (() => {
       const B = base(1);
@@ -77,7 +81,7 @@ export const CARDS = [
     tag: '스푸핑',
     threat: "가짜 '충전소' 태그가 로봇을 잠든 아이의 방으로 부릅니다.",
     focus: ['fakeTag', 'child-room'],
-    outro: { bul: '태그가 뭐라고 하든, 아이 방은 로봇이 들어갈 수 없는 곳입니다.' },
+    outro: { bul: '태그가 뭐라고 하든, 아이 방으로 가는 명령은 차단됩니다.' },
     beats: (() => {
       const B = base(2);
       return [
@@ -197,7 +201,7 @@ export const CARDS = [
     tag: '탈취',
     threat: "해킹당한 옆집 배달 로봇이 우리 로봇에게 '칼을 집어'라고 명령합니다.",
     focus: ['knife'],
-    outro: { bul: "모르는 출처의 명령은 듣지 않아요. 단, '멈춰'는 누가 말해도 듣습니다." },
+    outro: { bul: "모르는 출처의 명령은 차단돼요. 단, '멈춰'는 누가 보내도 통과합니다." },
     beats: (() => {
       const B = base(5);
       return [
@@ -229,7 +233,7 @@ export const CARDS = [
     tag: '인식',
     threat: '연기로 앞이 흐리고 카메라까지 멈췄는데, AI는 움직이려 합니다.',
     focus: ['kid'],
-    outro: { bul: '잘 안 보이면 천천히, 멈춘 화면이면 아예 움직이지 않습니다.' },
+    outro: { bul: '잘 안 보이면 감속, 멈춘 화면이면 차단입니다.' },
     beats: (() => {
       const B = base(6);
       return [
