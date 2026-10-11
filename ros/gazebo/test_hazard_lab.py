@@ -536,6 +536,18 @@ class HazardAdapterTest(unittest.TestCase):
                                     ("wrong_item", "household:binding-mismatch"))},
         }
         self.assertEqual(report(result)["status"], "passed")
+        # The three judge-only diagnostics stay among the 13 checks, carry the label
+        # and record no measurements; no other row carries the label.
+        checks = report(result)["checks"]
+        self.assertEqual([row["id"] for row in checks],
+                         ["human", "heat", "electricity", "water", "chemicals", "fall",
+                          "stale", "unknown_item", "missing_coverage", "gate_missing_binding",
+                          "gate_wrong_revision", "gate_wrong_item", "durable_history"])
+        label = " · judge-only diagnostic (verdict only, no measured arm motion)"
+        labelled = {row["id"]: row for row in checks if label in row["title"]}
+        self.assertEqual(set(labelled), {"stale", "unknown_item", "missing_coverage"})
+        self.assertTrue(all(row["title"] == row["id"] + label and row["measurements"] == {}
+                            for row in labelled.values()))
         for field, bad in (
             ("accepted_waypoints_match", False),
             ("max_joint_tracking_error_rad", 0.051),

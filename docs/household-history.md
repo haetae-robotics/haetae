@@ -154,3 +154,11 @@ The latter requires a settled moving control followed by a fresh-counter
 consumed-step rejection, and the actual Rust chemical denial after the raw World
 claims empty contents while the authorizer retains a contaminant. Drift must stay
 within 0.02 rad. Missing history evidence cannot produce a passing candidate.
+
+Three of the six negative controls, `stale`, `unknown_item` and
+`missing_coverage`, are judge-only diagnostics (verdict only, no measured arm
+motion). The lab builds one request from current measurements. For each
+control, it changes one fact in a copy of that request, sends the copy only to
+the trusted-adapter `hazard-judge` and records the verdict. The other three,
+`gate_missing_binding`, `gate_wrong_revision` and `gate_wrong_item`, are
+signed-gate rejections with measured stationary joints.
