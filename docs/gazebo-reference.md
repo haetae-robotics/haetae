@@ -300,17 +300,39 @@ remain below 200 ms; future-only, expired or evicted coverage stays unknown.
 Healthy fusion uses the oldest lidar/joint/odom stamp; it never stamps old
 sensor data as new. Unknown coverage is delivered as a confidence-zero world
 when mechanical observations are fresh. The root-signed `perception-unknown`
-rule rejects and revokes motion below 0.9 confidence. The coverage test requires
-the accepted unknown world, named Rust revocation, disarm and a subsequent
-measured zero command within 400 ms of the actual fault request. Mechanical
-observation or signing disappearance retains the existing 200 ms world-age
-stop. Sensor recovery cannot rearm a stopped source without an explicit zero
-command; a latched household failure suppresses all world publication.
+rule rejects and revokes motion below 0.9 confidence. The coverage test passes
+only on the accepted unknown world, its named Rust revocation, disarm and a
+subsequent measured zero command, with no motion command after the stop (as
+defined under "Evidence collection and timing scope"), the sensor unhealthy,
+the measured speed below 0.03 m/s within the existing 3 s wait and recovery
+without rearming. On a slow shared runner the gate's dual-clock world authority
+can end first: one of the named world-authority rejections that the disconnect
+case accepts disarms the engine before the unknown world is accepted, so the
+perception rule has no active motion left to revoke. That stop is fail-closed
+but shows nothing about the perception-unknown rule, so the attempt is
+inconclusive, never a pass. It is inconclusive only when that named rejection
+was the first loss of authority after the fault and came before any accepted
+world published with confidence zero; a world published only with confidence
+zero was accepted after it; the latest engine state is disarmed; a zero command
+was received after the rejection; no motion command was received after the
+stop; the sensor reported unhealthy; the measured speed fell below 0.03 m/s
+within the existing 3 s wait; and recovery did not rearm. Anything else fails
+at once. The case restarts from a fresh calibrated bay, explicit rearm and
+measured motion, at most three attempts; three inconclusive attempts fail it. Mechanical observation or signing
+disappearance retains the existing 200 ms world-age stop. Sensor recovery
+cannot rearm a stopped source without an explicit zero command; a latched
+household failure suppresses all world publication.
 
 The test removes the **native calibration geometry** to exercise lost coverage,
 and disconnects the lidar receiver to exercise stale input while the robot is
-moving. `sensor-faults.json` records unknown status, measured zero latency and
-non-rearm after recovery. Native person approach, departure, surface-to-torso
+moving. `sensor-faults.json` records unknown status, the named stop, measured
+zero latency and non-rearm after recovery. For lost coverage it also records
+the attempt that passed and `attempt_log`, the outcome of every attempt. An
+inconclusive attempt's entry names the rejection and records when it and the
+unknown world arrived after the fault, the stamp of the last world accepted
+before it, and fault to zero on both clocks. When all three attempts are
+inconclusive the run fails, and `error.json` and the job log hold that
+evidence. Native person approach, departure, surface-to-torso
 agreement and no invented safe world are checked separately from the test path.
 Teal points in the live page are measured surface positions, not generated rays.
 The source signer, gateway and controller retain the Stage 2 UID/DDS isolation.
@@ -359,8 +381,8 @@ and SIGSTOP-delaying the world signer for 60, 140 and 220 ms respectively.
 Every iteration requires approved measured motion and delivered signed
 proposals and at least three accepted engine velocity decisions before injection, observes that the signer really stopped, keeps
 proposals running after the fault, requires at least ten actual engine rejections
-after zero, requires world-expiry zero within 400 ms,
-and measures actual base stop. Fresh sensor recovery and another delivered
+after zero, requires a named stop, a subsequent zero command and no motion
+command after the stop, and measures actual base stop. Fresh sensor recovery and another delivered
 positive proposal must be received and rejected by the engine without rearming the source. The next iteration uses an
 explicit fresh stop/rearm. Original world age remains 200 ms.
 
@@ -382,5 +404,49 @@ and transport cleanup. Exported diagnostics use ordinary 0644 permissions.
 The local viewer now runs the same six compound iterations (two each at
 40/80/100 proposals per second) required by the candidate report. Arm fault
 reports include the measured lease renewal immediately before the fault and
-require nonnegative stop delays. These delays describe the observed runs;
-they are not a worst-case timing guarantee.
+require the hold to follow the fault on both clocks. These delays describe the
+observed runs; they are not a worst-case timing guarantee.
+
+The checks that block CI judge fail-closed behavior. Sensor faults need the
+named stop that `stop_evidence.sensor_stop_report` returns (for lost coverage,
+only the perception-unknown revocation), a later zero command, no motion
+command after the stop, the unhealthy sensor, a measured speed below 0.03 m/s
+within the existing 3 s wait and recovery without rearming. Compound faults also
+need at least ten engine rejections, no motion command after the stop and no
+command above 0.03 m/s from 20 ms after the zero. No motion command after the
+stop means that, after the first engine state since the fault with nothing
+armed, the harness received no command above 0.03 m/s; sensor faults check this
+through recovery, compound faults once the proposal burst has ended. This is a
+receive-order check with no timing threshold (`stop_evidence.motion_after_stop`):
+every rejection and every denied, revoked, unarmed or stale-world stop disarms
+the engine, only an explicit zero command arms it again, and the gate publishes
+that state after the stop's zero and after every earlier motion command. One
+command is exempt. States come straight from the gate, but commands pass
+through the relay, which forwards them in order through a one-message reader,
+so the motion command it was still forwarding can arrive just after the state.
+It is exempt only as the first command after the state and only when the last
+command before the state was motion as well. Arm faults
+need measured motion and a lease renewal seen at most 100 ms (wall) before the
+pre-fault poll, a hold after the fault on both clocks within the 2 s wait,
+stopped joints, at most 0.02 rad drift and no resumed goal; the 200 ms lease
+bound itself is checked by the arm guard unit tests in the same job. The
+deadman needs a measured base stop within the 3 s wait. The fault-latency
+limits below are unchanged and are no longer judged on one shared-runner
+sample. Other timing in this job still blocks: the bounded waits of each step
+(for example the 3 s and 2 s stop waits above and each compound iteration's
+1 s pre-fault burst window), the gate exiting on a positive response of 50 ms
+or more or on an arm goal or cancellation slower than 250 ms, a request-age or
+proposal-expiry rejection before the unknown world in the lost-coverage case,
+and the household lab's single-sample checks (50 ms dispatch preparation,
+200 ms observation freshness).
+
+CI non-blocking measurement: under each check's `timing`,
+`verification-report.json` lists fault to zero (400 ms; each sensor case and
+every compound iteration), arm lease age at the fault (100 ms wall, 150 ms
+simulation), arm fault to hold (400 ms wall, 320 ms simulation) and gate kill to
+measured base stop (3000 ms), each with its value, its limit and whether it was
+within the limit. A step in the Gazebo job prints them and warns for each
+sample over its limit and, when lost coverage passed on a later attempt, for
+the inconclusive attempts before it; it always exits 0. When all three
+coverage attempts are inconclusive the job fails, and their evidence is in
+`error.json` and the job log.

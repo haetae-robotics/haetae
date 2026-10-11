@@ -636,8 +636,20 @@ class AttemptLog:
             print("controller timing record not written: " + str(exc), file=sys.stderr)
 
 
-def bounded_attempts(case, body, log, attempts=MAX_ATTEMPTS, clock=time.monotonic):
-    """Run body() (which begins with its own maintenance reset); retry only RunnerDelay.
+class AttemptList(list):
+    """bounded_attempts() record for a case outside the controller-permit probes.
+
+    The lost-coverage sensor case (run_reference.py) keeps it in its own evidence
+    row, so controller-timing.json and its 50 ms limit stay permit-only.
+    """
+
+    def record(self, case, attempt, outcome, stage=None, evidence=None, wall_ms=None):
+        self.append({"attempt": attempt, "outcome": outcome, "stage": stage,
+                     "evidence": public(evidence or {}), "wall_ms": public(wall_ms)})
+
+
+def bounded_attempts(case, body, log, attempts=MAX_ATTEMPTS, clock=time.monotonic, label="controller permit"):
+    """Run body() (which begins with its own maintenance reset or fresh setup); retry only RunnerDelay.
 
     When every attempt was inconclusive, the case fails, and the record says so.
     """
@@ -650,8 +662,8 @@ def bounded_attempts(case, body, log, attempts=MAX_ATTEMPTS, clock=time.monotoni
             inconclusive.append({"attempt": attempt, "stage": delay.stage, **delay.evidence})
             log.record(case, attempt, "inconclusive", delay.stage, delay.evidence,
                        (clock() - started) * 1000)
-            print("Inconclusive controller permit attempt, "
-                  + ("retrying from reset: " if attempt < attempts else "no attempts left: ") + case + " #"
+            print("Inconclusive " + label + " attempt, "
+                  + ("retrying: " if attempt < attempts else "no attempts left: ") + case + " #"
                   + str(attempt) + " " + str(delay), file=sys.stderr, flush=True)
             continue
         except BaseException as exc:

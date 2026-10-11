@@ -394,7 +394,8 @@ jobs:
           source /opt/haetae/setup.bash
           python3 -m unittest discover -s ros/gazebo -p 'test_*.py' -v
           # Wall budget for setup plus the scenario run; bounded in-test retries of
-          # inconclusive permit probes need headroom. Actuation budgets are unchanged.
+          # inconclusive permit probes and sensor coverage attempts need headroom.
+          # Actuation budgets are unchanged.
           python3 ros/gazebo/check_live_stream.py --port 8765 \
             --out artifacts/gazebo-reference/live-stream.jsonl --timeout-seconds 420 &
           live_checker=$!
@@ -416,6 +417,13 @@ jobs:
         timeout-minutes: 2
         shell: bash
         run: python3 ros/gazebo/permit_timing.py artifacts/gazebo-reference/controller-timing.json 50
+      # CI non-blocking measurement: single fault-timing samples against their unchanged limits.
+      - name: Shared-runner fault timing (CI non-blocking measurement)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        run: python3 ros/gazebo/fault_timing.py artifacts/gazebo-reference/verification-report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

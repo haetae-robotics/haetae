@@ -233,7 +233,7 @@ class WorldPublicationTest(unittest.TestCase):
             human_lock=threading.Lock(), human_motion=None, human=None, native=None,
             semantic_snapshot=lambda _: None, semantic_last={"revision": 1},
             world_pub=mock.Mock(), world_count=0, hazard_guard=None, _emit=mock.Mock(),
-            primary_joint=lambda: 0,
+            primary_joint=lambda: 0, published_worlds=[],
         )
         publish = scope["_publish_world"]
         publish(world)
@@ -284,7 +284,7 @@ class WorldPublicationTest(unittest.TestCase):
             perception=SimpleNamespace(snapshot=lambda *_: ([], int(sensor["healthy"]), dict(sensor))),
             human_lock=threading.Lock(), human_motion=None, human=None, native=None,
             semantic_snapshot=lambda stamp: {"observed_ms": stamp}, semantic_last=None,
-            world_pub=mock.Mock(), world_count=0, published_world_stamp=None,
+            world_pub=mock.Mock(), world_count=0, published_world_stamp=None, published_worlds=[],
             hazard_guard=None, _emit=mock.Mock())
         publish = scope["_publish_world"]
         publish(world, only_advanced=True)
@@ -317,6 +317,8 @@ class WorldPublicationTest(unittest.TestCase):
         self.assertIsNone(payload["semantic"])
         self.assertEqual(payload["stamp_ms"], 1080)  # Original joint observation, no restamp.
         self.assertEqual(world.world_pub.publish.call_count, 3)
+        # Only published worlds are recorded, with the confidence the gate received.
+        self.assertEqual(world.published_worlds, [(1040, 1), (1050, 1), (1080, 0)])
 
 
 class HazardAdapterTest(unittest.TestCase):

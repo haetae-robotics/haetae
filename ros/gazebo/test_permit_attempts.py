@@ -13,7 +13,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from permit_attempts import (MAX_ATTEMPTS, PENDING, VERIFIER_WINDOW_NS, AttemptLog, GrantChain, RunnerDelay,
+from permit_attempts import (MAX_ATTEMPTS, PENDING, VERIFIER_WINDOW_NS, AttemptList, AttemptLog, GrantChain, RunnerDelay,
                              bounded_attempts, check_timely, fail_closed_settled, goal_counted, hold_evidence,
                              late_stop_verdict, motion_after, motion_checked, negative_timing, permit_fields,
                              precondition_miss, refusal, refusal_hold, refused_motion, require_fresh_witness,
@@ -168,7 +168,7 @@ class BoundedAttemptsTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual([entry[2] for entry in log.records], ["inconclusive", "passed"])
         self.assertEqual(log.records[0][3], "arm renewal")
-        self.assertEqual(printed.getvalue(), "Inconclusive controller permit attempt, retrying from reset: "
+        self.assertEqual(printed.getvalue(), "Inconclusive controller permit attempt, retrying: "
                                              'arm_positive #1 arm renewal: {"cause": "late"}\n')
 
     def test_all_inconclusive_is_a_failure_not_a_pass(self):
@@ -192,6 +192,27 @@ class BoundedAttemptsTest(unittest.TestCase):
                 run()
             self.assertEqual(len(calls), 1, repr(failure))
             self.assertEqual([entry[2] for entry in log.records], ["failed"])
+
+    def test_sensor_coverage_attempts_are_kept_in_its_own_row(self):
+        attempts = AttemptList()
+        outcomes = iter([RunnerDelay("sensor coverage authority cut before unknown world",
+                                     {"cause": "world_authority_cut_before_unknown_world", "cut_after_fault_wall_ms": 220.04}),
+                         {"ok": True, "stop_reason": "perception_unknown"}])
+        def body():
+            outcome = next(outcomes)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+        with self.retry_log() as printed:
+            row = bounded_attempts("sensor_coverage", body, attempts, clock=lambda: 0.0, label="sensor coverage")
+        self.assertEqual(row, {"ok": True, "stop_reason": "perception_unknown", "attempt": 2})
+        self.assertEqual(json.loads(json.dumps(attempts)), [
+            {"attempt": 1, "outcome": "inconclusive", "stage": "sensor coverage authority cut before unknown world",
+             "evidence": {"cause": "world_authority_cut_before_unknown_world", "cut_after_fault_wall_ms": 220.04},
+             "wall_ms": 0.0},
+            {"attempt": 2, "outcome": "passed", "stage": None, "evidence": {}, "wall_ms": 0.0}])
+        self.assertTrue(printed.getvalue().startswith(
+            "Inconclusive sensor coverage attempt, retrying: sensor_coverage #1 "), printed.getvalue())
 
     def test_runner_delay_is_not_a_verdict_class_and_budget_fits_reset_ids(self):
         self.assertFalse(issubclass(RunnerDelay, (AssertionError, TimeoutError, RuntimeError)))
