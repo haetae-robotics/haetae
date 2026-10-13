@@ -260,6 +260,55 @@ H1_DECISIONS = ("시험: ", "차단: ", "시험 종료: ")  # fault injected, ga
 # and prints the 차단/시험 종료 line only after it returns. Its finally's link.stop() swallows
 # LinkError and OSError, so this source line in a traceback is a STOP that failed after a decision.
 H1_STOP_CALL = 'link.exchange("STOP")'
+H1_ALLOWED = "허용: LED ON (테스트 명령이 통과 중)"
+H1_DENIED = "차단: LED OFF, 재시작은 새 run 명령으로만 가능합니다."
+
+
+def h1_pause_gate_stop(host_log, code, ready, events, stopped):
+    """A paused host resumed into its clean gate-denial path, after the device lease ended.
+
+    Called with final host output and device rows, after the harness observed `stopped`
+    before SIGCONT. Exact host messages alone are insufficient: require positive RUN,
+    a subsequent non-renewing STATUS, the first OFF by lease, and only STOPs afterward.
+    STATUS keeps reason 'run'; its incremented sequence and unchanged renewal identify it.
+    This is conclusive interruption evidence, never a timing-inconclusive restart.
+    """
+    if (code != 0 or [line for line in host_log.splitlines() if line.strip()] != [H1_ALLOWED, H1_DENIED]
+            or not isinstance(ready, dict) or "fault" not in ready or ready["fault"] is not None):
+        return None
+    if not all(isinstance(event, dict) for event in events):
+        return None
+    first_on = next((index for index, event in enumerate(events) if event.get("on") is True), None)
+    if first_on is None:
+        return None
+    off = next((index for index in range(first_on + 1, len(events)) if events[index].get("on") is not True), None)
+    if off is None or off < first_on + 2 or events[off] != stopped:
+        return None
+    run, status, lease = events[off - 2:off + 1]
+    tail = events[off + 1:]
+    relevant = [run, status, lease] + tail
+    if not tail or not all(type(event.get(key)) is int for event in relevant
+                           for key in ("device_ms", "renewed_ms", "sequence")):
+        return None
+    renewed, sequence = run["renewed_ms"], status["sequence"]
+    if (run.get("on") is not True or status.get("on") is not True
+            or run.get("reason") != "run" or status.get("reason") != "run"
+            or sequence != run["sequence"] + 1 or lease["sequence"] != sequence
+            or lease.get("on") is not False or lease.get("reason") != "lease"
+            or any(event["renewed_ms"] != renewed for event in relevant)
+            or not 0 <= renewed <= run["device_ms"] <= status["device_ms"] <= lease["device_ms"]
+            or not LEASE_MS <= lease["device_ms"] - renewed <= OBSERVATION_MS):
+        return None
+    previous = lease
+    for event in tail:
+        # The denial sends STOP, then finally sends one best-effort STOP. The emulator
+        # may observe both in one loop and log only the second sequence.
+        if (event.get("on") is not False or event.get("reason") != "stop"
+                or not previous["sequence"] < event["sequence"] <= sequence + 2
+                or event["device_ms"] < previous["device_ms"]):
+            return None
+        previous = event
+    return {"resume_path": "gate-stop", "last_run_to_off_ms": lease["device_ms"] - renewed}
 
 
 def h1_error_kind(line):

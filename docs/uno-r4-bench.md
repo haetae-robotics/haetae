@@ -165,3 +165,13 @@ each attempt's renewal gaps, ARM-to-first-RUN time and STATUS-to-RUN-verified
 time, and the evidence of each inconclusive attempt, as a non-blocking
 measurement. The bench prints one GitHub Actions warning per inconclusive
 attempt. The 50 ms and 200 ms limits are unchanged.
+
+For the H1 host-pause case, a pause after STATUS can resume into a gate denial
+and a clean host exit. The harness accepts that path only when the final host
+log contains exactly the positive-control and denial messages, the ready file
+records no injected fault, and device rows show RUN, a non-renewing STATUS,
+then the first OFF by lease before resume, followed only by STOP commands.
+The lease must end within the unchanged 200–300 ms process observation band;
+any later ON fails. `report.json` records this pause `resume_path` as
+`gate-stop`; a nonzero host exit is recorded as `error-exit`. Neither path
+restarts the interrupted attempt.
