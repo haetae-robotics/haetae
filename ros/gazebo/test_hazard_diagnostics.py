@@ -115,6 +115,55 @@ class SemanticOmissionTest(unittest.TestCase):
         self.assertEqual(set(row["observation"]["sources"]), {"target", "item", "joint", "odom", "container"})
 
 
+class OmissionHistoryConcurrencyTest(unittest.TestCase):
+    def test_append_during_render_preserves_coherent_snapshot_without_blocking_writer(self):
+        history = OmissionHistory()
+
+        def record(index):
+            history.record(("item_missing_or_stale",), ObservationSnapshot(index, float(index), ()),
+                           case="chemicals", task_revision=index,
+                           step_id=f"fixture-motion-{index}", fused_stamp_ms=index)
+
+        for index in range(32):
+            record(index)
+        rendering = threading.Event()
+        appended = threading.Event()
+        errors = []
+        original_report = ObservationSnapshot.report
+
+        def paused_report(snapshot):
+            if snapshot.sim_ms == 0:
+                rendering.set()
+                self.assertTrue(appended.wait(2), "rendering must not hold the history lock")
+            return original_report(snapshot)
+
+        def append_during_render():
+            try:
+                if not rendering.wait(2):
+                    raise AssertionError("report did not begin rendering")
+                record(32)
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                appended.set()
+
+        writer = threading.Thread(target=append_during_render)
+        with mock.patch.object(ObservationSnapshot, "report", paused_report):
+            writer.start()
+            try:
+                report = history.report()
+            finally:
+                writer.join(timeout=2)
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(report["total"], 32)
+        self.assertEqual(report["retained_limit"], 32)
+        self.assertEqual([row["task_revision"] for row in report["recent"]], list(range(32)))
+        after = history.report()
+        self.assertEqual(after["total"], 33)
+        self.assertEqual([row["task_revision"] for row in after["recent"]], list(range(1, 33)))
+
+
 class DispatchWatchTest(unittest.TestCase):
     def watch(self, evidence):
         return DispatchWatch(evidence, points=[(0, [0.] * 4), (900, [.5, 0., 0., 0.])],

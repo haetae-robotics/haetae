@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass
+from threading import Lock
 
 
 @dataclass(frozen=True)
@@ -50,18 +51,25 @@ class ObservationUnavailable(RuntimeError):
 
 class OmissionHistory:
     def __init__(self):
+        self._lock = Lock()
         self.count = 0
         self.rows = deque(maxlen=32)
 
     def record(self, reasons, snapshot, *, case, task_revision, step_id, fused_stamp_ms):
-        self.count += 1
-        self.rows.append((tuple(reasons), snapshot, case, task_revision, step_id, fused_stamp_ms))
+        row = (tuple(reasons), snapshot, case, task_revision, step_id, fused_stamp_ms)
+        with self._lock:
+            self.count += 1
+            self.rows.append(row)
 
     def report(self):
-        return {"total": self.count, "retained_limit": self.rows.maxlen, "recent": [
+        # The ROS callback may append while the failure report is rendered.
+        # Copy count and immutable rows together, then release it before rendering.
+        with self._lock:
+            count, limit, rows = self.count, self.rows.maxlen, tuple(self.rows)
+        return {"total": count, "retained_limit": limit, "recent": [
             {"reasons": list(reasons), "observation": snapshot.report(), "case": case,
              "task_revision": task_revision, "step_id": step_id, "fused_stamp_ms": fused}
-            for reasons, snapshot, case, task_revision, step_id, fused in self.rows
+            for reasons, snapshot, case, task_revision, step_id, fused in rows
         ]}
 
 
