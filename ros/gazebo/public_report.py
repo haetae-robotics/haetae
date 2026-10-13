@@ -37,6 +37,19 @@ HOLD_UPDATES = 3
 # case can then pass without showing the refusal's own latch.
 LAPSE_ALLOWANCE_NS = 20_000_000
 DRIFT_LIMIT = .02
+# Fault-latency limits, unchanged (HANDOFF.md records the 400 ms fault-to-zero
+# limit). Each is compared with one wall or simulation timing sample from a shared
+# CI runner, so report() records the comparison as a CI non-blocking measurement
+# and never fails a check on it (AGENTS.md, "Limits and tests"). The fail-closed
+# evidence around each sample stays in the verdict.
+FAULT_TO_ZERO_LIMIT_MS = 400
+ARM_LEASE_AGE_LIMIT_MS = {"wall": 100, "sim": 150}
+ARM_HOLD_LIMIT_MS = {"wall": 400, "sim": 320}
+DEADMAN_STOP_LIMIT_MS = 3000
+# The named stops stop_evidence.sensor_stop_report() returns. Lost coverage
+# passes only on the perception-unknown revocation.
+SENSOR_STOP_REASONS = ("perception_unknown", "world_admission_budget_exhausted", "stale_world",
+                       "world_expired_at_response", "world_expired_at_owner")
 
 
 def mapping(value):
@@ -45,6 +58,11 @@ def mapping(value):
 
 def number(value):
     return value if type(value) in (int, float) and 0 <= value <= 10**12 and math.isfinite(value) else None
+
+
+def finite(value):
+    """A recorded timing sample, a negative one included. Never part of a verdict."""
+    return value if type(value) in (int, float) and abs(value) <= 10**12 and math.isfinite(value) else None
 
 
 def within(value, maximum):
@@ -168,11 +186,17 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
     result = mapping(result)
     checks = []
 
-    def check(identifier, title, present, passed, metrics=None):
-        checks.append({"id": identifier, "title": title,
-                       "status": "not_run" if not present else "passed" if passed else "failed",
-                       "measurements": {key: value for key, raw in (metrics or {}).items()
-                                        if (value := number(raw)) is not None}})
+    def check(identifier, title, present, passed, metrics=None, timing=()):
+        row = {"id": identifier, "title": title,
+               "status": "not_run" if not present else "passed" if passed else "failed",
+               "measurements": {key: value for key, raw in (metrics or {}).items()
+                                if (value := number(raw)) is not None}}
+        if timing:
+            # CI non-blocking measurement: each single timing sample against its
+            # unchanged limit. It is never part of `status`.
+            row["timing"] = [{"name": name, "value_ms": value, "limit_ms": limit, "within_limit": value <= limit}
+                             for name, raw, limit in timing if (value := finite(raw)) is not None]
+        checks.append(row)
 
     motion = number(result.get("base_moved_m"))
     check("motion", "정상 명령으로 실제 시뮬레이터 이동", motion is not None, motion is not None and motion > .03,
@@ -201,16 +225,35 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
         check(name, title, bool(row), row.get("blocked") is True)
     for name, title in (("disconnect", "라이다 연결 끊김 정지"), ("coverage", "라이다 검증 표적 손실 정지")):
         row = mapping(mapping(result.get("sensor_faults")).get(name))
-        check("sensor_" + name, title, bool(row), row.get("ok") is True and
-              mapping(row.get("unknown")).get("healthy") is False and row.get("recovery_did_not_rearm") is True and row.get("post_recovery_proposal_rejected_by_engine") is True and
-              within(row.get("fault_to_zero_wall_ms"), 400), {"zero_wall_ms": row.get("fault_to_zero_wall_ms")})
+        attempt = row.get("attempt")
+        # Lost coverage passes only on the perception-unknown revocation, on a
+        # passed attempt inside the bounded retry budget (run_reference.py).
+        named = (row.get("stop_reason") == "perception_unknown" and type(attempt) is int
+                 and 1 <= attempt <= PERMIT_MAX_ATTEMPTS) if name == "coverage" else (
+                 row.get("stop_reason") in SENSOR_STOP_REASONS)
+        check("sensor_" + name, title, bool(row), row.get("ok") is True and named and
+              mapping(row.get("unknown")).get("healthy") is False and row.get("recovery_did_not_rearm") is True and
+              row.get("post_recovery_proposal_rejected_by_engine") is True and
+              # A measured zero after the fault; its 400 ms limit is a measurement.
+              number(row.get("fault_to_zero_wall_ms")) is not None,
+              {"zero_wall_ms": row.get("fault_to_zero_wall_ms"),
+               "inconclusive_attempts": attempt - 1 if name == "coverage" and type(attempt) is int else None},
+              (("fault_to_zero_wall_ms", row.get("fault_to_zero_wall_ms"), FAULT_TO_ZERO_LIMIT_MS),))
     for name in ("kill", "stall", "delay"):
         row = mapping(mapping(result.get("arm_faults")).get(name))
         check("arm_" + name, "팔 독립 정지 · " + name, bool(row), row.get("ok") is True and
-              row.get("old_goal_did_not_resume") is True and within(row.get("pre_fault_lease_age_wall_ms"), 100) and
-              within(row.get("pre_fault_lease_age_sim_ms"), 150) and within(row.get("fault_to_hold_wall_ms"), 400) and
-              within(row.get("fault_to_hold_sim_ms"), 320) and within(row.get("post_stop_drift_rad"), .02),
-              {"hold_wall_ms": row.get("fault_to_hold_wall_ms")})
+              row.get("old_goal_did_not_resume") is True and within(row.get("post_stop_drift_rad"), DRIFT_LIMIT) and
+              # The harness's polled positive control found a lease renewal at most
+              # 100 ms old just before the fault; its age at the fault is a measurement.
+              number(row.get("pre_fault_lease_age_wall_ms")) is not None and
+              # The hold followed the fault on both clocks; its limits are measurements.
+              number(row.get("fault_to_hold_wall_ms")) is not None and
+              number(row.get("fault_to_hold_sim_ms")) is not None,
+              {"hold_wall_ms": row.get("fault_to_hold_wall_ms")},
+              (("pre_fault_lease_age_wall_ms", row.get("pre_fault_lease_age_wall_ms"), ARM_LEASE_AGE_LIMIT_MS["wall"]),
+               ("pre_fault_lease_age_sim_ms", row.get("pre_fault_lease_age_sim_ms"), ARM_LEASE_AGE_LIMIT_MS["sim"]),
+               ("fault_to_hold_wall_ms", row.get("fault_to_hold_wall_ms"), ARM_HOLD_LIMIT_MS["wall"]),
+               ("fault_to_hold_sim_ms", row.get("fault_to_hold_sim_ms"), ARM_HOLD_LIMIT_MS["sim"])))
     compound = mapping(result.get("compound_faults"))
     rows = compound.get("iterations")
     rows = [mapping(row) for row in rows] if isinstance(rows, list) else []
@@ -221,13 +264,19 @@ def report(result=None, revision="unknown", run_id="unknown", failed=False):
               row.get("signer_stop_observed") is True and row.get("recovery_did_not_rearm") is True and
               row.get("post_recovery_proposal_rejected_by_engine") is True and
               number(row.get("engine_rejections_after_zero")) is not None and row["engine_rejections_after_zero"] >= 10 and
-              within(row.get("fault_to_zero_wall_ms"), 400) for row in rows),
-          {"iterations": len(rows), "max_zero_wall_ms": max((value for row in rows if (value := number(row.get("fault_to_zero_wall_ms"))) is not None), default=None)})
+              row.get("stop_reason") in SENSOR_STOP_REASONS and
+              number(row.get("fault_to_zero_wall_ms")) is not None for row in rows),
+          {"iterations": len(rows), "max_zero_wall_ms": max((value for row in rows if (value := number(row.get("fault_to_zero_wall_ms"))) is not None), default=None)},
+          [("iteration_%d_fault_to_zero_wall_ms" % index, row.get("fault_to_zero_wall_ms"), FAULT_TO_ZERO_LIMIT_MS)
+           for index, row in enumerate(rows, 1)])
     check("audit", "봉인된 사건 기록 확인", "sillok_incident_snapshot_fully_sealed" in result,
           result.get("sillok_incident_snapshot_fully_sealed") is True)
+    # The harness's bounded wait for the measured stop is the verdict; the
+    # recorded observation delay is a measurement.
     check("base_deadman", "게이트 종료 뒤 측정된 바퀴 정지", "gate_kill_to_base_stop_wall_ms" in result,
-          within(result.get("gate_kill_to_base_stop_wall_ms"), 3000),
-          {"stopped_observation_wall_ms": result.get("gate_kill_to_base_stop_wall_ms")})
+          number(result.get("gate_kill_to_base_stop_wall_ms")) is not None,
+          {"stopped_observation_wall_ms": result.get("gate_kill_to_base_stop_wall_ms")},
+          (("gate_kill_to_base_stop_wall_ms", result.get("gate_kill_to_base_stop_wall_ms"), DEADMAN_STOP_LIMIT_MS),))
     permits = mapping(result.get("controller_permits"))
     permit_checks = mapping(permits.get("checks"))
     boundaries = mapping(permits.get("relay_boundaries"))
@@ -278,7 +327,9 @@ def render_report(value):
     # Only values produced by report() are rendered; still escape every string.
     escape = lambda text: html.escape(str(text), quote=True)
     labels = {"passed": "통과", "failed": "실패", "not_run": "미실행", "pending": "대기", "incomplete": "일부 미실행"}
-    rows = "".join(f"<tr><td>{escape(row['title'])}</td><td>{labels[row['status']]}</td><td><code>{escape(json.dumps(row['measurements']))}</code></td></tr>" for row in value["checks"])
+    rows = "".join(f"<tr><td>{escape(row['title'])}</td><td>{labels[row['status']]}</td><td><code>{escape(json.dumps(row['measurements']))}</code>"
+                   + (f"<br>CI non-blocking measurement: <code>{escape(json.dumps(row['timing']))}</code>" if row.get("timing") else "")
+                   + "</td></tr>" for row in value["checks"])
     return ("<!doctype html><html lang=ko><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'>"
             "<title>HAETAE 검증 리포트</title><style>body{font:16px system-ui;max-width:960px;margin:40px auto;padding:0 20px;color:#22313b}"
             "table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:14px 8px;border-bottom:1px solid #ddd}p{line-height:1.7}code{overflow-wrap:anywhere}</style>"

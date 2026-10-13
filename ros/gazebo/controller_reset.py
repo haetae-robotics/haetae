@@ -35,11 +35,13 @@ def main():
     node = Node("haetae_controller_test_reset")
     try:
         client = node.create_client(SwitchController, "/controller_manager/switch_controller")
-        if not client.wait_for_service(timeout_sec=5):
+        # DDS discovery is fixture startup, separate from each switch's deadline.
+        if not client.wait_for_service(timeout_sec=15):
             raise RuntimeError("controller switch service unavailable")
         if persistent:
             # Keep one DDS participant for this trusted maintenance fixture.
             # Repeated short-lived CLI nodes accumulate discovery churn.
+            print(json.dumps({"ready": True}), flush=True)
             for line in sys.stdin:
                 if len(line) > 64:
                     raise ValueError("reset request bound")
