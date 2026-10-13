@@ -18,7 +18,7 @@ import bench_evidence
 import bench_verify
 import permit_verify
 from bench_evidence import HOST_ATTEMPTS, Inconclusive, TimingRecord, warning
-from test_bench_evidence import (CRASH, H1_ALLOW_EVENTS, H1_ALLOW_LOG, H1_ALLOW_READY, H1_PRE_ON_EVENTS,
+from test_bench_evidence import (CRASH, H1_ALLOW_EVENTS, H1_ALLOW_LOG, H1_ALLOW_READY, H1_PAUSE_EVENTS, H1_PRE_ON_EVENTS,
                                  H1_PRE_ON_LOG, H1_REPLAY_EVENTS, H1_REPLAY_LOG, H1_UNARMED_EVENTS, H1_UNARMED_LOG,
                                  H1_WORLD_LOSS_EVENTS, H1_WORLD_LOSS_LOG, PERSON_AUTH, PERSON_EVENTS, PERSON_RELAY,
                                  PR22_AUTH, PR22_EVENTS, PR22_RELAY, REPLY_AUTH_SENT, REPLY_AUTH_UNSENT, REPLY_EVENTS,
@@ -316,8 +316,9 @@ class BenchHarnessTest(unittest.TestCase):
     """bench_verify.host_attempt with fake device and host process."""
 
     def run_attempt(self, events, log_text, ready_value, code, reaches_on=True, scenario="allow",
-                    interrupt=None, via_case=False):
+                    interrupt=None, via_case=False, final_events=None):
         calls, attempts = [], []
+        events = [dict(event) for event in events]
         class Process:
             def __init__(self, argv, stdout, stderr, **kwargs):
                 self.returncode, self.pid = None, UNUSED_PID
@@ -331,6 +332,8 @@ class BenchHarnessTest(unittest.TestCase):
                 return self.returncode
             def wait(self, timeout=None):
                 self.returncode = code
+                if final_events is not None:
+                    events[:] = final_events
                 return code
             def kill(self):
                 calls.append("host.kill")
@@ -350,6 +353,31 @@ class BenchHarnessTest(unittest.TestCase):
                 except Exception as exc:
                     result = exc
         return result, calls, attempts
+
+    def test_pause_gate_denial_waits_for_final_rows_and_passes_once(self):
+        log = real_host_log("allow", deny_cycle=2, clean_return=True)
+        result, calls, attempts = self.run_attempt(H1_PAUSE_EVENTS[:7], log, H1_ALLOW_READY, 0,
+                                                   interrupt="pause", via_case=True, final_events=H1_PAUSE_EVENTS)
+        self.assertIsInstance(result, dict, result)
+        self.assertEqual((result["passed"], result["resume_path"], result["host_exit"], result["last_run_to_off_ms"]),
+                         (True, "gate-stop", 0, 201))
+        self.assertEqual(calls.count("signal"), 2)  # pause and resume, before final classification
+        self.assertEqual(attempts, ["case"])
+
+    def test_pause_allow_completion_and_other_interrupt_exit_zero_still_fail_once(self):
+        denial = real_host_log("allow", deny_cycle=2, clean_return=True)
+        completion = real_host_log("allow", clean_return=True)
+        for interrupt, log in (("pause", completion), ("kill", denial), ("gate-kill", denial)):
+            result, _, attempts = self.run_attempt(H1_PAUSE_EVENTS, log, H1_ALLOW_READY, 0,
+                                                   interrupt=interrupt, via_case=True)
+            self.assertIsInstance(result, AssertionError)
+            self.assertIn("interrupted host unexpectedly reported success", str(result))
+            self.assertEqual(attempts, ["case"])
+        # Nonzero exits retain their existing acceptance without claiming a specific error.
+        result, _, attempts = self.run_attempt(H1_PAUSE_EVENTS, "host error\n", H1_ALLOW_READY, 1,
+                                               interrupt="pause", via_case=True)
+        self.assertEqual((result["passed"], result["resume_path"]), (True, "error-exit"))
+        self.assertEqual(attempts, ["case"])
 
     def test_positive_loss_before_the_fault_is_inconclusive(self):
         result, _, _ = self.run_attempt(H1_ALLOW_EVENTS, H1_ALLOW_LOG, H1_ALLOW_READY, 1)

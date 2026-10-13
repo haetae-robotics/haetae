@@ -40,7 +40,10 @@ independent lease remains essential.
 Before each positive cycle the host polls STATUS to acquire a fresh challenge
 and refuses a LOCKED response. Inter-cycle scheduling can age the previous
 challenge without making the new gate decision stale. Polling never extends
-the existing lease: a resumed host still encounters LOCKED after expiry.
+the existing lease. After expiry, a resumed host encounters LOCKED at its next
+STATUS poll. If it was paused after that poll, the gate can instead deny the
+pending cycle; the host sends STOP and exits normally. Neither path re-arms
+the device or restores output.
 
 Sketch deadlines use the board clock. It reads at most 32 bytes per loop,
 applies LED state before replying and removes output if TX space is insufficient.
