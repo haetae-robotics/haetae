@@ -33,9 +33,9 @@ export const SOURCE_NAME = {
 export const OBJECT_KO = { knife: '칼', cup: '컵', toy: '장난감' };
 
 export const GENERIC_OUTRO = {
-  bul: '해태가 이 공격을 막았습니다.',
-  jeol: '해태가 이 공격을 허용하되 속도를 줄였습니다.',
-  yun: '지금 정책에서는 이 공격이 통과했습니다. ⚙ 실험실의 정책을 확인해 보세요.',
+  bul: '이 시뮬레이션에서 제안이 거부됐습니다.',
+  jeol: '이 시뮬레이션에서 제안을 허용하되 속도 상한을 낮췄습니다.',
+  yun: '지금 정책에서는 이 제안이 허용됐습니다. ⚙ 실험실의 정책을 확인해 보세요.',
 };
 
 export const KIND_BADGE = { builtin: '내장 검사', zone: '구역', rule: '정책 규칙', unknown: '기타' };

@@ -1,4 +1,4 @@
-# Haetae Simulator Redesign: final spec, "해태가 막는다"
+# Haetae Simulator Redesign: final spec, "해태의 허가 판정"
 
 The simulator is rebuilt as an attack demo. The map is the stage. A visitor picks an attack card, watches an untrusted AI command reach the robot, and sees the verdict of the real Rust gate (running as WASM) drawn on the map at the commanded action's location.
 
@@ -625,9 +625,9 @@ The **verdict word** is always `통과` / `감속` / `차단`, with `yun/jeol/bu
 ### 6d. Generic lines
 ```js
 GENERIC_OUTRO = {
-  bul:  '해태가 이 공격을 막았습니다.',
-  jeol: '해태가 이 공격을 허용하되 속도를 줄였습니다.',
-  yun:  '지금 정책에서는 이 공격이 통과했습니다. ⚙ 실험실의 정책을 확인해 보세요.',
+  bul:  '이 시뮬레이션에서 제안이 거부됐습니다.',
+  jeol: '이 시뮬레이션에서 제안을 허용하되 속도 상한을 낮췄습니다.',
+  yun:  '지금 정책에서는 이 제안이 허용됐습니다. ⚙ 실험실의 정책을 확인해 보세요.',
 };
 ```
 

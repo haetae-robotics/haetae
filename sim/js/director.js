@@ -291,7 +291,7 @@ export class Director {
 
   setTitle(card, bi = 0) {
     const t = $('stage-title');
-    if (!card) { t.textContent = '해태가 막는다 · 공격을 골라 보세요'; return; }
+    if (!card) { t.textContent = '해태의 허가 판정 · 공격을 골라 보세요'; return; }
     const n = String(card.num).padStart(2, '0');
     const pos = card.stream ? '' : ` · ${bi + 1}/${card.beats.length}`;
     t.textContent = `${n} ${card.title}${pos}`;
