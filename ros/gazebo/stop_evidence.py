@@ -106,29 +106,20 @@ def motion_after_stop(states, commands, since):
     stale_world stop (crates/haetae-enforce/src/lib.rs), every engine step includes
     its state, so each stop has a disarmed state, and only an explicit zero command
     arms a source again; the fault phases never send one. The gate publishes the
-    state after the stop's zero and after every earlier motion command
-    (ros/haetae_gate/node.py `_publish`), so motion received after it is motion
-    after the stop. No timing threshold is involved.
-
-    One command is exempt, so that runner scheduling cannot fail a correct stop.
-    States reach the harness directly, but commands pass through the relay, which
-    forwards them in order through a one-message reader (ros/haetae_gate/relay.py).
-    The motion command it was forwarding when the gate stopped can still arrive
-    after the state, as the first command after it, when the last command before
-    it was motion too. Every other motion command after the stop is returned,
-    including any after a zero. Rejection outcomes do not mark the stop: ticks
-    publish states but no outcomes, so a busy harness can take a rejection before
-    earlier commands, while it takes each state after the step's command.
+    state after the stop's zero (ros/haetae_gate/node.py `_publish`), but state and
+    relayed-command callbacks have no shared publication-order marker. This is
+    therefore a conservative receive-order check, not proof of when a command
+    was emitted. Every observed motion command after the state is returned:
+    the harness cannot distinguish delayed pre-stop motion from new post-stop
+    motion and exempts neither. Equal receive timestamps are also ambiguous
+    and count as after the stop. No timing threshold is involved. Rejection
+    outcomes cannot replace the state marker: ticks publish states without
+    outcomes.
     """
     stop = next((t for t, row in list(states) if t >= since and not row.get("armed")), None)
     if stop is None:
         return []
-    commands = list(commands)
-    before = [value for t, value in commands if t <= stop]
-    after = [(t, value) for t, value in commands if t > stop]
-    in_flight = bool(before) and abs(before[-1]) > 0.03
-    return [(t, value) for index, (t, value) in enumerate(after)
-            if abs(value) > 0.03 and not (index == 0 and in_flight)]
+    return [(t, value) for t, value in list(commands) if t >= stop and abs(value) > 0.03]
 
 
 # Gate rejections that end the trusted world's authority: ros/haetae_gate/node.py
@@ -141,7 +132,57 @@ WORLD_AUTHORITY_CUTS = ("trusted world has insufficient controller admission bud
                         "stale actuation response: world expired")
 
 
-def coverage_cut_first(states, outcomes, zeros, commands, published, since, since_ms=None):
+def coverage_cut_record(log_path, since_ms, cut_error, unknown_stamp, *, root=None, expected_uid=None):
+    """Correlate the first authority loss in the engine's own record order.
+
+    Unlike ROS callback order, this includes tick-only stops. A named reject
+    must precede its own Denied stop, at the same engine timestamp, and the
+    confidence-zero world must come later. A partial final record cannot prove
+    this sequence. Expired and NoCommand keep the source armed; other stops do
+    not establish the required named cause and are conservatively rejected.
+    """
+    if type(since_ms) is not int:
+        return False
+    cut_ms = None
+    denied = False
+    complete = False
+    for line in read_evidence_text(root or log_path.parent, log_path, expected_uid).splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(row, dict):
+            return False
+        stamp, kind, payload = row.get("ts_ms"), row.get("kind"), row.get("payload")
+        if type(stamp) is not int or not isinstance(payload, dict):
+            return False
+        if stamp < since_ms or complete:
+            continue
+        if cut_ms is None:
+            if kind == "reject":
+                if payload.get("error") != cut_error:
+                    return False
+                cut_ms = stamp
+            elif (kind == "revoke" or kind == "decision" and payload.get("verdict") == "bul"
+                  or kind == "world" and payload.get("confidence") == 0
+                  or kind == "stop" and payload.get("reason") not in ("Expired", "NoCommand")):
+                return False
+        elif not denied:
+            # reject() records its stop synchronously before another engine input.
+            if kind != "stop" or payload.get("reason") != "Denied" or stamp != cut_ms:
+                return False
+            denied = True
+        elif kind == "decision" and payload.get("verdict") == "yun":
+            return False  # No explicit rearm or newly allowed action belongs in this fault window.
+        elif kind == "world" and payload.get("confidence") == 0:
+            if type(payload.get("stamp_ms")) is not int or payload["stamp_ms"] != unknown_stamp or stamp < cut_ms:
+                return False
+            complete = True
+    return complete
+
+
+def coverage_cut_first(log_path, states, outcomes, zeros, commands, published, since, since_ms,
+                       *, root=None, expected_uid=None):
     """Evidence that a named world-authority cut, not the perception rule, stopped motion.
 
     Lost coverage passes only through sensor_stop_report(require_perception=True).
@@ -150,8 +191,12 @@ def coverage_cut_first(states, outcomes, zeros, commands, published, since, sinc
     evidence makes an attempt inconclusive, never a pass. All of these must hold;
     otherwise the result is None and the attempt fails.
 
-    - In the gate's outcome order after `since`, the first loss of authority is a
-      named cut: any other rejection or a `bul` decision before it gives None.
+    - The protected engine log records the named reject as the first authority
+      loss after the fault, followed by its Denied stop and the unknown world.
+      Earlier stops from ticks, revocations and other rejections give None.
+    - The gate's outcome order corroborates this: any other rejection or a
+      `bul` decision before the named cut gives None. ROS streams have no shared
+      step identifier, so callback adjacency alone cannot establish the cause.
     - The cut comes before every accepted world whose stamp the harness ever
       published with confidence 0, or never published (`published`: (stamp,
       confidence) of each published world).
@@ -193,6 +238,15 @@ def coverage_cut_first(states, outcomes, zeros, commands, published, since, sinc
     if not (latest.get("stop") in ("denied", "unarmed") and latest.get("armed") == []
             and "active" in latest and latest["active"] is None):
         return None
+    if not coverage_cut_record(log_path, since_ms, cut[1], accepted[1], root=root, expected_uid=expected_uid):
+        return None
+    # A contradictory observed stop cannot be hidden by a later named rejection.
+    first_disarmed = next(((at, row) for at, row in states if at >= since and not row.get("armed")), None)
+    if first_disarmed is None or first_disarmed[1].get("stop") != "denied":
+        return None
+    if any(first_disarmed[0] < at < cut[0] and ("world_updated" in row or "decision" in row)
+           for at, row in list(outcomes)):
+        return None
     commands, zeros = list(commands), list(zeros)
     if motion_after_stop(states, commands, since):
         return None
@@ -205,10 +259,7 @@ def coverage_cut_first(states, outcomes, zeros, commands, published, since, sinc
                 "unknown_world_after_fault_wall_ms": round((accepted[0] - since) * 1000, 1),
                 "unknown_world_stamp_ms": accepted[1], "last_world_stamp_ms": last_world,
                 "fault_to_zero_wall_ms": round((zero[0] - since) * 1000, 1)}
-    if since_ms is not None:
-        # The same stop on the simulation clock. With the wall values these show the
-        # real-time factor, and how old the last world before the cut was in
-        # simulation time when the zero arrived (fault_sim_ms + fault_to_zero_sim_ms
-        # - last_world_stamp_ms): the runner-timing cause of the cut.
-        evidence.update(fault_sim_ms=since_ms, fault_to_zero_sim_ms=zero[1] - since_ms)
+    # The same stop on the simulation clock. With the wall values these show the
+    # real-time factor and the last world's age when the zero arrived.
+    evidence.update(fault_sim_ms=since_ms, fault_to_zero_sim_ms=zero[1] - since_ms)
     return {"zero_at": zero[0], "inconclusive": evidence}

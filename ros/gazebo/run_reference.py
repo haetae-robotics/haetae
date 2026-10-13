@@ -379,7 +379,7 @@ def check_person_sensor(world, label, processes):
             "returns": len(frame.points), "ok": True}
 
 
-def exercise_sensor_fault(world, processes, case, stop_report, roles=None):
+def exercise_sensor_fault(world, processes, case, stop_report, roles=None, cut_report=None):
     world.marker("센서 연결 끊김 시험" if case == "disconnect" else "센서 검증 표적 사라짐")
     wait_for(lambda: world.sensor_info.get("healthy") and not world.perception.snapshot(
         world.get_clock().now().nanoseconds // 1_000_000, world.pose())[0],
@@ -408,12 +408,12 @@ def exercise_sensor_fault(world, processes, case, stop_report, roles=None):
         nonlocal stopped
         stopped = stop_report(world.states, world.outcomes, world.zero_commands, fault_at, fault_ms,
                               require_perception=case == "coverage")
-        if stopped is None and case == "coverage":
+        if stopped is None and case == "coverage" and cut_report is not None:
             # Never a pass: a named world-authority cut disarmed the engine before
             # the unknown world was accepted, so the perception rule had no active
             # motion left to revoke. Inconclusive below, after recovery.
-            stopped = coverage_cut_first(world.states, world.outcomes, world.zero_commands,
-                                         world.commands, world.published_worlds, fault_at, fault_ms)
+            stopped = cut_report(world.states, world.outcomes, world.zero_commands,
+                                 world.commands, world.published_worlds, fault_at, fault_ms)
         return stopped
 
     wait_for(lambda: not world.sensor_info.get("healthy") and sensor_stop() and abs(world.speed()) < 0.03,
@@ -773,6 +773,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
     stop_report = partial(person_stop_report, **log_boundary)
     stop_observed = partial(person_stop_observed, **log_boundary)
     sensor_stop = partial(sensor_stop_report, gate_directory / "sillok.jsonl", **log_boundary)
+    sensor_cut = partial(coverage_cut_first, gate_directory / "sillok.jsonl", **log_boundary)
 
     def role_env(role):
         env = os.environ.copy()
@@ -1080,7 +1081,7 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
 
         sensor_faults = {}
         for case in ("disconnect", "coverage"):
-            run_case = partial(exercise_sensor_fault, world, processes, case, sensor_stop, roles)
+            run_case = partial(exercise_sensor_fault, world, processes, case, sensor_stop, roles, sensor_cut)
             if case == "coverage":
                 # Each attempt starts from a fresh calibrated bay, explicit rearm and
                 # measured motion. Only RunnerDelay is retried, at most three attempts;

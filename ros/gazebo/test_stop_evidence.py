@@ -4,14 +4,16 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 import ast
 import math
 from collections import deque
+from functools import partial
 from types import SimpleNamespace
 from stop_evidence import world_expiry_stop_observed, sensor_stop_report
 
 from public_report import SENSOR_STOP_REASONS
-from stop_evidence import (WORLD_AUTHORITY_CUTS, coverage_cut_first, motion_after_stop, person_stop_observed,
+from stop_evidence import (WORLD_AUTHORITY_CUTS, coverage_cut_first, coverage_cut_record, motion_after_stop, person_stop_observed,
                            person_stop_report)
 
 
@@ -301,11 +303,22 @@ def failing_run():
         published=deque([(67354, 1.), (67387, 1.), (67387, 1.), (67499, 0.), (67532, 0.)], maxlen=4096))
 
 
+def cut_records(error=CUT):
+    return [{"kind": "world", "ts_ms": 67433, "payload": {"stamp_ms": 67387, "confidence": 1}},
+            {"kind": "reject", "ts_ms": 67497, "payload": {"error": error}},
+            {"kind": "stop", "ts_ms": 67497, "payload": {"reason": "Denied"}},
+            {"kind": "world", "ts_ms": 67503, "payload": {"stamp_ms": 67499, "confidence": 0}},
+            {"kind": "stop", "ts_ms": 67535, "payload": {"reason": "Unarmed"}}]
+
+
 class CoverageCutFirstTest(unittest.TestCase):
-    def classify(self, since_ms=67398, **change):
+    def classify(self, since_ms=67398, records=None, **change):
         evidence = dict(failing_run(), **change)
-        return coverage_cut_first(evidence["states"], evidence["outcomes"], evidence["zeros"],
-                                  evidence["commands"], evidence["published"], 10.0, since_ms)
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "sillok.jsonl"
+            log.write_text("\n".join(json.dumps(row) for row in (cut_records() if records is None else records)) + "\n")
+            return coverage_cut_first(log, evidence["states"], evidence["outcomes"], evidence["zeros"],
+                                      evidence["commands"], evidence["published"], 10.0, since_ms)
 
     def test_failing_run_is_inconclusive_and_never_a_pass(self):
         # Anchored at the cut's own zero (10.218), which arrived before its reject outcome.
@@ -314,8 +327,8 @@ class CoverageCutFirstTest(unittest.TestCase):
             "cut_after_fault_wall_ms": 220.0, "unknown_world_after_fault_wall_ms": 235.0,
             "unknown_world_stamp_ms": 67499, "last_world_stamp_ms": 67387, "fault_to_zero_wall_ms": 218.0,
             "fault_sim_ms": 67398, "fault_to_zero_sim_ms": 103}})
-        # Without the fault's simulation stamp, only wall evidence is recorded.
-        self.assertNotIn("fault_to_zero_sim_ms", self.classify(since_ms=None)["inconclusive"])
+        # Without the fault's engine-clock boundary, log order cannot prove its first cause.
+        self.assertIsNone(self.classify(since_ms=None))
         # The unchanged coverage oracle has no perception-unknown revocation to accept.
         rows = [{"kind": "world", "ts_ms": 67433, "payload": {"stamp_ms": 67387, "confidence": 1}},
                 {"kind": "reject", "ts_ms": 67497, "payload": {"error": CUT}},
@@ -336,7 +349,61 @@ class CoverageCutFirstTest(unittest.TestCase):
         for error in WORLD_AUTHORITY_CUTS:
             outcomes = [(t, {"rejected": {"error": error}}) if row.get("rejected", {}).get("error") == CUT else (t, row)
                         for t, row in failing_run()["outcomes"]]
-            self.assertEqual(self.classify(outcomes=outcomes)["inconclusive"]["cut"], error)
+            self.assertEqual(self.classify(outcomes=outcomes, records=cut_records(error))["inconclusive"]["cut"], error)
+
+    def test_earlier_authority_loss_without_a_ros_outcome_is_not_inconclusive(self):
+        for reason in ("StaleWorld", "Denied", "Unarmed", "Revoked", "NoWorld", "StateFault"):
+            with self.subTest(reason):
+                records = cut_records()
+                records.insert(1, {"kind": "stop", "ts_ms": 67480, "payload": {"reason": reason}})
+                self.assertIsNone(self.classify(records=records))
+        # Positive proposal expiry keeps its source armed; the later named cut remains first.
+        records = cut_records()
+        records.insert(1, {"kind": "stop", "ts_ms": 67480, "payload": {"reason": "Expired"}})
+        self.assertIsNotNone(self.classify(records=records))
+
+    def test_incomplete_or_contradictory_engine_sequence_never_allows_retry(self):
+        records = cut_records()
+        for name, evidence in {
+                "missing engine trace": [],
+                "missing reject": records[:1] + records[2:],
+                "missing Denied stop": records[:2] + records[3:],
+                "different rejection": cut_records("source must send a zero command to arm"),
+                "tick expiry overrides the named rejection": records[:2] + [
+                    {"kind": "stop", "ts_ms": 67497, "payload": {"reason": "StaleWorld"}}] + records[3:],
+                "different stop timestamp": records[:2] + [
+                    {"kind": "stop", "ts_ms": 67498, "payload": {"reason": "Denied"}}] + records[3:],
+                "revocation before the cut": records[:1] + [
+                    {"kind": "revoke", "ts_ms": 67480, "payload": {"fired": ["perception-unknown"]}}] + records[1:],
+                "bul before the cut": records[:1] + [
+                    {"kind": "decision", "ts_ms": 67480, "payload": {"verdict": "bul"}}] + records[1:],
+                "unknown world before the cut": records[:1] + [records[3]] + records[1:],
+                "different accepted unknown world": records[:3] + [
+                    {"kind": "world", "ts_ms": 67503, "payload": {"stamp_ms": 67500, "confidence": 0}}],
+                "newly allowed action after cut": records[:3] + [
+                    {"kind": "decision", "ts_ms": 67502, "payload": {"verdict": "yun"}}] + records[3:],
+        }.items():
+            with self.subTest(name):
+                self.assertIsNone(self.classify(records=evidence))
+
+    def test_contradictory_callback_stop_is_not_hidden_by_later_cut(self):
+        run = failing_run()
+        for reason in ("stale_world", "denied", "unarmed"):
+            with self.subTest(reason):
+                states = [run["states"][0], (10.18, dict(DENIED, stop=reason))] + run["states"][1:]
+                self.assertIsNone(self.classify(states=states))
+
+    def test_log_boundary_is_preserved_and_incomplete_evidence_fails_closed(self):
+        root = Path("/trusted/run")
+        path = root / "gate" / "sillok.jsonl"
+        valid = "\n".join(json.dumps(row) for row in cut_records()) + "\n"
+        for contents in ("", '{"kind":', valid + '{"kind":', valid + "[]\n", valid + '{}\n'):
+            with self.subTest(contents=contents), mock.patch("stop_evidence.read_evidence_text", return_value=contents) as read:
+                self.assertFalse(coverage_cut_record(path, 67398, CUT, 67499, root=root, expected_uid=1234))
+                read.assert_called_once_with(root, path, 1234)
+        with mock.patch("stop_evidence.read_evidence_text", side_effect=FileNotFoundError):
+            with self.assertRaises(FileNotFoundError):
+                coverage_cut_record(path, 67398, CUT, 67499, root=root, expected_uid=1234)
 
     def test_zero_anchor_follows_the_command_topic_order(self):
         run = failing_run()
@@ -434,24 +501,23 @@ class MotionAfterStopTest(unittest.TestCase):
                 ("unarmed", [(10.02, dict(ARMED)), (10.219, dict(UNARMED))]),
                 ("armed field missing", [(10.219, {"stop": "denied"})])):
             with self.subTest(name):
-                # Motion kept arriving for 2 s after the stop, then a zero: every motion
-                # command but the first (possibly still in the relay) is returned.
-                self.assertEqual(motion_after_stop(states, run["commands"][:2] + late, 10.0), late[1:-1])
+                # A later zero cannot erase any motion command received after the stop.
+                self.assertEqual(motion_after_stop(states, run["commands"][:2] + late, 10.0), late[:-1])
 
-    def test_only_one_command_still_in_the_relay_is_exempt(self):
+    def test_even_one_post_stop_motion_command_is_not_exempt(self):
         states = [(10.02, dict(ARMED)), (10.219, DENIED)]
         moving = [(10.02, .12), (10.21, .12)]
-        # The last command before the stop was motion: the first command after it may be the one
-        # the relay was still forwarding (ros/haetae_gate/relay.py forwards in order).
-        self.assertEqual(motion_after_stop(states, moving + [(10.22, .12), (10.23, 0.)], 10.0), [])
-        # Never a second motion command, and never one after a zero.
-        self.assertEqual(motion_after_stop(states, moving + [(10.22, .12), (10.23, .12)], 10.0), [(10.23, .12)])
+        # The receive history cannot prove which command was already in the relay.
+        self.assertEqual(motion_after_stop(states, moving + [(10.22, .12), (10.23, 0.)], 10.0), [(10.22, .12)])
+        self.assertEqual(motion_after_stop(states, moving + [(10.22, .12), (10.23, .12)], 10.0),
+                         [(10.22, .12), (10.23, .12)])
         self.assertEqual(motion_after_stop(states, moving + [(10.22, .12), (10.23, 0.), (10.24, .12)], 10.0),
-                         [(10.24, .12)])
-        # A zero was the last command before the stop: no motion command can still be in flight.
+                         [(10.22, .12), (10.24, .12)])
+        # A preceding zero also gives no exemption.
         self.assertEqual(motion_after_stop(states, moving + [(10.218, 0.), (10.225, .12)], 10.0), [(10.225, .12)])
-        # A command received at the stop's own instant counts as before it.
+        # Equal timestamps cannot establish that a command preceded the state.
         self.assertEqual(motion_after_stop(states, moving + [(10.219, 0.), (10.22, .12)], 10.0), [(10.22, .12)])
+        self.assertEqual(motion_after_stop(states, moving + [(10.219, .12), (10.22, 0.)], 10.0), [(10.219, .12)])
 
     def test_motion_before_the_stop_or_while_armed_is_allowed(self):
         commands = [(10.02, .12), (10.21, .12), (10.218, 0.), (10.3, -.02)]
@@ -467,10 +533,18 @@ class MotionAfterStopTest(unittest.TestCase):
 class CoverageAttemptTest(unittest.TestCase):
     """Execute the actual exercise_sensor_fault() against a scripted world, without ROS."""
 
-    def run_case(self, perception_revokes=False, late_motion=False, motion_after_fault=0, recovery=None):
+    def run_case(self, perception_revokes=False, late_motion=False, motion_after_fault=0, recovery=None,
+                 earlier_stop=None):
         from permit_attempts import RunnerDelay
         tree = ast.parse(Path(__file__).with_name("run_reference.py").read_text())
         node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "exercise_sensor_fault")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        log = Path(directory.name) / "sillok.jsonl"
+        records = cut_records()
+        if earlier_stop:
+            records.insert(1, {"kind": "stop", "ts_ms": 67480, "payload": {"reason": earlier_stop}})
+        log.write_text("\n".join(json.dumps(row) for row in records) + "\n")
         now = [10.0]
         def clock():
             now[0] += .001
@@ -537,7 +611,8 @@ class CoverageAttemptTest(unittest.TestCase):
                  "wait_for": wait_for, "coverage_cut_first": coverage_cut_first, "RunnerDelay": RunnerDelay,
                  "motion_after_stop": motion_after_stop}
         exec(compile(ast.Module(body=[node], type_ignores=[]), "run_reference.py", "exec"), scope)
-        return world, lambda: scope["exercise_sensor_fault"](world, {}, "coverage", stop_report)
+        return world, lambda: scope["exercise_sensor_fault"](
+            world, {}, "coverage", stop_report, cut_report=partial(coverage_cut_first, log))
 
     def test_authority_cut_is_inconclusive_only_after_recovery_without_rearm(self):
         from permit_attempts import RunnerDelay
@@ -562,18 +637,19 @@ class CoverageAttemptTest(unittest.TestCase):
 
     def test_motion_after_the_named_stop_fails_and_is_never_retried(self):
         from permit_attempts import AttemptList, bounded_attempts
-        # No cut zero, then five motion commands after the rejection, then a zero: the
-        # attempt fails at once, inside the real bounded_attempts(), and is not retried.
-        _, run = self.run_case(motion_after_fault=5)
-        attempts = AttemptList()
-        with self.assertRaisesRegex(TimeoutError, "sensor fault causes authenticated engine stop"):
-            bounded_attempts("sensor_coverage", run, attempts, clock=lambda: 0.0, label="sensor coverage")
-        self.assertEqual([(row["attempt"], row["outcome"]) for row in attempts], [(1, "failed")])
-        # The perception path does not pass with motion after its revocation either.
-        world, run = self.run_case(perception_revokes=True, motion_after_fault=5)
-        with self.assertRaisesRegex(AssertionError, "sensor fault coverage motion command after the stop"):
-            run()
-        self.assertNotIn("sensor_fault_result", world.emitted)
+        for count in (1, 5):
+            with self.subTest(motion_commands=count):
+                # Even one motion command after the stop, followed by a zero, must
+                # fail inside real bounded_attempts() without retrying or passing.
+                _, run = self.run_case(motion_after_fault=count)
+                attempts = AttemptList()
+                with self.assertRaisesRegex(TimeoutError, "sensor fault causes authenticated engine stop"):
+                    bounded_attempts("sensor_coverage", run, attempts, clock=lambda: 0.0, label="sensor coverage")
+                self.assertEqual([(row["attempt"], row["outcome"]) for row in attempts], [(1, "failed")])
+                world, run = self.run_case(perception_revokes=True, motion_after_fault=count)
+                with self.assertRaisesRegex(AssertionError, "sensor fault coverage motion command after the stop"):
+                    run()
+                self.assertNotIn("sensor_fault_result", world.emitted)
 
     def test_recovery_that_rearms_or_moves_fails_before_any_retry(self):
         for recovery in ("rearms", "moves"):
@@ -581,6 +657,16 @@ class CoverageAttemptTest(unittest.TestCase):
                 _, run = self.run_case(recovery=recovery)
                 with self.assertRaisesRegex(AssertionError, "sensor recovery automatically rearmed motion"):
                     run()
+
+    def test_earlier_tick_stop_is_not_retried_as_the_later_named_cut(self):
+        from permit_attempts import AttemptList, bounded_attempts
+        for reason in ("StaleWorld", "Denied", "Unarmed"):
+            with self.subTest(reason):
+                _, run = self.run_case(earlier_stop=reason)
+                attempts = AttemptList()
+                with self.assertRaisesRegex(TimeoutError, "sensor fault causes authenticated engine stop"):
+                    bounded_attempts("sensor_coverage", run, attempts, clock=lambda: 0.0, label="sensor coverage")
+                self.assertEqual([(row["attempt"], row["outcome"]) for row in attempts], [(1, "failed")])
 
     def test_perception_revocation_still_passes(self):
         world, run = self.run_case(perception_revokes=True)

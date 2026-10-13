@@ -212,12 +212,16 @@ coverage are delivered as confidence zero, never as a verified empty scene.
 The root-signed reference policy's `perception-unknown` rule rejects and revokes
 motion below 0.9 confidence. The coverage-loss oracle requires an accepted
 confidence-zero world, its named Rust revocation, a disarmed status, a
-subsequent measured zero command and no motion command received after the
-first disarmed engine state (an order check without a timing threshold; one
-command the relay was still forwarding is exempt, see the
+subsequent measured zero command and no motion command received at or after the
+first disarmed engine state (a conservative receive-order check without a
+timing threshold or exceptions for allegedly delayed commands, see the
 [Gazebo runbook](gazebo-reference.md)). An attempt is inconclusive, never a
 pass, only when a named world-authority rejection was the first loss of
-authority after the fault and came before the unknown world was accepted, with
+authority after the fault and came before the unknown world was accepted.
+The protected engine log must establish this order, including the named
+rejection's `Denied` stop at the same timestamp; earlier tick-only stops,
+revocations or other rejections prevent a retry. ROS callback adjacency alone
+does not establish the cause. The attempt must also finish with
 the engine disarmed, a later zero observed and no motion command after the
 first disarmed engine state, the sensor unhealthy, a measured stop and recovery
 without rearming; anything else fails. At most three attempts run, each from a fresh setup, and three

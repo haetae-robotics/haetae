@@ -310,8 +310,12 @@ can end first: one of the named world-authority rejections that the disconnect
 case accepts disarms the engine before the unknown world is accepted, so the
 perception rule has no active motion left to revoke. That stop is fail-closed
 but shows nothing about the perception-unknown rule, so the attempt is
-inconclusive, never a pass. It is inconclusive only when that named rejection
-was the first loss of authority after the fault and came before any accepted
+inconclusive, never a pass. The protected engine log must record the named
+rejection as the first loss of authority after the fault, followed by its
+`Denied` stop at the same engine timestamp and then the accepted unknown world.
+An earlier tick-only stop, revocation or other rejection prevents a retry;
+adjacent ROS state/outcome callbacks alone cannot prove the cause. It is
+inconclusive only when that named rejection also came before any accepted
 world published with confidence zero; a world published only with confidence
 zero was accepted after it; the latest engine state is disarmed; a zero command
 was received after the rejection; no motion command was received after the
@@ -417,15 +421,14 @@ command above 0.03 m/s from 20 ms after the zero. No motion command after the
 stop means that, after the first engine state since the fault with nothing
 armed, the harness received no command above 0.03 m/s; sensor faults check this
 through recovery, compound faults once the proposal burst has ended. This is a
-receive-order check with no timing threshold (`stop_evidence.motion_after_stop`):
-every rejection and every denied, revoked, unarmed or stale-world stop disarms
-the engine, only an explicit zero command arms it again, and the gate publishes
-that state after the stop's zero and after every earlier motion command. One
-command is exempt. States come straight from the gate, but commands pass
-through the relay, which forwards them in order through a one-message reader,
-so the motion command it was still forwarding can arrive just after the state.
-It is exempt only as the first command after the state and only when the last
-command before the state was motion as well. Arm faults
+conservative receive-order check with no timing threshold
+(`stop_evidence.motion_after_stop`). Every rejection and every denied, revoked,
+unarmed or stale-world stop disarms the engine; only an explicit zero command
+arms it again. State and relayed-command callbacks have no shared publication
+marker, so the harness cannot distinguish delayed pre-stop motion from newly
+emitted post-stop motion. Even one motion command received at or after the state
+fails this check; none is exempt as supposedly still being forwarded. This
+can fail a run whose cross-topic delivery is ambiguous. Arm faults
 need measured motion and a lease renewal seen at most 100 ms (wall) before the
 pre-fault poll, a hold after the fault on both clocks within the 2 s wait,
 stopped joints, at most 0.02 rad drift and no resumed goal; the 200 ms lease
