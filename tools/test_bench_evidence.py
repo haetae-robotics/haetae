@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 import bench_evidence
 from bench_evidence import (H1_LEASE, H1_STOP_CALL, H2_DEADLINES, H2_ERROR_PREFIX, H2_LEASE, H2_REPLY_PREFIX,
-                            TimingRecord, cadence, distribution, h1_timing_loss, h2_timing_loss, scheduling_loss)
+                            TimingRecord, cadence, distribution, h1_pause_gate_stop, h1_timing_loss,
+                            h2_timing_loss, scheduling_loss)
 
 TOOLS = Path(__file__).resolve().parent
 ROOT = TOOLS.parent
@@ -296,15 +297,30 @@ def off(device_ms, reason, renewed_ms=1486):
 ON = PR22_EVENTS[:9]  # through the last renewal (run at 1486)
 ARMED = PR22_EVENTS[:4]  # armed with the ARM lease counted from 776
 
+# Native H1 audit shape for a pause after STATUS: the poll advances sequence 3 -> 4
+# without renewing RUN, then the device lease ends before the resumed host sends STOP.
+H1_PAUSE_EVENTS = rows("""\
+{"device_ms":0,"on":false,"reason":"boot","sequence":0,"renewed_ms":0}
+{"device_ms":100,"on":false,"reason":"hello","sequence":0,"renewed_ms":0}
+{"device_ms":100,"on":false,"reason":"armed","sequence":1,"renewed_ms":100}
+{"device_ms":100,"on":false,"reason":"armed","sequence":2,"renewed_ms":100}
+{"device_ms":101,"on":true,"reason":"run","sequence":3,"renewed_ms":100}
+{"device_ms":130,"on":true,"reason":"run","sequence":4,"renewed_ms":100}
+{"device_ms":301,"on":false,"reason":"lease","sequence":4,"renewed_ms":100}
+{"device_ms":335,"on":false,"reason":"stop","sequence":5,"renewed_ms":100}
+{"device_ms":335,"on":false,"reason":"stop","sequence":6,"renewed_ms":100}
+""")
+
 
 def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cycle=None, failing_op=None,
-                  link_error=None):
+                  link_error=None, clean_return=False):
     """The real bench_host.run against fakes; returns its log as the host process writes it.
 
     statuses: STATUS replies in order (None: always ON). failing_cycle: that gate round trip takes
     53.1 ms. deny_cycle: that gate cycle denies with no fault injected. failing_op: every exchange
     of that op raises LinkError(link_error). The clock advances 0.1 s per reading, so the allow
     scenario completes after its 1 s window, while a person fault is not due within three cycles.
+    clean_return opts into a normal return; otherwise this helper requires an exception.
     """
     import bench_host
     from bench_link import LinkError
@@ -349,10 +365,61 @@ def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cyc
             bench_host.run(Path("fake-gate"), "fake-port", scenario, 1)
         except Exception as exc:  # uncaught in the host process: the interpreter prints this
             return output.getvalue() + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        if clean_return:
+            return output.getvalue()
     raise AssertionError("host did not fail")
 
 
 class BenchEvidenceTest(unittest.TestCase):
+    def test_paused_host_clean_denial_requires_correlated_device_evidence(self):
+        log = real_host_log("allow", deny_cycle=2, clean_return=True)
+        self.assertEqual(log.splitlines(), [bench_evidence.H1_ALLOWED, bench_evidence.H1_DENIED])
+        # Both STOP rows, a best-effort final STOP with no row, or coalesced STOP rows.
+        for events in (H1_PAUSE_EVENTS, H1_PAUSE_EVENTS[:-1], H1_PAUSE_EVENTS[:7] + H1_PAUSE_EVENTS[-1:]):
+            self.assertEqual(h1_pause_gate_stop(log, 0, H1_ALLOW_READY, events, events[6]),
+                             {"resume_path": "gate-stop", "last_run_to_off_ms": 201})
+        # The documented 200 ms lease and 300 ms process observation endpoints still apply.
+        for delay in (200, 300):
+            events = [dict(event) for event in H1_PAUSE_EVENTS]
+            events[6]["device_ms"] = 100 + delay
+            for event in events[7:]:
+                event["device_ms"] = 101 + delay
+            self.assertIsNotNone(h1_pause_gate_stop(log, 0, H1_ALLOW_READY, events, events[6]))
+
+    def test_pause_exit_zero_log_is_insufficient(self):
+        log = real_host_log("allow", deny_cycle=2, clean_return=True)
+        for bad_log in ("", log.splitlines()[1], log + "unexpected output\n", log + "Traceback (most recent call last):\n",
+                        log + "시험: fault\n", log.replace(bench_evidence.H1_DENIED, "시험 종료: LED OFF"),
+                        real_host_log("allow", clean_return=True)):
+            self.assertIsNone(h1_pause_gate_stop(bad_log, 0, H1_ALLOW_READY, H1_PAUSE_EVENTS, H1_PAUSE_EVENTS[6]))
+        for code in (1, -9):
+            self.assertIsNone(h1_pause_gate_stop(log, code, H1_ALLOW_READY, H1_PAUSE_EVENTS, H1_PAUSE_EVENTS[6]))
+        for ready in (None, "unreadable", {}, {"gate_pid": 1}, {"gate_pid": 1, "fault": "person"}):
+            self.assertIsNone(h1_pause_gate_stop(log, 0, ready, H1_PAUSE_EVENTS, H1_PAUSE_EVENTS[6]))
+
+    def test_pause_exit_zero_rejects_missing_or_conflicting_device_evidence(self):
+        log = real_host_log("allow", deny_cycle=2, clean_return=True)
+        stopped = H1_PAUSE_EVENTS[6]
+        for events in ([], H1_PAUSE_EVENTS[6:], H1_PAUSE_EVENTS[:7],
+                       H1_PAUSE_EVENTS[:5] + H1_PAUSE_EVENTS[6:],
+                       H1_PAUSE_EVENTS[:4] + H1_PAUSE_EVENTS[5:],
+                       H1_PAUSE_EVENTS + [H1_PAUSE_EVENTS[4]],
+                       H1_PAUSE_EVENTS[:5] + [dict(stopped, device_ms=102)] + H1_PAUSE_EVENTS[5:],
+                       H1_PAUSE_EVENTS + [None]):
+            self.assertIsNone(h1_pause_gate_stop(log, 0, H1_ALLOW_READY, events, stopped), events)
+        for index, change in ((4, {"on": False}), (4, {"sequence": 2}),
+                              (5, {"reason": "status"}), (5, {"sequence": 5}), (5, {"renewed_ms": 130}),
+                              (5, {"device_ms": 99}), (6, {"reason": "stop"}), (6, {"sequence": 5}),
+                              (6, {"renewed_ms": 101}), (6, {"device_ms": 299}), (6, {"device_ms": 401}),
+                              (7, {"on": True}), (7, {"reason": "run"}), (7, {"reason": "unarmed"}),
+                              (7, {"sequence": 4}), (7, {"renewed_ms": 335}), (7, {"device_ms": 300}),
+                              (8, {"sequence": 7}), (8, {"sequence": 5}), (8, {"on": 0}),
+                              (8, {"sequence": None})):
+            events = [dict(event) for event in H1_PAUSE_EVENTS]
+            events[index].update(change)
+            self.assertIsNone(h1_pause_gate_stop(log, 0, H1_ALLOW_READY, events, events[6]), (index, change))
+        self.assertIsNone(h1_pause_gate_stop(log, 0, H1_ALLOW_READY, H1_PAUSE_EVENTS, H1_PAUSE_EVENTS[-1]))
+
     def test_interrupt_stop_evidence_cannot_fall_back_to_lease_expiry(self):
         tree = ast.parse(Path(__file__).with_name('bench_verify.py').read_text())
         attempt = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'host_attempt')

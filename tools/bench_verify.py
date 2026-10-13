@@ -12,8 +12,8 @@ import time
 
 from bench_link import LinkError, SerialLink
 from bench_gate import BenchGate
-from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, h1_timing_loss,
-                            scheduling_loss)
+from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, h1_pause_gate_stop,
+                            h1_timing_loss, scheduling_loss)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "bench"
@@ -173,10 +173,17 @@ def host_attempt(name, scenario="allow", interrupt=None):
                 if measured_loss:
                     stopped = measured_loss
                     availability = "host-scheduling-loss"
-            else:
-                assert code != 0, "interrupted host unexpectedly reported success"
             time.sleep(.05)
             events = device.events()
+            resume = {}
+            if interrupt is not None:
+                # SIGSTOP can land after STATUS, inside the gate cycle. A resumed gate
+                # denial returns normally; accept it only with final host/device evidence.
+                gate_stop = (h1_pause_gate_stop(Path(log.name).read_text(), code, ready_state(ready), events, stopped)
+                             if interrupt == "pause" and scenario == "allow" else None)
+                assert code != 0 or gate_stop, "interrupted host unexpectedly reported success"
+                if interrupt == "pause":
+                    resume["resume_path"] = "gate-stop" if gate_stop else "error-exit"
             assert not any(e["on"] for e in events[events.index(stopped) + 1:])
             last_on = next(e for e in reversed(events) if e["on"])
             delay = stopped["device_ms"] - last_on["renewed_ms"]
@@ -184,7 +191,7 @@ def host_attempt(name, scenario="allow", interrupt=None):
             # scheduling/PTY overhead. It is not a physical timing acceptance gate.
             assert 0 <= delay <= 300, f"native process stop too late: {delay}ms"
             return {"case": name, "passed": True, "positive_control": True,
-                    "availability": availability,
+                    "availability": availability, **resume,
                     "stop_reason": stopped["reason"], "last_run_to_off_ms": delay, "host_exit": code}
     finally:
         if host and host.poll() is None:
