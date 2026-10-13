@@ -4,7 +4,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 from live_stream import LiveHub, start_server
 from public_report import (NEGATIVE_REASONS, PERMIT_MAX_ATTEMPTS, PERMIT_NEGATIVES, RECOVERY_REASONS,
-                           report, render_report)
+                           SENSOR_STOP_REASONS, report, render_report)
 
 
 def ms(offset):
@@ -69,6 +69,34 @@ def permit_result(cases):
 
 def permit_check(value):
     return next(row for row in report(value)['checks'] if row['id']=='controller_permits')
+
+
+FAULT_CHECKS = ('sensor_disconnect', 'sensor_coverage', 'arm_kill', 'arm_stall', 'arm_delay', 'compound', 'base_deadman')
+
+
+def fault_result():
+    """Fault rows shaped like pull request run 38099376514 (all timing samples inside their limits)."""
+    sensor = {'ok': True, 'unknown': {'healthy': False}, 'recovery_did_not_rearm': True,
+              'post_recovery_proposal_rejected_by_engine': True}
+    return {'sensor_faults': {'disconnect': dict(sensor, stop_reason='world_admission_budget_exhausted',
+                                                 fault_to_zero_wall_ms=185.7),
+                              'coverage': dict(sensor, stop_reason='perception_unknown', fault_to_zero_wall_ms=147.6,
+                                               attempt=1)},
+            'arm_faults': {case: {'ok': True, 'old_goal_did_not_resume': True, 'post_stop_drift_rad': .0002,
+                                  'pre_fault_lease_age_wall_ms': 80.5, 'pre_fault_lease_age_sim_ms': 50,
+                                  'fault_to_hold_wall_ms': 157.0, 'fault_to_hold_sim_ms': 92}
+                           for case in ('kill', 'stall', 'delay')},
+            'compound_faults': {'ok': True, 'status': 'complete', 'iterations': [
+                {'ok': True, 'iteration': index + 1, 'proposal_hz_requested': hz, 'moving_positive_control': True,
+                 'signer_stop_observed': True, 'recovery_did_not_rearm': True,
+                 'post_recovery_proposal_rejected_by_engine': True, 'engine_rejections_after_zero': 40,
+                 'stop_reason': 'world_admission_budget_exhausted', 'fault_to_zero_wall_ms': 169.4}
+                for index, hz in enumerate((40, 80, 100, 40, 80, 100))]},
+            'gate_kill_to_base_stop_wall_ms': 261.4}
+
+
+def fault_checks(value):
+    return {row['id']: row for row in report(value)['checks'] if row['id'] in FAULT_CHECKS}
 
 
 class PublicReportTest(unittest.TestCase):
@@ -216,6 +244,97 @@ class PublicReportTest(unittest.TestCase):
         # The base has no simulation stamps and needs no arm hold.
         self.assertNotIn('controller_hold', cases['base_replay'])
         self.assertEqual(permit_check(value)['status'], 'passed')
+
+    def test_single_timing_samples_are_measured_never_judged(self):
+        value = fault_result()
+        checks = fault_checks(value)
+        self.assertEqual({key: row['status'] for key, row in checks.items()}, dict.fromkeys(FAULT_CHECKS, 'passed'))
+        self.assertEqual(checks['sensor_coverage']['timing'], [{'name': 'fault_to_zero_wall_ms', 'value_ms': 147.6,
+                                                                'limit_ms': 400, 'within_limit': True}])
+        # Over every unchanged limit, including the coverage samples that failed runs
+        # 37271465490 (408.1 ms) and 37273174223 (436.8 ms): recorded, still passed.
+        value['sensor_faults']['disconnect']['fault_to_zero_wall_ms'] = 408.1
+        value['sensor_faults']['coverage']['fault_to_zero_wall_ms'] = 436.8
+        for row in value['arm_faults'].values():
+            row.update(pre_fault_lease_age_wall_ms=100.1, pre_fault_lease_age_sim_ms=-3,
+                       fault_to_hold_wall_ms=400.1, fault_to_hold_sim_ms=321)
+        value['compound_faults']['iterations'][2]['fault_to_zero_wall_ms'] = 400.1
+        value['gate_kill_to_base_stop_wall_ms'] = 3000.1
+        checks = fault_checks(value)
+        self.assertEqual({key: row['status'] for key, row in checks.items()}, dict.fromkeys(FAULT_CHECKS, 'passed'))
+        missed = {(key, entry['name'], entry['value_ms'], entry['limit_ms'])
+                  for key, row in checks.items() for entry in row['timing'] if not entry['within_limit']}
+        self.assertEqual(missed, {('sensor_disconnect', 'fault_to_zero_wall_ms', 408.1, 400),
+                                  ('sensor_coverage', 'fault_to_zero_wall_ms', 436.8, 400),
+                                  ('compound', 'iteration_3_fault_to_zero_wall_ms', 400.1, 400),
+                                  ('base_deadman', 'gate_kill_to_base_stop_wall_ms', 3000.1, 3000)} | {
+            ('arm_' + case, name, sample, limit) for case in ('kill', 'stall', 'delay') for name, sample, limit in (
+                ('pre_fault_lease_age_wall_ms', 100.1, 100), ('fault_to_hold_wall_ms', 400.1, 400),
+                ('fault_to_hold_sim_ms', 321, 320))})
+        # A sample equal to its limit is within it, as the old verdict counted it.
+        value['sensor_faults']['disconnect']['fault_to_zero_wall_ms'] = 400
+        self.assertIn({'name': 'fault_to_zero_wall_ms', 'value_ms': 400, 'limit_ms': 400, 'within_limit': True},
+                      fault_checks(value)['sensor_disconnect']['timing'])
+        # A negative lease age (clock-view skew) is shown, not dropped, and decides nothing.
+        self.assertIn({'name': 'pre_fault_lease_age_sim_ms', 'value_ms': -3, 'limit_ms': 150, 'within_limit': True},
+                      checks['arm_kill']['timing'])
+        self.assertIn('CI non-blocking measurement', render_report(report(value)).decode())
+        # An oversized (forged or corrupt) sample is dropped, never raised on: report() accepts any input.
+        value['arm_faults']['kill']['pre_fault_lease_age_sim_ms'] = 10**400
+        value['sensor_faults']['coverage']['fault_to_zero_wall_ms'] = 10**400
+        checks = fault_checks(value)
+        self.assertEqual(checks['arm_kill']['status'], 'passed')
+        self.assertNotIn('pre_fault_lease_age_sim_ms', [entry['name'] for entry in checks['arm_kill']['timing']])
+        # Without a measured zero the coverage check fails, as before.
+        self.assertEqual((checks['sensor_coverage']['status'], checks['sensor_coverage']['timing']), ('failed', []))
+
+    def test_fail_closed_fault_evidence_still_decides(self):
+        def status(check, path, invalid):
+            value = fault_result()
+            *keys, field = path
+            row = value
+            for key in keys:
+                row = row[key]
+            if invalid is KeyError:
+                row.pop(field)
+            else:
+                row[field] = invalid
+            return fault_checks(value)[check]['status']
+        sensor = (('ok', False), ('recovery_did_not_rearm', False),
+                  ('post_recovery_proposal_rejected_by_engine', False), ('fault_to_zero_wall_ms', -1),
+                  ('fault_to_zero_wall_ms', KeyError), ('stop_reason', None), ('stop_reason', 'timeout'))
+        for case in ('disconnect', 'coverage'):
+            for field, invalid in sensor:
+                self.assertEqual(status('sensor_' + case, ('sensor_faults', case, field), invalid), 'failed',
+                                 case + field + repr(invalid))
+            self.assertEqual(status('sensor_' + case, ('sensor_faults', case, 'unknown', 'healthy'), True), 'failed')
+        # Lost coverage passes only on the perception-unknown revocation, on attempt 1..3.
+        for reason in set(SENSOR_STOP_REASONS) - {'perception_unknown'}:
+            self.assertEqual(status('sensor_coverage', ('sensor_faults', 'coverage', 'stop_reason'), reason), 'failed')
+            self.assertEqual(status('sensor_disconnect', ('sensor_faults', 'disconnect', 'stop_reason'), reason), 'passed')
+        for invalid in (0, PERMIT_MAX_ATTEMPTS + 1, True, 1.0, '1', None, KeyError):
+            self.assertEqual(status('sensor_coverage', ('sensor_faults', 'coverage', 'attempt'), invalid), 'failed',
+                             repr(invalid))
+        value = fault_result()
+        value['sensor_faults']['coverage']['attempt'] = PERMIT_MAX_ATTEMPTS
+        coverage = fault_checks(value)['sensor_coverage']
+        self.assertEqual((coverage['status'], coverage['measurements']['inconclusive_attempts']), ('passed', 2))
+        for field, invalid in (('ok', False), ('old_goal_did_not_resume', False), ('post_stop_drift_rad', .021),
+                               ('post_stop_drift_rad', KeyError), ('fault_to_hold_wall_ms', -0.1),
+                               ('fault_to_hold_sim_ms', -1), ('fault_to_hold_sim_ms', KeyError)):
+            self.assertEqual(status('arm_stall', ('arm_faults', 'stall', field), invalid), 'failed', field + repr(invalid))
+        # The harness's polled pre-fault lease check is the positive control: its record must
+        # be present, while the lease ages at the fault are measurements.
+        for invalid in (KeyError, -0.1, None):
+            self.assertEqual(status('arm_stall', ('arm_faults', 'stall', 'pre_fault_lease_age_wall_ms'), invalid),
+                             'failed', repr(invalid))
+        self.assertEqual(status('arm_stall', ('arm_faults', 'stall', 'pre_fault_lease_age_sim_ms'), KeyError), 'passed')
+        for field, invalid in (('stop_reason', None), ('engine_rejections_after_zero', 9),
+                               ('fault_to_zero_wall_ms', KeyError), ('signer_stop_observed', False)):
+            self.assertEqual(status('compound', ('compound_faults', 'iterations', 4, field), invalid), 'failed',
+                             field + repr(invalid))
+        self.assertEqual(status('base_deadman', ('gate_kill_to_base_stop_wall_ms',), -1), 'failed')
+        self.assertEqual(status('base_deadman', ('gate_kill_to_base_stop_wall_ms',), KeyError), 'not_run')
 
     def test_absent_partial_or_forged_summary_is_never_a_pass(self):
         self.assertEqual(report()["status"], "pending")

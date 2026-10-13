@@ -211,8 +211,23 @@ cannot resume motion. Mechanically fresh observations with unknown lidar
 coverage are delivered as confidence zero, never as a verified empty scene.
 The root-signed reference policy's `perception-unknown` rule rejects and revokes
 motion below 0.9 confidence. The coverage-loss oracle requires an accepted
-confidence-zero world, its named Rust revocation, a disarmed status and a
-subsequent measured zero command within the original 400 ms wall-clock budget.
+confidence-zero world, its named Rust revocation, a disarmed status, a
+subsequent measured zero command and no motion command received at or after the
+first disarmed engine state (a conservative receive-order check without a
+timing threshold or exceptions for allegedly delayed commands, see the
+[Gazebo runbook](gazebo-reference.md)). An attempt is inconclusive, never a
+pass, only when a named world-authority rejection was the first loss of
+authority after the fault and came before the unknown world was accepted.
+The protected engine log must establish this order, including the named
+rejection's `Denied` stop at the same timestamp; earlier tick-only stops,
+revocations or other rejections prevent a retry. ROS callback adjacency alone
+does not establish the cause. The attempt must also finish with
+the engine disarmed, a later zero observed and no motion command after the
+first disarmed engine state, the sensor unhealthy, a measured stop and recovery
+without rearming; anything else fails. At most three attempts run, each from a fresh setup, and three
+inconclusive attempts fail. The original 400 ms wall-clock budget is unchanged
+and recorded as a CI non-blocking measurement: one sample from a shared runner
+does not decide the check.
 When the observation or signing path disappears, engine `stale_world` or a
 disarmed rejection with the exact response-boundary world-expiry error remains
 valid evidence. Joint/odom source-age checks and the household failure guard

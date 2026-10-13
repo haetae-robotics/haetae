@@ -766,6 +766,10 @@ def exercise(world, root, binary, roles, processes, start, stop, command, wait_f
     try:
         resetter, reset_log = start([sys.executable, str(REPO / "ros/gazebo/controller_reset.py"), "--stdio"],
             root, "controller_reset", processes, env, input_pipe=True)
+        # Allow process startup and its bounded service discovery before any reset
+        # request; discovery must not consume the reset-completion wait below.
+        wait_for(lambda: '{"ready": true}' in (root / "controller_reset.log").read_text(),
+                 20, processes, "trusted controller maintenance service discovered")
         # Actor readiness is synchronization only, never evidence of admission
         # or blocking. Trusted counters and actual motion still decide verdicts.
         wait_for(lambda: '{"ready": true}' in (root / "controller_attacker.log").read_text(),
