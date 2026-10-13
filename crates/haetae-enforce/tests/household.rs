@@ -145,6 +145,82 @@ fn ordinary_ttl_expiry_owns_completion_at_the_exact_boundary() {
 }
 
 #[test]
+fn trusted_admission_clock_owns_full_chunk_completion() {
+    for proposed_at in [980, 1000, 1001, 1020] {
+        let mut g = gate();
+        g.handle(world(1000, 0.0, Some(semantic(1000))), 1000);
+        arm(&mut g, Source::Vla);
+        let mut p = proposal(2, Source::Vla, Some(binding()));
+        p.timestamp_ms = proposed_at;
+        let admitted = g.handle(Inbound::Proposal(p), 1000);
+        assert!(
+            matches!(admitted.arm, Some(ArmOutput::Execute { .. })),
+            "{admitted:?}"
+        );
+        let Some(haetae_runtime::Outcome::Decision(decision)) = &admitted.outcome else {
+            panic!("{admitted:?}");
+        };
+        assert_eq!(decision.expires_ms, Some(2000));
+        let moving = g.handle(world(1100, 0.05, Some(semantic(1100))), 1100);
+        assert!(moving.stop.is_none(), "{moving:?}");
+        g.handle(world(1950, 0.25, Some(semantic(1950))), 1950);
+        let expired = g.tick(2000);
+        assert_eq!(expired.stop, Some(haetae_enforce::StopReason::Expired));
+        let history = expired.status.history.as_ref().unwrap();
+        assert_eq!(
+            history.interrupted_motions, 0,
+            "proposal timestamp {proposed_at}"
+        );
+        assert_eq!(history.blocked_task_revision, 0);
+        assert!(history.motion_pending);
+        assert_eq!(history.settled_motions, 0);
+        cancelled(expired);
+        g.handle(world(2010, 0.25, Some(semantic(2010))), 2010);
+        g.handle(world(2020, 0.25, Some(semantic(2020))), 2020);
+        let stopped = g.handle(world(2030, 0.25, Some(semantic(2030))), 2030);
+        let history = stopped.status.history.unwrap();
+        assert!(!history.motion_pending);
+        assert_eq!(history.settled_motions, 1);
+        assert_eq!(history.interrupted_motions, 0);
+        assert_eq!(history.blocked_task_revision, 0);
+    }
+}
+
+#[test]
+fn full_chunk_expiry_still_requires_the_measured_endpoint() {
+    let mut g = gate();
+    g.handle(world(1000, 0.0, Some(semantic(1000))), 1000);
+    arm(&mut g, Source::Vla);
+    let mut p = proposal(2, Source::Vla, Some(binding()));
+    p.timestamp_ms = 1001;
+    let admitted = g.handle(Inbound::Proposal(p), 1000);
+    assert!(matches!(admitted.arm, Some(ArmOutput::Execute { .. })));
+    let moving = g.handle(world(1100, 0.05, Some(semantic(1100))), 1100);
+    assert!(moving.stop.is_none(), "{moving:?}");
+    let near_endpoint = g.handle(world(1950, 0.25, Some(semantic(1950))), 1950);
+    assert!(near_endpoint.stop.is_none(), "{near_endpoint:?}");
+    let expired = g.tick(2000);
+    assert_eq!(
+        expired
+            .status
+            .history
+            .as_ref()
+            .unwrap()
+            .blocked_task_revision,
+        0
+    );
+    cancelled(expired);
+    // Stop feedback outside the unchanged 0.05 rad endpoint tolerance cannot settle.
+    g.handle(world(2010, 0.19, Some(semantic(2010))), 2010);
+    g.handle(world(2020, 0.19, Some(semantic(2020))), 2020);
+    let stopped = g.handle(world(2030, 0.19, Some(semantic(2030))), 2030);
+    let history = stopped.status.history.unwrap();
+    assert_eq!(history.settled_motions, 0);
+    assert_eq!(history.interrupted_motions, 1);
+    assert_eq!(history.blocked_task_revision, 1);
+}
+
+#[test]
 fn settled_motion_requires_semantic_stop_evidence_within_stricter_policy_age() {
     let mut strict = policy();
     strict.freshness.world_max_age_ms = 50;

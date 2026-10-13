@@ -609,8 +609,7 @@ impl Enforcer {
                 };
                 active.expires_ms
                     >= active
-                        .proposal
-                        .timestamp_ms
+                        .started_ms
                         .saturating_add(points.last().unwrap().time_from_start_ms)
             });
             self.clear_active_with_completion(expected);

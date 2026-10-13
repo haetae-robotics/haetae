@@ -1,15 +1,54 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from bench_provenance import require_verified_binary
-from safe_stage import prepare_stage, MARKER
+from safe_stage import prepare_stage, MARKER, MARKER_CONTENT
 
 
 class OperatorGuardTest(unittest.TestCase):
+    def test_stage_rejects_linked_marker_without_overwriting_unrelated_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            repo = root / 'repo'
+            repo.mkdir()
+            unrelated = root / 'unrelated'
+            unrelated.write_bytes(MARKER_CONTENT)
+            for kind in ('symbolic', 'hard'):
+                with self.subTest(kind=kind):
+                    stage = root / kind
+                    stage.mkdir()
+                    marker = stage / MARKER
+                    if kind == 'symbolic':
+                        marker.symlink_to(unrelated)
+                    else:
+                        os.link(unrelated, marker)
+                    with self.assertRaises(ValueError):
+                        prepare_stage(stage, repo)
+                    self.assertEqual(unrelated.read_bytes(), MARKER_CONTENT)
+                    marker.unlink()
+
+    def test_stage_requires_intact_marker_and_does_not_rewrite_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            repo, stage = root / 'repo', root / 'stage'
+            repo.mkdir()
+            stage.mkdir()
+            marker = stage / MARKER
+            marker.write_bytes(b'unrelated content\n')
+            with self.assertRaises(ValueError):
+                prepare_stage(stage, repo)
+            self.assertEqual(marker.read_bytes(), b'unrelated content\n')
+            marker.write_bytes(MARKER_CONTENT)
+            marker.chmod(0o444)
+            before = marker.stat()
+            self.assertEqual(prepare_stage(stage, repo), stage)
+            self.assertEqual(marker.stat().st_mtime_ns, before.st_mtime_ns)
+
     def test_stage_rejects_source_home_link_and_unmarked_contents(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
