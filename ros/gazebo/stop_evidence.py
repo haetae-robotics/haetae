@@ -156,7 +156,9 @@ def coverage_cut_record(log_path, since_ms, cut_error, unknown_stamp, *, root=No
         stamp, kind, payload = row.get("ts_ms"), row.get("kind"), row.get("payload")
         if type(stamp) is not int or not isinstance(payload, dict):
             return False
-        if stamp < since_ms or complete:
+        # SillokWriter may append an automatic seal between any two engine
+        # records. Its wall-clock timestamp is not an engine event or a stop.
+        if kind == "seal" or stamp < since_ms or complete:
             continue
         if cut_ms is None:
             if kind == "reject":

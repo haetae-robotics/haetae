@@ -362,6 +362,23 @@ class CoverageCutFirstTest(unittest.TestCase):
         records.insert(1, {"kind": "stop", "ts_ms": 67480, "payload": {"reason": "Expired"}})
         self.assertIsNotNone(self.classify(records=records))
 
+    def test_automatic_seal_does_not_interrupt_adjacent_engine_reject_and_stop(self):
+        records = cut_records()
+        seal = {"kind": "seal", "ts_ms": 1_791_687_710_139,
+                "payload": {"key_id": "a" * 16, "sig": "b" * 128}}
+        # append() may seal immediately after the named reject at its entry-count
+        # boundary, before the engine writes Denied using its simulation clock.
+        records.insert(2, seal)
+        self.assertEqual(self.classify(records=records)["inconclusive"]["cut"], CUT)
+        for broken in (
+                records[:3] + records[4:],  # The seal cannot replace the actual stop.
+                records[:3] + [{"kind": "stop", "ts_ms": 67498, "payload": {"reason": "Denied"}}] + records[4:],
+                records[:3] + [{"kind": "world", "ts_ms": 67497,
+                               "payload": {"stamp_ms": 67387, "confidence": 1}}] + records[3:],
+                records[:2] + [dict(seal, payload=None)] + records[3:]):
+            with self.subTest(records=broken):
+                self.assertIsNone(self.classify(records=broken))
+
     def test_incomplete_or_contradictory_engine_sequence_never_allows_retry(self):
         records = cut_records()
         for name, evidence in {
