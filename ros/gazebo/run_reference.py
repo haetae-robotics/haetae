@@ -968,7 +968,9 @@ def run(root, binary, live=None, wait_for_viewer=False, live_hold_seconds=0,
                          "browser start command")
         if household_hazards:
             from hazard_lab import run_lab
-            result = run_lab(world,binary,model.read_text(),root,processes,wait_for,review_scene)
+            from hazard_dispatch_evidence import dispatch_denial
+            result = run_lab(world,binary,model.read_text(),root,processes,wait_for,review_scene,
+                dispatch_evidence=partial(dispatch_denial, gate_directory / "sillok.jsonl", **log_boundary))
             result["source_revision"] = os.environ.get("HAETAE_REVISION", "unknown")
             (root / "result.json").write_text(json.dumps(result,ensure_ascii=False,indent=2))
             (root / "verification-report.json").write_text(json.dumps(public_report(result,

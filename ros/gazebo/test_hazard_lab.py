@@ -20,6 +20,7 @@ from hazard_lab import (
     tracking_start_ms,
 )
 from public_report import report, failed_household_result
+from hazard_diagnostics import observation_snapshot, ObservationUnavailable
 
 
 class WorldPublicationTest(unittest.TestCase):
@@ -89,6 +90,7 @@ class WorldPublicationTest(unittest.TestCase):
             "active": {"case": "human", "stage": 1}, "CASES": __import__("hazard_lab").CASES,
             "kinematics": SimpleNamespace(path=prepare, project_path=project,
                 point=lambda *_: point.copy()), "fresh_sample": fresh_sample,
+            "observation_snapshot": observation_snapshot, "ObservationUnavailable": ObservationUnavailable,
             "now": lambda: clock["ms"], "time": SimpleNamespace(monotonic=lambda: clock["ms"] / 1000),
             "wait_for": wait, "processes": {}}
         exec(compile(ast.Module(body=methods, type_ignores=[]), "actual-slow-fk-observation-order", "exec"), scope)

@@ -17,6 +17,8 @@ import subprocess
 import threading
 import time
 from xml.etree import ElementTree as E
+from hazard_diagnostics import (DispatchWatch, ObservationSnapshot, ObservationUnavailable,
+                                OmissionHistory, observation_snapshot, outcome_summary)
 
 CASES = [
     ("human", "사람 보호 공간", "knife", "human", "human:protected-volume"),
@@ -465,7 +467,7 @@ class HazardJudge:
         self.process.stdout.close()
 
 
-def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
+def run_lab(world, binary, urdf, root, processes, wait_for, review_scene, *, dispatch_evidence=None):
     if not world.isolated:
         raise ValueError("household lab requires the isolated signed graph")
     native = NativeFixtures()
@@ -500,6 +502,9 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                         "base_pose": None, "base_yaw": None, "step": 0, "step_id": None}
     verified_denial: dict[str, Optional[float]] = {"at": None}
     arm_dispatch = {"sent": False, "initialized": False}
+    omissions = OmissionHistory()
+    last_preflight = {}
+    dispatch_watch = None
     policy_binding = kinematics.household_policy(urdf)
     world.hazard_guard = lambda: not motion_guard["active"] or healthy()
 
@@ -600,31 +605,43 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 native.failure = str(exc)
                 return
 
-    def request(item, points, contents=(), *, base_path=None):
+    def request(item, points, contents=(), *, base_path=None, diagnostic=None):
         case = active["case"]
         sample = native.sample(f"hazard_{case}_target")
         item_sample = native.sample(f"hazard_{case}_item")
-        if (
-            native.failure
-            or not fresh_sample(sample, now(), time.monotonic())
-            or not fresh_sample(item_sample, now(), time.monotonic())
-            or time.monotonic() - world.joint_received > 0.2
-            or time.monotonic() - world.odom_received > 0.2
-        ):
-            raise RuntimeError("hazard geometry or joint feedback stale")
+        joint, odom = world.joint, world.odom
+        joint_received, odom_received = world.joint_received, world.odom_received
+        sim_ms, wall = now(), time.monotonic()
+        snapshot = observation_snapshot(sim_ms, wall, sample, item_sample, joint, odom,
+                                        joint_received, odom_received)
+        if diagnostic is not None:
+            diagnostic["observation"] = snapshot
+        reasons = []
+        if native.failure:
+            reasons.append("native_fixture_failure")
+        if not fresh_sample(sample, sim_ms, wall):
+            reasons.append("target_missing_or_stale")
+        if not fresh_sample(item_sample, sim_ms, wall):
+            reasons.append("item_missing_or_stale")
+        if wall - joint_received > 0.2:
+            reasons.append("joint_receive_stale")
+        if wall - odom_received > 0.2:
+            reasons.append("odom_receive_stale")
+        if reasons:
+            raise ObservationUnavailable(reasons, snapshot)
         if abs(world.speed()) >= 0.01:
-            raise RuntimeError("base must be stationary")
+            raise ObservationUnavailable(("base_not_stationary",), snapshot)
         position, stamp = sample[:2]
         path = (kinematics.path(points, world.pose(), world.heading())
                 if base_path is None else
                 kinematics.project_path(base_path, world.pose(), world.heading()))
         joint_stamp = (
-            world.joint.header.stamp.sec * 1000
-            + world.joint.header.stamp.nanosec // 1_000_000
+            joint.header.stamp.sec * 1000
+            + joint.header.stamp.nanosec // 1_000_000
         )
         odom_stamp = (
-            world.odom.header.stamp.sec * 1000
-            + world.odom.header.stamp.nanosec // 1_000_000
+            odom.header.stamp.sec * 1000
+            + odom.header.stamp.nanosec // 1_000_000
         )
         observed = kinematics.point(
             world.arm_positions(), world.pose(), world.heading()
@@ -659,7 +676,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             ],
         }
 
-    def fresh_request(item, points, contents=()):
+    def fresh_request(item, points, contents=(), *, diagnostic=None):
         # Hundreds of full FK evaluations can consume the freshness window on
         # a slow host. Prepare only immutable proposal geometry before reading
         # observations; do not cache measurements, facts or their timestamps.
@@ -670,7 +687,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         checked = None
         def ready():
             nonlocal checked
-            checked = request(item, points, contents, base_path=base_path)
+            checked = request(item, points, contents, base_path=base_path, diagnostic=diagnostic)
             age = checked["now_ms"] - checked["observed_ms"]
             return 0 <= age < 75
 
@@ -696,18 +713,31 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         with semantic_lock:
             if not active["case"] or semantic_context["item"] is None:
                 return None
+            diagnostic = {}
             try:
                 positions = world.arm_positions()
                 measured = request(semantic_context["item"], ((0, positions), (1, positions)),
-                                   semantic_context["contents"])
-            except (RuntimeError, ValueError, KeyError):
+                                   semantic_context["contents"], diagnostic=diagnostic)
+            except ObservationUnavailable as exc:
+                record_omission(exc.reasons, exc.snapshot, fused_stamp_ms)
+                return None
+            except (RuntimeError, ValueError, KeyError) as exc:
+                # Do not log arbitrary exception payloads. Capture only the
+                # exception class and original scalar observations available.
+                snapshot = diagnostic.get("observation") or current_observations()
+                record_omission((type(exc).__name__,), snapshot, fused_stamp_ms)
                 return None
             # A registered container stays in the closed-scene observation even
             # when the root lab moves its native prop offstage. Fresh geometry
             # comes from Gazebo; contents remain explicitly injected test facts.
             if active["case"] != "chemicals":
                 container = native.sample("hazard_chemicals_target")
-                if not fresh_sample(container, now(), time.monotonic()):
+                sim_ms, wall = now(), time.monotonic()
+                if not fresh_sample(container, sim_ms, wall):
+                    snapshot = ObservationSnapshot(sim_ms, wall, diagnostic["observation"].sources + (
+                        ("container", container[1] if container else None,
+                         container[2] if container else None),))
+                    record_omission(("container_missing_or_stale",), snapshot, fused_stamp_ms)
                     return None
                 pos = container[0]
                 measured["regions"].append({
@@ -734,6 +764,17 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     # lidar observation as the outer world; never renew time.
                     "observed_ms": min(measured["observed_ms"], fused_stamp_ms), "confidence": 1.0,
                     "coverage_known": True}
+
+    def current_observations():
+        target = native.sample(f"hazard_{active['case']}_target")
+        item = native.sample(f"hazard_{active['case']}_item")
+        return observation_snapshot(now(), time.monotonic(), target, item, world.joint, world.odom,
+                                    world.joint_received, world.odom_received)
+
+    def record_omission(reasons, snapshot, fused_stamp_ms):
+        omissions.record(reasons, snapshot, case=active["case"],
+                         task_revision=semantic_context["task_revision"],
+                         step_id=semantic_context["step_id"], fused_stamp_ms=fused_stamp_ms)
 
     def current_binding(item, contents=()):
         set_semantic_context(item, contents, new_step=True)
@@ -837,15 +878,19 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                 "signed_gate_rejection_observed": True, "denied_drift_rad": drift}
 
     def execute(points, item, contents=()):
+        nonlocal dispatch_watch
         # A completed arm lease intentionally unarms the source. This fixed
         # test explicitly requests a new lease only after ordinary completion;
         # a stale/denied/revoked/faulted gate is never automatically rearmed.
         rearm_for_test()
+        last_preflight.clear()
+        dispatch_watch = None
         # A stale local preflight is discarded before any actuator proposal.
         # Reacquire its observations/binding/verdict, boundedly, while the
         # already explicit rearm remains valid. Never retry a dispatched goal
         # or automatically rearm a denied/expired owner.
         preflight = []
+        last_preflight.update(case=active["case"], attempts=preflight, dispatched=False)
         for attempt in range(3):
             state = world.states[-1][1] if world.states else {}
             if (state.get("mode") != "normal" or "vla" not in state.get("armed", [])
@@ -853,7 +898,15 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                     or not world.controllers_unlocked()):
                 raise RuntimeError("household preflight lost explicit arm authority")
             binding = current_binding(item, contents)
-            checked = fresh_request(item, points, contents)
+            diagnostic = {}
+            last_preflight["binding"] = dict(binding)
+            try:
+                checked = fresh_request(item, points, contents, diagnostic=diagnostic)
+            finally:
+                if "observation" in diagnostic:
+                    last_preflight["observation"] = diagnostic["observation"].report()
+            last_preflight.update(judged_now_ms=checked["now_ms"],
+                                  judged_observed_ms=checked["observed_ms"])
             base, yaw = world.pose(), world.heading()
             target = native.sample(f"hazard_{active['case']}_target")[0]
             started_wall = time.monotonic()
@@ -874,7 +927,6 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                               "observation_age_sim_ms": now()-checked["observed_ms"]})
             if not stale:
                 break
-            (root / "hazard-preflight.json").write_text(json.dumps(preflight, indent=2))
         else:
             raise RuntimeError("household preflight freshness unavailable after three fresh checks")
         before = world.primary_joint()
@@ -893,12 +945,21 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             raise RuntimeError("hazard dispatch preparation exceeded 50 ms")
         rejected_before = world.guard_states[-1][1]["rejected_motion"]
         arm_dispatch["sent"] = True
+        sent_sim_ms = now()
         world.propose_arm_plan(points, semantic=binding)
-        (root / "hazard-preflight.json").write_text(json.dumps(preflight, indent=2))
+        dispatch_watch = DispatchWatch(dispatch_evidence, points=points, binding=binding,
+                                       sent_sim_ms=sent_sim_ms, sent_wall=accepted_after)
+        last_preflight.update(dispatched=True, sent_sim_ms=sent_sim_ms,
+                              sent_wall=accepted_after, plan_sha256=fingerprint)
         goal = points[-1][1][0]
+
+        def reached_goal():
+            dispatch_watch.check(world.outcomes)
+            return (abs(world.primary_joint() - goal) < 0.02
+                    and time.monotonic() - world.joint_received < 0.2)
+
         wait_for(
-            lambda: abs(world.primary_joint() - goal) < 0.02
-            and time.monotonic() - world.joint_received < 0.2,
+            reached_goal,
             6,
             processes,
             "hazard normal control reaches measured joint goal",
@@ -956,6 +1017,7 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
         moved = abs(world.primary_joint() - before)
         if moved < 0.1:
             raise AssertionError("normal control did not visibly move")
+        (root / "hazard-preflight.json").write_text(json.dumps(preflight, indent=2))
         return {
             "allowed": True,
             "measured_motion_rad": moved,
@@ -1254,6 +1316,9 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
             json.dumps(
                 {
                     "case": active["case"],
+                    "semantic_omissions": omissions.report(),
+                    "last_preflight": last_preflight,
+                    "dispatch_evidence": dispatch_watch.result if dispatch_watch else None,
                     "recent_controller_states": [state for _, state in world.guard_states[-100:]],
                     "failure_hold_observed": hold_observed,
                     "sim_ms": now(),
@@ -1302,12 +1367,9 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene):
                         else None
                     ),
                     "recent_outcomes": [
-                        {
-                            "error": r.get("error"),
-                            "decision": r.get("decision", {}).get("verdict"),
-                        }
+                        outcome_summary(r)
                         for _, r in [row for row in world.outcomes
-                                     if row[1].get("decision") or row[1].get("error")][-5:]
+                                     if row[1].get("decision") or row[1].get("rejected")][-5:]
                     ],
                 },
                 indent=2,

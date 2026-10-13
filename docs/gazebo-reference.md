@@ -327,6 +327,26 @@ disappearance retains the existing 200 ms world-age stop. Sensor recovery
 cannot rearm a stopped source without an explicit zero command; a latched
 household failure suppresses all world publication.
 
+Household failures also export `hazard-diagnostics.json`. Its last preflight
+retains the original item, target, joint and odometry stamps and receive times,
+with the simulation and monotonic clock samples used to calculate their ages.
+Semantic omissions retain the latest 32 causes and fixture-step contexts plus
+a total count; these scalar snapshots stay in memory until the failure report.
+No previous semantic snapshot substitutes for a missing observation. Recent
+outcome summaries include proposal IDs, fired rules and bounded `rejected.error`
+text. A rejection without proposal identity remains explicitly uncorrelated.
+
+While waiting for a normal household motion, a new denial notification can
+trigger a bounded protected-log lookup, at most three times per dispatch. An
+exact match requires the complete dispatched trajectory and semantic binding,
+source and engine timestamps no earlier than dispatch, and the following
+decision with the same proposal ID and engine timestamp. Such a `bul` fails
+immediately with that ID and its fired rules. Missing, partial, oversized or
+ambiguous evidence retains the original goal timeout; clock skew can also
+leave correlation unknown. These lookups run after dispatch, outside its
+unchanged 50 ms preparation limit. They add no command retry or acceptance
+condition, and retain the existing measured positive controls.
+
 The test removes the **native calibration geometry** to exercise lost coverage,
 and disconnects the lidar receiver to exercise stale input while the robot is
 moving. `sensor-faults.json` records unknown status, the named stop, measured
