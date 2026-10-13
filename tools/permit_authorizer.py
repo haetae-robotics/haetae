@@ -123,6 +123,10 @@ def serve(binary, key, config, path, scenario, seconds, ready_file=None, socket_
                           min(deadline, time.monotonic() + .5), stages)
                 if result["kind"] == "terminal":
                     print("Authorizer terminal: " + result["reason"], flush=True)
+                    if result["reason"] == "gate_denied":
+                        print(json.dumps({"event": "permit_gate_denial_diagnostic",
+                                          "cycles": authorizer.gate.denial_diagnostics(),
+                                          "stages": list(traces)}), flush=True)
                     if result["reason"] in ("authorizer_failure", "gate_expired"):
                         print(json.dumps({"event": "permit_ipc_failure", "stages": list(traces)}), flush=True)
                     return

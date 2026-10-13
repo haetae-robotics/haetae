@@ -788,7 +788,7 @@ class DriftGuardTest(unittest.TestCase):
         deadline = h2_timing_loss(self.run_relay(["ON", "ON"], late_op="RUN"), 1, "", PERSON_EVENTS)
         self.assertEqual((deadline["kind"], deadline["error"]), ("deadline", "permit IPC frame deadline expired"))
 
-    def run_authorizer(self, reply, stall=False):
+    def run_authorizer(self, reply, stall=False, cycles=None, sent=None, permits_before=0):
         """The real permit_authorizer.serve against fakes; returns its log as haetae-permit writes it.
 
         It reads one RUN request and answers with reply; then the relay closes the socket. stall: the
@@ -799,11 +799,15 @@ class DriftGuardTest(unittest.TestCase):
         clock = [100.]
         request = {"install": "01" * 16, "epoch": 1, "generation": 1, "sequence": 3, "challenge": 9,
                    "issued": 0, "nonce": "02" * 16, "op": "RUN"}
-        frames = iter([json.dumps(request).encode() + b"\n", b""])
+        frames = iter([json.dumps(request).encode() + b"\n"] * (permits_before + 1) + [b""])
         class Authorizer:
             def __init__(self, *args):
-                pass
+                self.gate = SimpleNamespace(denial_diagnostics=lambda: cycles or [])
+                self.remaining_permits = permits_before
             def approve(self, value, stages=None):
+                if self.remaining_permits:
+                    self.remaining_permits -= 1
+                    return {"kind": "permit", "signature": "00" * 32, "duration": 200, "remaining_ms": 50}
                 return reply
             def close(self):
                 pass
@@ -817,6 +821,8 @@ class DriftGuardTest(unittest.TestCase):
             def recv(self, size):
                 return next(frames)
             def sendall(self, raw):
+                if sent is not None:
+                    sent.append(raw)
                 if stall:
                     clock[0] += .6
         class Server:
@@ -849,7 +855,12 @@ class DriftGuardTest(unittest.TestCase):
         # terminal line, so a relay that received such a reply is never a timing loss.
         terminal = {"kind": "terminal", "reason": "gate_denied"}
         permit = {"kind": "permit", "signature": "00" * 32, "duration": 200, "remaining_ms": 50}
-        self.assertEqual(self.run_authorizer(terminal), "Authorizer terminal: gate_denied\n")
+        denied = self.run_authorizer(terminal).splitlines()
+        self.assertEqual(denied[0], "Authorizer terminal: gate_denied")
+        diagnostic = json.loads(denied[1])
+        self.assertEqual((diagnostic["event"], diagnostic["cycles"]), ("permit_gate_denial_diagnostic", []))
+        self.assertEqual(len(diagnostic["stages"]), 1)
+        self.assertIn("response_sent_ns", diagnostic["stages"][0])
         for reply, stall in ((permit, False), (permit, True), (terminal, True)):
             log = self.run_authorizer(reply, stall)
             self.assertNotIn("Authorizer terminal:", log)
@@ -863,6 +874,30 @@ class DriftGuardTest(unittest.TestCase):
                  "request_sent_ns": first - 10000, "response_first_byte_ns": sending + 10000,
                  "response_received_ns": sending + 20000}]) + H2_ERROR_PREFIX + "H2 USB response timeout\n"
             self.assertEqual(h2_timing_loss(relay, 1, log, REPLY_EVENTS) is None, stall, (reply, stall))
+
+    def test_gate_denial_diagnostic_follows_completed_terminal_and_keeps_wire_and_retry_rules(self):
+        terminal = {"kind": "terminal", "reason": "gate_denied"}
+        cycles = [{"result": "denied", "responses": []}]
+        sent = []
+        log = self.run_authorizer(terminal, cycles=cycles, sent=sent, permits_before=5)
+        lines = log.splitlines()
+        self.assertEqual(len(lines), 2)  # no positive-path logging across five permits
+        self.assertEqual(sent[-1], b'{"kind":"terminal","reason":"gate_denied"}\n')
+        self.assertEqual(len(sent), 6)
+        diagnostic = json.loads(lines[1])
+        self.assertEqual(diagnostic["cycles"], cycles)
+        self.assertEqual(len(diagnostic["stages"]), 4)
+        self.assertTrue(all("response_sent_ns" in stage for stage in diagnostic["stages"]))
+        self.assertNotIn('"event": "permit_ipc_failure"', log)
+        self.assertIsNone(h2_timing_loss(PR22_RELAY, 1, log, PR22_EVENTS))
+        stalled_sent = []
+        stalled = self.run_authorizer(terminal, stall=True, cycles=cycles, sent=stalled_sent)
+        self.assertEqual(stalled_sent, [sent[-1]])  # bytes written, send deadline not completed
+        self.assertNotIn("permit_gate_denial_diagnostic", stalled)
+        self.assertNotIn("Authorizer terminal:", stalled)
+        for reason in ("operator_complete", "gate_expired", "authorizer_failure"):
+            log = self.run_authorizer({"kind": "terminal", "reason": reason}, cycles=cycles)
+            self.assertNotIn("permit_gate_denial_diagnostic", log, reason)
 
     def test_real_relay_stop_decision_without_a_terminal_line_is_never_a_timing_loss(self):
         # The race through the real relay and authorizer: the relay's last RUN received a gate_denied

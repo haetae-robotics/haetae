@@ -63,6 +63,17 @@ authorization metadata and denial reasons, but cannot create valid authority.
 The MCU independently checks the signature/MAC; an IPC field never authorizes
 output by itself.
 
+After sending a `gate_denied` terminal, the authorizer writes a
+`permit_gate_denial_diagnostic` log event with at most the latest approved
+cycle and the denied cycle, two response summaries per cycle, and four IPC
+timing records. The summaries retain the exact request time, response phase,
+elapsed time, monotonic request/response timestamps, normalized stop/outcome/mode,
+health flags, world age and active expiry. The two clocks distinguish elapsed
+time from changes in the wall clock. The prior approval matters because a
+denial can clear the active expiry. Rule identifiers and rejection text are
+excluded; only a bounded rule count is recorded. These diagnostics add no positive-path log writes
+and do not change the terminal envelope, authorization or retry decisions.
+
 Per-command Ed25519 took 65.398 ms on the development board's USB reply and was
 correctly rejected under 50 ms. O3 also failed. Therefore **Ed25519-signed BIND
 and X25519 key agreement run under a 500 ms OFF-only initialization bound**;
