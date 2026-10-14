@@ -24,6 +24,53 @@ from hazard_diagnostics import observation_snapshot, ObservationUnavailable
 
 
 class WorldPublicationTest(unittest.TestCase):
+    def test_speculative_judge_waits_for_unavailable_observations(self):
+        tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
+        lab = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_lab")
+        method = next(n for n in lab.body if isinstance(n, ast.FunctionDef) and n.name == "fresh_request")
+        base_path = [{"x": .1, "y": .2, "z": .3}]
+        fresh = {"now_ms": 1000, "observed_ms": 926}
+        prepare = mock.Mock(return_value=base_path)
+
+        def wait(check, timeout, processes, description):
+            self.assertEqual(timeout, 3)
+            for _ in range(3):
+                if check():
+                    return 10.0
+            raise TimeoutError(description)
+
+        scope = {"wait_for": wait, "processes": {}, "ObservationUnavailable": ObservationUnavailable,
+                 "kinematics": SimpleNamespace(path=prepare)}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "actual-household-freshness", "exec"), scope)
+        for reason in ("target_missing_or_stale", "item_missing_or_stale",
+                       "joint_receive_stale", "odom_receive_stale"):
+            with self.subTest(reason=reason):
+                unavailable = ObservationUnavailable((reason,), None)
+                request = mock.Mock(side_effect=[unavailable,
+                    {"now_ms": 1000, "observed_ms": 800}, fresh])
+                scope["request"] = request
+                self.assertIs(scope["fresh_request"]("knife", []), fresh)
+                self.assertEqual(request.call_count, 3)
+                for call in request.call_args_list:
+                    self.assertIs(call.kwargs["base_path"], base_path)
+                prepare.assert_called_once_with([], (0.0, 0.0), 0.0)
+                prepare.reset_mock()
+
+        scope["request"] = mock.Mock(side_effect=ObservationUnavailable(("item_missing_or_stale",), None))
+        with self.assertRaisesRegex(TimeoutError, "fresh original household observation stamps"):
+            scope["fresh_request"]("knife", [])
+        self.assertEqual(scope["request"].call_count, 3)
+
+        for reasons in (("native_fixture_failure",), ("base_not_stationary",),
+                        ("target_missing_or_stale", "native_fixture_failure"), (), ("unknown",)):
+            with self.subTest(fatal=reasons):
+                unavailable = ObservationUnavailable(reasons, None)
+                scope["request"] = mock.Mock(side_effect=unavailable)
+                with self.assertRaises(ObservationUnavailable) as raised:
+                    scope["fresh_request"]("knife", [])
+                self.assertIs(raised.exception, unavailable)
+                self.assertEqual(scope["request"].call_count, 1)
+
     def test_speculative_judge_waits_for_original_simulation_stamps(self):
         tree = ast.parse(Path(__file__).with_name("hazard_lab.py").read_text())
         lab = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_lab")
