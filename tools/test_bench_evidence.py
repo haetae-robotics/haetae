@@ -313,7 +313,7 @@ H1_PAUSE_EVENTS = rows("""\
 
 
 def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cycle=None, failing_op=None,
-                  link_error=None, clean_return=False):
+                  link_error=None, clean_return=False, fail_after_fault=False, ready_file=None):
     """The real bench_host.run against fakes; returns its log as the host process writes it.
 
     statuses: STATUS replies in order (None: always ON). failing_cycle: that gate round trip takes
@@ -329,14 +329,20 @@ def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cyc
     class Gate:
         def __init__(self, binary):
             self.bridge = SimpleNamespace(child=SimpleNamespace(pid=1))
-        def cycle(self, fault):
+        def cycle(self, fault, on_fault=None):
             cycles[0] += 1
+            if fault and on_fault and fail_after_fault:
+                on_fault(fault)
             if cycles[0] == failing_cycle:
                 from bridge import require_fresh_actuation
                 require_fresh_actuation({"cmd": {"linear": .25, "angular": 0},
                                          "status": {"active_expires_ms": 10 ** 15, "world_age_ms": 0}},
                                         53.1, 0, 200, 50)
-            return cycles[0] != deny_cycle
+            if cycles[0] == deny_cycle:
+                return False
+            if fault and on_fault and not fail_after_fault:
+                on_fault(fault)
+            return True
         def remaining(self):
             return .05
         def close(self):
@@ -362,7 +368,7 @@ def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cyc
             patch.object(bench_host.time, "monotonic", monotonic), \
             contextlib.redirect_stdout(io.StringIO()) as output:
         try:
-            bench_host.run(Path("fake-gate"), "fake-port", scenario, 1)
+            bench_host.run(Path("fake-gate"), "fake-port", scenario, 1, ready_file)
         except Exception as exc:  # uncaught in the host process: the interpreter prints this
             return output.getvalue() + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         if clean_return:
@@ -949,6 +955,23 @@ class DriftGuardTest(unittest.TestCase):
                                H1_ALLOW_EVENTS)
         self.assertEqual((stale["kind"], stale["error"]),
                          ("deadline", "bridge.StaleActuation: stale actuation response: elapsed 53.1 ms >= 50 ms"))
+
+    def test_fault_due_is_not_fault_injected_before_the_gate_prepares_its_world(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ready_file = Path(directory) / "ready.json"
+            before = real_host_log("invalid-signature", failing_cycle=4, ready_file=ready_file)
+            self.assertIn(bench_evidence.H1_ALLOWED, before)
+            self.assertNotIn("시험: ", before)
+            ready = json.loads(ready_file.read_text())
+            self.assertIsNone(ready["fault"])
+            self.assertIsNotNone(h1_timing_loss(before, 1, ready, H1_ALLOW_EVENTS))
+
+            after = real_host_log("invalid-signature", failing_cycle=4, fail_after_fault=True,
+                                  ready_file=ready_file)
+            self.assertIn("시험: ", after)
+            ready = json.loads(ready_file.read_text())
+            self.assertEqual(ready["fault"], "invalid-signature")
+            self.assertIsNone(h1_timing_loss(after, 1, ready, H1_ALLOW_EVENTS))
 
     def test_real_host_stop_after_a_stop_decision_is_never_a_timing_loss(self):
         # bench_host prints its gate-stop or allow-completion line only after STOP returns, so a STOP

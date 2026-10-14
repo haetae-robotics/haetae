@@ -5,7 +5,7 @@ import io
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import bench_gate
 
@@ -39,6 +39,58 @@ def fake_gate(responses):
 
 
 class GateDiagnosticTest(unittest.TestCase):
+    def test_motion_fault_marker_is_absent_when_world_preparation_fails(self):
+        for fault in ("replay", "invalid-signature"):
+            for response in (bench_gate.BridgeFailure("gate response timeout"),
+                             step("world", stop="expired", expires=None)):
+                with self.subTest(fault=fault, response=response):
+                    gate, requests = fake_gate([response])
+                    injected = Mock()
+                    with patch.object(bench_gate, "now_ms", return_value=1000):
+                        if isinstance(response, Exception):
+                            with self.assertRaises(bench_gate.BridgeFailure):
+                                gate.cycle(fault, on_fault=injected)
+                        else:
+                            self.assertFalse(gate.cycle(fault, on_fault=injected))
+                    injected.assert_not_called()
+                    self.assertEqual(len(requests), 1)
+                    self.assertEqual(json.loads(requests[0]["data"])["role"], "world")
+
+    def test_fault_marker_precedes_the_fault_request_even_when_it_times_out(self):
+        for fault in ("person", "world-loss", "replay", "invalid-signature"):
+            with self.subTest(fault=fault):
+                responses = ([step("world")] if fault in ("replay", "invalid-signature") else [])
+                gate, requests = fake_gate(responses + [bench_gate.BridgeFailure("gate response timeout")])
+                gate.last_motion = {"role": "vla", "payload": {"id": 17}}
+                observed = []
+                with patch.object(bench_gate, "now_ms", return_value=1000):
+                    with self.assertRaises(bench_gate.BridgeFailure):
+                        gate.cycle(fault, on_fault=lambda value: observed.append((value, len(requests))))
+                expected_before = 1 if fault in ("replay", "invalid-signature") else 0
+                self.assertEqual(observed, [(fault, expected_before)])
+                self.assertEqual(len(requests), expected_before + 1)
+                sent = json.loads(requests[-1]["data"])
+                if fault == "person":
+                    self.assertEqual(sent["payload"]["humans"][0]["id"], "bench-person")
+                elif fault == "replay":
+                    self.assertEqual(sent, gate.last_motion)
+                elif fault == "invalid-signature":
+                    self.assertEqual(sent["signature"], "00" * 64)
+                else:
+                    self.assertEqual(sent["role"], "vla")
+
+    def test_fault_observer_time_cannot_extend_positive_response_freshness(self):
+        gate, _ = fake_gate([step("world"), step("motion")])
+        clock = [0.0]
+        def slow_observer(_):
+            clock[0] = .060
+        with patch.object(bench_gate, "now_ms", return_value=1000), \
+                patch.object(bench_gate.time, "monotonic", lambda: clock[0]):
+            with self.assertRaisesRegex(bench_gate.BridgeFailure, "elapsed 60.0 ms >= 50 ms"):
+                gate.cycle("invalid-signature", on_fault=slow_observer)
+        self.assertIsNone(gate.approval)
+        self.assertIsNone(gate.last_approved_cycle)
+
     def test_early_world_denial_preserves_previous_approved_expiry_and_exact_request_t(self):
         gate, requests = fake_gate([step("world"), step("motion"), step("world", stop="expired", expires=None)])
         with patch.object(bench_gate, "now_ms", side_effect=range(1000, 1100)), \

@@ -142,6 +142,14 @@ bench, a scenario attempt is timing-inconclusive only when all of these hold:
   the STOP. A later STOP or stale refusal with no lease before it fails at
   once.
 
+H1 records its fault marker and ready-file fault at the fault request boundary.
+Replay and invalid-signature cycles first refresh an ordinary world; a timeout
+or denial during that preparation has no fault marker. The marker precedes the
+replayed or modified signed request, so a timeout on that request remains a
+failure after fault injection. Person input and deliberately omitted world
+updates are marked before those world faults. This boundary records a fault
+attempt, not proof that the Rust gate received it or the board acted on it.
+
 The harness sees decisions that reached the host or relay, and every terminal
 the H2 authorizer logged. A decision made after the deadline that the harness
 cannot see does not prevent a restart. For H2 this is an authorizer terminal
