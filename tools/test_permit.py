@@ -1,5 +1,7 @@
 import json
+import contextlib
 import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -65,7 +67,7 @@ class PermitContractTest(unittest.TestCase):
     def test_authorizer_ignores_relay_decisions_and_latches(self):
         from permit_authorizer import Authorizer
         class Gate:
-            def cycle(self, fault):
+            def cycle(self, fault, **kwargs):
                 return False
         authorizer = Authorizer.__new__(Authorizer)
         authorizer.config = {"install": self.value["install"]}
@@ -82,7 +84,7 @@ class PermitContractTest(unittest.TestCase):
         self.assertTrue(authorizer.locked)
         self.assertEqual(authorizer.approve(dict(self.value, generation=2))["kind"], "terminal")
         class ExpiredGate:
-            def cycle(self, fault):
+            def cycle(self, fault, **kwargs):
                 return True
             def remaining(self):
                 return 0
@@ -92,6 +94,37 @@ class PermitContractTest(unittest.TestCase):
         self.assertEqual(authorizer.approve(self.value), {"kind": "terminal", "reason": "gate_expired"})
         self.assertTrue(authorizer.locked)
 
+    def test_authorizer_fault_marker_requires_the_gate_fault_callback(self):
+        from permit_authorizer import Authorizer
+        for injected, result in ((False, False), (True, False), (True, True)):
+            with self.subTest(injected=injected, result=result):
+                authorizer = Authorizer.__new__(Authorizer)
+                authorizer.__dict__.update(config={"install": self.value["install"]},
+                    scenario="invalid-signature", seconds=1, started=0., binding=(1, 1),
+                    sequence=0, challenge=0, locked=False, last_fault=None,
+                    armed_authorized=False, session_key=bytes(32))
+                class Gate:
+                    def cycle(self, fault, **kwargs):
+                        if injected:
+                            kwargs["on_fault"](fault)
+                        return result
+                    def remaining(self):
+                        return .025
+                authorizer.gate = Gate()
+                with patch("permit_authorizer.time.monotonic", return_value=2.), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    reply = authorizer.approve(self.value)
+                self.assertEqual(bool(output.getvalue()), injected)
+                self.assertEqual(authorizer.last_fault, "invalid-signature" if injected else None)
+                if result:
+                    self.assertEqual(reply["kind"], "permit")
+                    self.assertEqual((reply["duration"], reply["remaining_ms"]), (200, 25.))
+                    self.assertEqual(reply["signature"], hashlib.blake2b(payload(self.value),
+                        key=bytes(32), digest_size=32).hexdigest())
+                    self.assertFalse(authorizer.locked)
+                else:
+                    self.assertEqual(reply, {"kind": "terminal", "reason": "gate_denied"})
+                    self.assertTrue(authorizer.locked)
     def test_optimized_usb_qualification_rejects_exposed_dfu_before_port_open(self):
         # This subprocess really uses -O: a normal unit test cannot detect
         # qualification oracles that disappear under Python optimization.

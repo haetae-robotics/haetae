@@ -149,6 +149,10 @@ replayed or modified signed request, so a timeout on that request remains a
 failure after fault injection. Person input and deliberately omitted world
 updates are marked before those world faults. This boundary records a fault
 attempt, not proof that the Rust gate received it or the board acted on it.
+H2 uses the same input boundary for its authorizer fault marker. Its logged
+terminal replies still fail the attempt, including a denial or failure during
+ordinary world preparation; changing the marker does not permit a retry of
+those terminals.
 
 The harness sees decisions that reached the host or relay, and every terminal
 the H2 authorizer logged. A decision made after the deadline that the harness
