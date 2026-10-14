@@ -35,6 +35,11 @@ class Authorizer:
         self.session_key = None
         self.armed_authorized = False
 
+    def mark_fault(self, fault):
+        if fault != self.last_fault:
+            self.last_fault = fault
+            print("Authorizer fault injected: " + fault, flush=True)
+
     def approve(self, request, stages=None):
         try:
             context(request)
@@ -65,11 +70,8 @@ class Authorizer:
             if self.scenario == "allow" and elapsed >= self.seconds:
                 self.locked = True
                 return {"kind": "terminal", "reason": "operator_complete"}
-            if fault and fault != self.last_fault:
-                self.last_fault = fault
-                print("Authorizer fault injected: " + fault, flush=True)
             mark(stages, "gate_started_ns")
-            allowed = self.gate.cycle(fault)
+            allowed = self.gate.cycle(fault, on_fault=self.mark_fault)
             mark(stages, "gate_completed_ns")
             if not allowed:
                 self.locked = True

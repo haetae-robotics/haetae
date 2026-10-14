@@ -687,7 +687,18 @@ def run_lab(world, binary, urdf, root, processes, wait_for, review_scene, *, dis
         checked = None
         def ready():
             nonlocal checked
-            checked = request(item, points, contents, base_path=base_path, diagnostic=diagnostic)
+            try:
+                checked = request(item, points, contents, base_path=base_path, diagnostic=diagnostic)
+            except ObservationUnavailable as exc:
+                # Missing/stale inputs mean the pre-dispatch wait is not ready.
+                # Native failure, base motion and unknown reasons still abort.
+                if not exc.reasons or not all(reason in {
+                    "target_missing_or_stale", "item_missing_or_stale",
+                    "joint_receive_stale", "odom_receive_stale",
+                } for reason in exc.reasons):
+                    raise
+                checked = None
+                return False
             age = checked["now_ms"] - checked["observed_ms"]
             return 0 <= age < 75
 

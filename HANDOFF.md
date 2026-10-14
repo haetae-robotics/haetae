@@ -1,6 +1,13 @@
 # HANDOFF — haetae
 
-갱신: 2026-10-05. 현재 기준은 `main`과 PR의 정확한 커밋별 CI/리뷰 증거다. 실행 설명은 [simulator alpha guide](docs/simulator-alpha.md), 보호용 배포 조건은 [security release gate](docs/security-release.md)를 따른다.
+갱신: 2026-10-15. 이 문서는 구현 이력이다. 작업 순서·리뷰·push·머지 권한은 [AGENTS.md](AGENTS.md), 승인된 작업 범위는 [ROADMAP.md](ROADMAP.md)를 따른다. 현재 검증 상태는 해당 PR의 정확한 head와 CI에서 확인한다. 실행 설명은 [simulator alpha guide](docs/simulator-alpha.md), 배포 검증의 미완료 조건은 [security release gate](docs/security-release.md)를 따른다.
+
+## 현재 증거의 범위
+
+- Haetae는 실물 로봇에서 검증되지 않은 pre-alpha다. Gazebo 결과는 같은 호스트의 시뮬레이션 참조 시험이고, UNO R4 결과는 내장 LED 벤치다. 어느 결과도 사람이나 실물 팔을 보호하는 장치의 검증이 아니다.
+- 생활위험 보고서의 `stale`, `unknown_item`, `missing_coverage`는 judge-only 진단이다. 판정만 기록하며 팔로 명령을 보내거나 이동을 측정하지 않는다. 6개 위험 사례는 모두 같은 도구 끝점 sphere sweep과 box 영역 기하를 쓴다. 실제 팔 전체 형상이나 충돌 검사는 아니다. [생활위험 실험](examples/household-hazards/README.md)과 [이력 문서](docs/household-history.md)를 따른다.
+- H2 보드 시험은 승인 서비스와 전달자가 같은 UID에서 실행됐다. LED는 사람이 육안으로 확인했으며 독립 GPIO 계측은 없다. Linux 역할 격리 시험은 별도 소프트웨어 증거다. 아래 보드 세션 기록으로 현재 보드 상태나 다른 사용자 계정·실물 모터의 동작을 추정하지 않는다. [H2 증거 범위](docs/controller-permits.md#scope-of-the-h2-evidence)를 따른다.
+- Gazebo의 공유 러너 타이밍은 비차단 측정이다. fail-closed 판정에는 같은 시험의 정상 이동 대조군이 필요하며, 타이밍 표본이나 과거 CI 통과를 새 head의 승인으로 쓰지 않는다. [Gazebo 검사 기준](docs/gazebo-reference.md)을 따른다.
 
 ## 2026-10-04 전체 리뷰 수정
 
@@ -8,7 +15,7 @@
 - 로그 수집은 trusted root 기준 nofollow fd/owner/type/link/256MiB 제한; 역할 준비 폴더는 root0700에서 준비 후 권한 이전. private key0600/public diagnostic0644.
 - nonzero velocity에 측정 twist 필수. Caution 팔 거부·취소 및 base 즉시 감속. reject 시각 이후 관절 피드백으로 settling 확인.
 - ROS arm 수락·취소 absolute250ms, 취소/settling 동안 heartbeat 금지, resolved command topic의 extra publisher는 지속 Hold.
-- 로컬 unit·native bench 검증 후 전체 변경의 독립 양쪽 리뷰/Claude/정확한 head CI를 확인해야 한다. 이전 리뷰·CI 성공은 승인으로 재사용하지 않는다. 실물 미검증.
+- 당시 로컬 unit·native bench와 리뷰 기록은 PR15의 이력이다. 현재 리뷰 방식과 머지 조건은 AGENTS.md를 따른다. 이전 리뷰·CI 성공은 승인으로 재사용하지 않는다. 실물 미검증.
 - 진단 counter의 atomic replace 중 이미 unlink된 fd는 같은 pinned directory에서 다시 읽되, 첫 읽기를 포함해 최대3회 시도한다. live hardlink·symlink·owner/type/size 검사는 유지한다. export는 거부 파일 외 진단을 계속 수집하고 실패 시 이전 passing report를 무효화한다.
 - CI software bench의 임시 서명 fixture는 Linux `/dev/shm`, macOS의 새128MiB RAM device를 사용한다. 공유 디스크 fsync 지연과 분리한 software 시험이며, 운영50ms/세계200ms/guard200ms 제한은 그대로다. 일반 로컬 verify/run은 기본 디스크를 사용한다. 디스크 전원 장애·실물 보호 검증이 아니다.
 
@@ -25,7 +32,7 @@
 - 시뮬레이터 평가용 알파 운영 명령, 공유용 허용 필드 리포트, CI 소스/검증 후보 패키지를 제공한다. 실물 보호나 인증 버전이 아니다.
 - 공식 UNO R4 Minima를 USB만 연결했고 사용자 승인으로 Rosetta를 설치했다. main `1b8a904`의 H1 LED 펌웨어를 업로드해 USB 실물 6개 시험을 통과했다. 갱신 없는 독립 잠금 USB 관측은204.2ms이며 호스트 중지/복구 뒤 자동 재가동이 없었다. USB 소프트웨어 상태 증거이고 GPIO·WDT reset·모터 정지·실물 인지는 미검증이다. H1은 USB writer를 신뢰한다. 후속 [H2 controller permits](docs/controller-permits.md)는 서명된 OFF-only 연결과 매 LED 명령 인증을 보드에서 검사하고 별도 승인 서비스를 제공한다. 실제 ROS arm/base M3·실물 모터 보호와 동일시하지 않는다.
 
-- `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 유효하게 서명된 6개 위험 명령과 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 검증된 영속 material effect history, 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 아직 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
+- `./haetae-demo hazards`는 root-bound household 정책을 적용한 별도 생활 위험 실험이다. 신뢰된 서명 관측의 종류·기기 상태·용기 이력과 정책 FK로 정확한 후보 관절 명령을 중앙 Rust 게이트가 재계산·검사한다. 주입한 6개 위험 사례와 검사 참조 누락·버전/물체 불일치를 거부하고, 정상 명령의 실제 가상 이동·0.05rad 추적을 대조한다. 비정지 base/미지원 작업은 이 고정 base 범위에서 거부한다. 기존 침투 방어 시험과 합산하지 않는다. 3개 judge-only 진단과 같은 기하를 쓰는 6개 사례의 한계는 위 증거 범위를 따른다. 영속 관측·동작 이력은 아래 M2a 범위까지 구현됐지만 material effect commit은 0이다. 전체 팔 geometry, 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 미검증이다. [필수 검사 계약](docs/household-gate.md)과 [생활 위험 실험](examples/household-hazards/README.md)을 따른다.
 
 - H2 UNO R4 Minima의 인증 허가·런타임 USB 경로 차단은 USB 실물 13개 시험, native 17개 시험과 Linux 역할 격리 시험을 통과했다. 최종 커밋별 리뷰·CI·머지 상태는 [PR19](https://github.com/haetae-robotics/haetae/pull/19)와 [H2 문서](docs/controller-permits.md)의 좁은 범위를 따른다. 보드에는 H2 강화 프로필을 올렸으며 이후 재업로드는 물리 RESET 진입이 필요하다. 개인 키·생성 헤더·장치 이미지는 로컬에만 있고 공개하지 않는다. GPIO·WDT reset·전원 차단·모터·실물 인지·secure boot는 미검증이다. 별도 [M3 Gazebo 허가](docs/gazebo-controller-permits.md)는 실제 가상 바퀴·팔의 최종 제어기에서 동작별 서명과 임대를 검사한다. 실물 MCU/모터 보호 결과가 아니다.
 
@@ -53,10 +60,9 @@
 
 - PR8 팔 독립 정지, PR9 역할 격리, PR10 native 사람/라이다, PR11 native 통신 격리, PR12 복합 장애 반복이 반영됐다.
 - PR11 exact-head CI36865368679 및 PR12 CI36866546349의13개 작업이 통과했다. 최신 알파 변경의 정확한 상태는 해당 PR/CI를 확인한다. 과거 성공을 새 커밋 승인으로 재사용하지 않는다.
-- 독립 code-reviewer와 architect가 같은 base/head/패치 해시의 전체 변경을 검토한다. 행동이 바뀌면 양쪽 전체 재검토. READY와 승인 상태를 구분하며 정확한 head의 CI와 실제 실행을 확인한 뒤 머지한다.
-- 이번 사용자 요청은 커밋·리뷰·CI·push·머지를 포함한다. 공개 레지스트리/보호용 릴리스 게시까지 승인했다고 추정하지 않는다.
+- 현재 PR 전체를 모델 하나로 리뷰하고, 수정 후 같은 모델이 갱신된 head를 다시 리뷰하는 방식은 AGENTS.md를 따른다. 이 문서의 과거 작업 요청은 현재 push·머지·게시 권한을 부여하지 않는다.
 - 200ms 세계 신선도, 50ms 양의 응답, 팔0.05rad 추적 오차와1초 청크 제한을 완화하지 않는다. 제때 도착했지만 입력이 만료된 응답은 0/팔 취소 후 엔진 목표·arming을 해제한다. 50ms 이상 지연, IPC/형식/역방향 시계 실패는 fatal 정지를 유지한다.
 - 로컬 증거·실행 키·`.omx/`는 커밋하지 않는다. 다운로드 리포트는 unsigned 요약이며 원본 키/환경/인지 메시지를 포함하지 않는다.
-- 실물 로봇은 정해지지 않았다. 다음 보호용 단계는 신뢰된 센서 경로, 실제 컨트롤러 독립 정지, 로봇별 공격 경계, 3D 팔 충돌 정책, stop/checkpoint 충돌 창과 서명된 재현 가능한 릴리스 증거다.
+- 실물 로봇 시험이나 다음 개발 단계는 ROADMAP.md의 승인 범위와 AGENTS.md를 따른다. 이 구현 이력만으로 NEXT·FROZEN 영역의 새 작업을 시작하지 않는다.
 
 UI 기준: [DESIGN.md](DESIGN.md), 별도 scripted demo: [sim/DESIGN.md](sim/DESIGN.md).

@@ -166,12 +166,14 @@ class BenchGate:
             self.last_motion = envelope
         return self.signed(envelope)
 
-    def cycle(self, fault=None):
+    def cycle(self, fault=None, *, on_fault=None):
         started = time.monotonic()
         self.approval = None
         self.last_cycle = {"result": "incomplete", "responses": []}
         self._diagnostic_cycle, self._diagnostic_started = self.last_cycle, started
         try:
+            if fault in ("person", "world-loss") and on_fault is not None:
+                on_fault(fault)  # Modified/omitted world input is the fault boundary.
             if fault != "world-loss":
                 self._diagnostic_phase = "world"
                 step = self.world(fault == "person")
@@ -180,11 +182,15 @@ class BenchGate:
                     return False
             self._diagnostic_phase = "motion"
             if fault == "replay":
+                if on_fault is not None:
+                    on_fault(fault)
                 step = self.signed(self.last_motion)
             elif fault == "invalid-signature":
                 envelope = self.signer.sign("vla", {"id": 999, "source": "vla", "timestamp_ms": now_ms(),
                                                     "action": {"type": "velocity", "linear": .25, "angular": 0, "ttl_ms": 200}})
                 envelope["signature"] = "00" * 64
+                if on_fault is not None:
+                    on_fault(fault)
                 step = self.signed(envelope)
             else:
                 step = self.motion()

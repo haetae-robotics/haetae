@@ -40,6 +40,17 @@ def run(binary, port, scenario, seconds, ready_file=None):
         ready = False
         fault_shown = False
         last_run_at = None
+
+        def mark_fault(fault):
+            nonlocal fault_shown
+            if fault_shown:
+                return
+            labels = {"person": "가상 사람이 접근합니다", "world-loss": "세계 입력 갱신을 끊습니다",
+                      "replay": "이전 서명 입력을 재전송합니다", "invalid-signature": "위조된 서명 입력을 보냅니다"}
+            print("시험: " + labels[fault], flush=True)
+            mark_ready(fault)
+            fault_shown = True
+
         while time.monotonic() - started < seconds + 1:
             # Polling does not renew output/arming. Acquire the challenge just
             # before the fresh gate round-trip rather than before inter-cycle sleep.
@@ -50,13 +61,9 @@ def run(binary, port, scenario, seconds, ready_file=None):
                                   "automatic_rearm": False}), flush=True)
                 raise LinkError("device lease locked; explicit new run required")
             fault = scenario if scenario != "allow" and time.monotonic() - started >= seconds else None
-            if fault and not fault_shown:
-                labels = {"person": "가상 사람이 접근합니다", "world-loss": "세계 입력 갱신을 끊습니다",
-                          "replay": "이전 서명 입력을 재전송합니다", "invalid-signature": "위조된 서명 입력을 보냅니다"}
-                print("시험: " + labels[fault], flush=True)
-                mark_ready(fault)
-                fault_shown = True
-            if not gate.cycle(fault):
+            # Record the actual fault request boundary, not when it becomes due.
+            # Replay/signature cycles first prepare an ordinary fresh world.
+            if not gate.cycle(fault, on_fault=mark_fault):
                 link.exchange("STOP")
                 print("차단: LED OFF, 재시작은 새 run 명령으로만 가능합니다.", flush=True)
                 return
