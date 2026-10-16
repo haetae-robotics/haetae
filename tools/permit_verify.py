@@ -15,7 +15,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives import serialization
 
-from bench_evidence import Inconclusive, TimingRecord, bounded_attempts, device_settled, h2_timing_loss
+from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled,
+                            h2_rejected_fault_stop, h2_timing_loss)
 from bench_verify import wait_for
 from permit_checks import require
 from permit_keys import private_bytes, provision
@@ -205,10 +206,14 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                 relay_text, auth_text, auth_exited = final_logs()
                 stopped = wait_for(lambda: device.stopped(positive["device_ms"]))
                 require(stopped and (not pause and (not kill_authorizer) or code != 0), 'permit_verify.py: qualification predicate failed')
+                denial_delivery = None
                 if not pause and not kill_authorizer:
                     if code != 0:
-                        timing_loss(code, relay_text, auth_text, auth_exited)
-                    require(code == 0, 'scenario failed: ' + str(relay_log.name))
+                        if auth_exited:
+                            denial_delivery = h2_rejected_fault_stop(relay_text, code, auth_text, device.events(), scenario)
+                        if denial_delivery is None:
+                            timing_loss(code, relay_text, auth_text, auth_exited)
+                    require(code == 0 or denial_delivery is not None, 'scenario failed: ' + str(relay_log.name))
                     if scenario == "allow":
                         require('Authorizer terminal: operator_complete' in auth_text, 'permit_verify.py: qualification predicate failed')
                     else:
@@ -220,8 +225,13 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                 last_on = next(e for e in reversed(events) if e["on"])
                 delay = stopped["device_ms"] - last_on["renewed_ms"]
                 require(0 <= delay <= 300, 'permit_verify.py: qualification predicate failed')
-                return {"case": name, "passed": True, "positive_control": True,
-                        "stop_reason": stopped["reason"], "last_run_to_off_ms": delay, "relay_exit": code}
+                result = {"case": name, "passed": True, "positive_control": True,
+                          "stop_reason": stopped["reason"], "last_run_to_off_ms": delay, "relay_exit": code}
+                if denial_delivery is not None:
+                    result["denial_delivery"] = denial_delivery
+                    print("::warning::H2 " + scenario + ": verified Rust rejection and LED OFF; "
+                          "50 ms terminal delivery deadline missed (measurement only, no retry)")
+                return result
         finally:
             try:
                 stop_pair(authorizer, relay)

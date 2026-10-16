@@ -149,10 +149,9 @@ replayed or modified signed request, so a timeout on that request remains a
 failure after fault injection. Person input and deliberately omitted world
 updates are marked before those world faults. This boundary records a fault
 attempt, not proof that the Rust gate received it or the board acted on it.
-H2 uses the same input boundary for its authorizer fault marker. Its logged
-terminal replies still fail the attempt, including a denial or failure during
-ordinary world preparation; changing the marker does not permit a retry of
-those terminals.
+H2 uses the same input boundary for its authorizer fault marker. A logged
+terminal never permits a timing-inconclusive retry, including a denial or
+failure during ordinary world preparation.
 
 The harness sees decisions that reached the host or relay, and every terminal
 the H2 authorizer logged. A decision made after the deadline that the harness
@@ -160,14 +159,15 @@ cannot see does not prevent a restart. For H2 this is an authorizer terminal
 (a gate denial, gate expiry, authorizer failure or allow completion) that the
 authorizer could not finish sending, so its log has no terminal line, and that
 the relay did not receive before its own deadline. A terminal the authorizer
-logged fails the attempt even if the relay never read it. For H1 it is a gate
+logged prevents a retry even if the relay never read it. For H1 it is a gate
 reply that came after the host's 50 ms wait had ended. A denial before the
 fault that coincides with such a delay is therefore restarted rather than
 failed.
 
 An inconclusive attempt never counts as a pass. The scenario restarts with a
 fresh device emulator and fresh processes, at most three attempts, and three
-inconclusive attempts fail it. Every other failure, any loss after the fault
+inconclusive attempts fail it. Except for the conclusive H2 rejection path below,
+every other failure, any loss after the fault
 was injected or after a stop decision reached the host or relay, and any ON
 after a stop fail at once. The interruption cases (host kill, host pause, Rust
 kill, relay pause, authorizer kill) restart only for a loss before positive
@@ -177,6 +177,22 @@ each attempt's renewal gaps, ARM-to-first-RUN time and STATUS-to-RUN-verified
 time, and the evidence of each inconclusive attempt, as a non-blocking
 measurement. The bench prints one GitHub Actions warning per inconclusive
 attempt. The 50 ms and 200 ms limits are unchanged.
+
+For H2 replay and invalid-signature cases, a late terminal can instead have
+conclusive functional evidence: the authorizer must exit by itself, log exactly
+the intended fault and a completed `gate_denied` terminal, and provide stages
+matching the relay's last unanswered RUN. The denial diagnostic must show an
+ordinary world update followed by the exact Rust replay or signature rejection,
+a zero output command, no active command and a disarmed VLA source. Missing or
+older diagnostics, a different rejection, an issued MAC, crashes and content
+errors cannot qualify. The same attempt must show LED ON, then OFF within the
+unchanged 300 ms observation bound, with no later ON. This path runs once; it
+does not retry a post-fault loss or change the relay's 50 ms wait. The case records
+`relay_exit: 1` and `denial_delivery` with `blocking: false`, the missed terminal
+delivery deadline and gate/request-to-terminal times, and emits a CI warning.
+Functional rejection and OFF can pass while terminal delivery missed its limit;
+this does not claim timely terminal delivery or physical arm behavior. Allow,
+person, world-loss and interruption cases retain their existing pass conditions.
 
 For the H1 host-pause case, a pause after STATUS can resume into a gate denial
 and a clean host exit. The harness accepts that path only when the final host

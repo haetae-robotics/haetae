@@ -168,6 +168,8 @@ class GateDiagnosticTest(unittest.TestCase):
         projected = bench_gate.diagnostic_response(bad, secret, True, float("inf"))
         self.assertNotIn("private-value", json.dumps(projected, allow_nan=False))
         self.assertEqual(projected["outcome"], "rejected")
+        self.assertIsNone(projected["rejection_reason"])
+        self.assertFalse(projected["command_zero"])
         for key in ("phase", "stop", "request_t_ms", "elapsed_ms", "mode", "world_age_ms", "active_expires_ms",
                     "recorder_ok", "state_ok", "arm_cancelling"):
             self.assertIsNone(projected[key], key)
@@ -182,6 +184,19 @@ class GateDiagnosticTest(unittest.TestCase):
         for value in ({"mode": "hold"}, {"mode": "hold", "secret": secret}, [secret]):
             expected = "mode:hold" if value == {"mode": "hold"} else None
             self.assertEqual(bench_gate.diagnostic_stop(value), expected)
+
+    def test_rejection_projection_requires_exact_error_and_numeric_zero_command(self):
+        for error, reason in (("replayed or zero counter", "replay"), ("input signature failed", "signature"),
+                              ("replayed or zero counter: private payload", None), (["input signature failed"], None)):
+            response = step("motion", allowed=False, stop="denied", expires=None)
+            response["outcome"] = {"rejected": {"error": error}}
+            value = bench_gate.diagnostic_response(response, "motion", 1000, 1)
+            self.assertEqual(value["rejection_reason"], reason)
+            self.assertTrue(value["command_zero"])
+            for cmd in ({"linear": True, "angular": 0}, {"linear": 0},
+                        {"linear": .25, "angular": 0}, {"linear": "0", "angular": 0}):
+                response["cmd"] = cmd
+                self.assertFalse(bench_gate.diagnostic_response(response, "motion", 1000, 1)["command_zero"])
 
 
 if __name__ == "__main__":
