@@ -66,6 +66,8 @@ def run(binary, port, scenario, seconds, ready_file=None):
             if not gate.cycle(fault, on_fault=mark_fault):
                 link.exchange("STOP")
                 print("차단: LED OFF, 재시작은 새 run 명령으로만 가능합니다.", flush=True)
+                print(json.dumps({"event": "bench_gate_denial_diagnostic", "cycles": gate.denial_diagnostics()}),
+                      flush=True)
                 return
             run_at = time.monotonic()
             link.exchange("RUN", timeout=gate.remaining())

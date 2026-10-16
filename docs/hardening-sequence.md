@@ -40,8 +40,7 @@ check exact-head CI, and merge each of these three stages.
 
 ## Review and merge contract
 
-Each stage uses its own branch/PR from current main. Record exact base/head,
-patch hash, code-reviewer output, architect output and CI evidence under local
-`.omx/artifacts/`. Material fixes require both complete review lanes again.
+Work order, PR review and merge authority follow [AGENTS.md](../AGENTS.md).
+Each approved stage uses its own branch/PR from current main.
 Do not commit runtime logs or credentials. Reference validation does not close
 real-robot or certification requirements in `security-release.md`.

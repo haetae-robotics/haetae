@@ -13,7 +13,7 @@ import time
 from bench_link import LinkError, SerialLink
 from bench_gate import BenchGate
 from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, first_stop_after_on, h1_pause_gate_stop,
-                            h1_timing_loss, scheduling_loss)
+                            h1_gate_expiry_loss, h1_timing_loss, scheduling_loss)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "bench"
@@ -122,14 +122,15 @@ def host_attempt(name, scenario="allow", interrupt=None):
                                     stdout=log, stderr=log, start_new_session=True)
             def timing_loss(code):
                 # Called only after the host exited, so its log and ready file are final.
-                # Inconclusive only for a fail-closed timing loss before any fault, delivered
-                # stop decision or interrupt; anything else stays an ordinary failure.
+                # Only pre-fault fail-closed timing loss, including strictly proven
+                # TTL expiry. Other delivered decisions and all applied interrupts fail.
                 try:
                     wait_for(lambda: device_settled(device.events()), 1)
                 except AssertionError:
                     pass  # no stop evidence: h1_timing_loss returns None
                 time.sleep(.05)  # rows for bytes the host wrote just before it exited
-                evidence = h1_timing_loss(Path(log.name).read_text(), code, ready_state(ready), device.events())
+                evidence = (h1_timing_loss(Path(log.name).read_text(), code, ready_state(ready), device.events()) or
+                            h1_gate_expiry_loss(Path(log.name).read_text(), code, ready_state(ready), device.events()))
                 if evidence is not None:
                     raise Inconclusive(evidence)
             def is_ready():
@@ -163,7 +164,7 @@ def host_attempt(name, scenario="allow", interrupt=None):
                 expected_expiry = (scenario == "world-loss" and code == 1 and
                                    "stale actuation response: world expired" in Path(log.name).read_text())
                 measured_loss = scheduling_loss(Path(log.name).read_text(), code, scenario, device.events())
-                if code != 0 and not (expected_expiry or measured_loss):
+                if not (expected_expiry or measured_loss):
                     timing_loss(code)  # raises Inconclusive only before the fault, with fail-closed evidence
                 if scenario != "allow":
                     assert json.loads(ready.read_text())["fault"] == scenario, "stopped before injecting intended fault"

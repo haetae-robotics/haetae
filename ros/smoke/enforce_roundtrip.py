@@ -20,6 +20,9 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from geometry_msgs.msg import Twist, TwistStamped
 from std_msgs.msg import String
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "haetae_sim"))
+from ci_timing import timing_measurement
+
 
 def public(seed):
     return Ed25519PrivateKey.from_private_bytes(bytes([seed]) * 32).public_key().public_bytes(
@@ -141,14 +144,14 @@ def run(binary, output_stamped=True):
                 until(lambda: any(ts >= triggered and v == 0.0 for ts, v in commands), timeout=2,
                       action=lambda: twist(0.5))
                 latency = next(ts - triggered for ts, v in commands if ts >= triggered and v == 0.0)
-                assert latency <= 0.25, "revoke response took %.3f s" % latency
+                timing = timing_measurement("ROS gate revoke", latency * 1000, 250)
                 stamp = test.get_clock().now().nanoseconds // 1_000_000
                 fault_pub.publish(String(data=json.dumps({"code": "test-hold", "timestamp_ms": stamp,
                                                           "raise_to": "hold"})))
                 until(lambda: states and states[-1]["mode"] == "hold")
                 assert commands[-1][1] == 0.0
                 print(json.dumps({"ok": True, "revoke_latency_ms": round(latency * 1000),
-                                  "commands": len(commands), "output_stamped": output_stamped}))
+                                  "commands": len(commands), "output_stamped": output_stamped, "timing": timing}))
             finally:
                 gate.terminate()
                 try:

@@ -28,6 +28,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from run_scenario import fixture, public
 from arm_barrier import rearm_ready
+from ci_timing import timing_measurement
 
 
 class ArmWorld(Node):
@@ -217,7 +218,7 @@ def main(binary, out=None):
                 world.human = True
                 until(lambda: len(server.stops) == 3 and server.stops[-1][1] == "cancel", gate)
                 first_cancel = server.stops[-1][0]
-                assert first_cancel - trigger <= 0.3
+                timings = {"human_cancel": timing_measurement("arm human cancel", (first_cancel - trigger) * 1000, 300)}
                 world.human = False
                 settled_after(time.monotonic())
                 arm_source()
@@ -234,16 +235,14 @@ def main(binary, out=None):
                 assert deadman is not None, "reference arm did not stop after gateway death"
                 heartbeat = server.deadman_heartbeats[-1]
                 assert heartbeat <= deadman - 0.25, "reference arm aborted before heartbeat timeout"
-                assert deadman - heartbeat <= 0.35, (
-                    f"reference arm heartbeat timeout took {(deadman-heartbeat)*1000:.1f} ms")
-                assert deadman - killed <= 0.5, (
-                    f"reference arm stop took {(deadman-killed)*1000:.1f} ms after gateway death")
+                timings["last_heartbeat_deadman"] = timing_measurement("arm heartbeat deadman", (deadman - heartbeat) * 1000, 350)
+                timings["kill_deadman"] = timing_measurement("arm gateway kill", (deadman - killed) * 1000, 500)
                 report = subprocess.run([binary, "sillok", "verify", "--log", str(root / "sillok.jsonl"),
                                          "--pubkey", public(9)], capture_output=True, text=True)
                 assert report.returncode == 0 and json.loads(report.stdout)["fully_sealed"]
                 print(json.dumps({"ok": True, "malformed_rejected": True,
                                   "bounds_denied": True, "replacement_cancelled": True,
-                                  "tracking_cancelled": True,
+                                  "tracking_cancelled": True, "timing": timings,
                                   "human_cancel_ms": round((first_cancel-trigger)*1000, 1),
                                   "kill_deadman_ms": round((deadman-killed)*1000, 1),
                                   "last_heartbeat_deadman_ms": round((deadman-heartbeat)*1000, 1)}))

@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives import serialization
 
 from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, first_stop_after_on,
-                            h2_rejected_fault_stop, h2_timing_loss)
+                            h2_gate_expiry_loss, h2_rejected_fault_stop, h2_timing_loss)
 from bench_verify import wait_for
 from permit_checks import require
 from permit_keys import private_bytes, provision
@@ -173,14 +173,15 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                     stop_pair(authorizer, relay)
                     return Path(relay_log.name).read_text(), Path(auth_log.name).read_text(), exited
                 def timing_loss(code, relay_text, auth_text, auth_exited):
-                    # Inconclusive only for a fail-closed timing loss before any fault, delivered
-                    # stop decision, pause or kill; anything else stays an ordinary failure below.
+                    # Only pre-fault fail-closed timing loss, including strictly proven
+                    # TTL expiry. Other delivered decisions and all applied interrupts fail.
                     # The authorizer prints a terminal only after sending it, so the log of one that
                     # stop_pair had to kill may lack a stop decision that reached the relay.
                     if not auth_exited:
                         return
                     time.sleep(.05)  # rows for bytes the relay wrote just before it exited
-                    evidence = h2_timing_loss(relay_text, code, auth_text, device.events())
+                    evidence = (h2_timing_loss(relay_text, code, auth_text, device.events()) or
+                                h2_gate_expiry_loss(relay_text, code, auth_text, device.events()))
                     if evidence is not None:
                         raise Inconclusive(evidence)
                 def positive_ready():
@@ -210,8 +211,8 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                     if code != 0:
                         if auth_exited:
                             denial_delivery = h2_rejected_fault_stop(relay_text, code, auth_text, device.events(), scenario)
-                        if denial_delivery is None:
-                            timing_loss(code, relay_text, auth_text, auth_exited)
+                    if denial_delivery is None:
+                        timing_loss(code, relay_text, auth_text, auth_exited)
                     require(code == 0 or denial_delivery is not None, 'scenario failed: ' + str(relay_log.name))
                     if scenario == "allow":
                         require('Authorizer terminal: operator_complete' in auth_text, 'permit_verify.py: qualification predicate failed')

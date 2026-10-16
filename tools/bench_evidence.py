@@ -2,9 +2,10 @@
 
 Shared-runner timing in the board-free H1 bench and H2 signed-permit bench: a
 positive-path attempt that missed a deadline or the device lease before any
-fault was injected or any stop decision reached the host or relay, and whose
-device stopped fail-closed, is timing-inconclusive. A terminal the H2
-authorizer logged is never timing-inconclusive even if the relay never read it. Only a
+fault was injected, and whose device stopped fail-closed, is timing-inconclusive.
+A completed gate denial is an exception only with the strict gate_expiry_evidence
+proof of an ordinary pre-fault TTL expiry, matched to the host or relay STOP.
+Every other terminal the H2 authorizer logged is never timing-inconclusive. Only a
 decision made after that deadline that never arrived (and, in H2, that the
 authorizer could not finish sending, so it logged no terminal) is not seen and
 does not prevent a restart. Inconclusive is never a pass. bounded_attempts()
@@ -85,6 +86,15 @@ def json_rows(lines, event):
     return rows
 
 
+def without_event(lines, event):
+    """Remove only parsed diagnostic rows, irrespective of JSON whitespace."""
+    result = []
+    for line in lines:
+        if not json_rows([line], event):
+            result.append(line)
+    return result
+
+
 def renewals(events):
     """Distinct lease renewal stamps (ARM, then each RUN) in device order."""
     stamps = []
@@ -157,6 +167,82 @@ def fail_closed_stop(events, accepted):
             "renewal_reason": renewal.get("reason"), "last_run_to_off_ms": delay,
             "max_renewal_gap_ms": max((b - a for a, b in zip(stamps, stamps[1:])), default=None),
             "emulator_lateness_ms": delay - LEASE_MS if failure["reason"] == "lease" else None}
+
+
+def gate_expiry_evidence(cycles, events):
+    """A normal positive gate decision aged out before an ordinary world update.
+
+    This proves only a pre-fault availability loss, never a passed scenario. The
+    recorded signed expiry cannot be replaced by an estimate or an early lapse.
+    """
+    if not isinstance(cycles, list) or len(cycles) != 2 or not all(isinstance(c, dict) for c in cycles):
+        return None
+    approved, denied = cycles
+    previous, current = approved.get("responses"), denied.get("responses")
+    if (approved.get("result") != "approved" or denied.get("result") != "denied"
+            or not isinstance(previous, list) or not previous or not isinstance(previous[-1], dict)
+            or not isinstance(current, list) or len(current) != 1 or not isinstance(current[0], dict)):
+        return None
+    motion, world = previous[-1], current[0]
+    if (motion.get("phase") != "motion" or motion.get("outcome") != "decision"
+            or motion.get("verdict") != "yun" or motion.get("stop") is not None
+            or motion.get("command_zero") is not False or motion.get("active_present") is not True
+            or world.get("phase") != "world" or world.get("outcome") != "world_updated"
+            or world.get("stop") != "expired" or world.get("status_stop") != "expired"
+            or world.get("rejection_reason") is not None or world.get("command_zero") is not True
+            or world.get("active_present") is not False):
+        return None
+    if any(row.get("mode") != "normal" or row.get("vla_armed") is not True
+           or row.get("recorder_ok") is not True or row.get("state_ok") is not True
+           or row.get("arm_cancelling") is not False for row in (motion, world)):
+        return None
+    expiry, request = motion.get("decision_expires_ms"), world.get("request_t_ms")
+    clocks = [motion.get("response_received_ns"), world.get("request_started_ns"), world.get("response_received_ns")]
+    if (type(expiry) is not int or type(request) is not int or not 0 <= expiry <= request
+            or motion.get("active_expires_ms") != expiry
+            or not all(type(value) is int and value >= 0 for value in clocks) or clocks != sorted(clocks)):
+        return None
+    stop = fail_closed_stop(events, ("lease", "stop"))
+    return (dict(stop, kind="gate-expiry", error="pre-fault signed command expired",
+                 decision_expires_ms=expiry, denied_request_t_ms=request) if stop is not None else None)
+
+
+def h2_gate_expiry_loss(relay_log, code, authorizer_log, events):
+    """A completed, unsigned pre-fault expiry terminal with a matching final RUN."""
+    if (code != 0 or TRACEBACK in relay_log or TRACEBACK in authorizer_log
+            or H2_ERROR_PREFIX in relay_log or H2_ERROR_PREFIX in authorizer_log
+            or [line for line in authorizer_log.splitlines() if line.startswith(H2_DECISIONS)]
+            != ["Authorizer terminal: gate_denied"]):
+        return None
+    terminals = json_rows(relay_log.splitlines(), "permit_terminal")
+    denials = json_rows(authorizer_log.splitlines(), "permit_gate_denial_diagnostic")
+    if len(terminals) != 1 or len(denials) != 1 or terminals[0].get("reason") != "gate_denied":
+        return None
+    left, right = terminals[0].get("stages"), denials[0].get("stages")
+    if not all(isinstance(stages, list) and stages and all(isinstance(row, dict) for row in stages)
+               for stages in (left, right)):
+        return None
+    relay, auth = left[-1], right[-1]
+    if relay.get("op") != "RUN" or "controller_ack_ns" in relay or "sign_completed_ns" in auth:
+        return None
+    evidence = gate_expiry_evidence(denials[0].get("cycles"), events)
+    if evidence is None:
+        return None
+    world = denials[0]["cycles"][-1]["responses"][0]
+    # A peer may receive the first byte before sendall returns. Check each
+    # process's order plus causal boundaries without ordering those concurrent stamps.
+    chains = [
+        [relay.get("request_send_started_ns"), relay.get("request_sent_ns"),
+         relay.get("response_first_byte_ns"), relay.get("response_received_ns"), relay.get("controller_stop_ack_ns")],
+        [relay.get("request_send_started_ns"), auth.get("request_first_byte_ns"), auth.get("request_received_ns"),
+         auth.get("gate_started_ns"), world.get("request_started_ns"), world.get("response_received_ns"),
+         auth.get("gate_completed_ns"), auth.get("response_send_started_ns"), auth.get("response_sent_ns"),
+         relay.get("controller_stop_ack_ns")],
+        [auth.get("response_send_started_ns"), relay.get("response_first_byte_ns")]]
+    for clocks in chains:
+        if not all(type(value) is int and value >= 0 for value in clocks) or clocks != sorted(clocks):
+            return None
+    return evidence
 
 
 # H2: the relay's last log line is printed by haetae-permit for errors raised in
@@ -344,6 +430,25 @@ H1_ALLOWED = "허용: LED ON (테스트 명령이 통과 중)"
 H1_DENIED = "차단: LED OFF, 재시작은 새 run 명령으로만 가능합니다."
 
 
+def h1_gate_expiry_loss(host_log, code, ready, events):
+    """A completed pre-fault gate-expiry STOP; never classify a failed STOP."""
+    if code != 0 or TRACEBACK in host_log:
+        return None
+    if ready is not None and not (isinstance(ready, dict) and "fault" in ready and ready["fault"] is None):
+        return None
+    lines = [line for line in host_log.splitlines() if line.strip()]
+    diagnostics = json_rows(lines, "bench_gate_denial_diagnostic")
+    if len(diagnostics) != 1:
+        return None
+    functional = without_event(lines, "bench_gate_denial_diagnostic")
+    if functional not in ([H1_DENIED], [H1_ALLOWED, H1_DENIED]):
+        return None
+    evidence = gate_expiry_evidence(diagnostics[0].get("cycles"), events)
+    if evidence is None or evidence["positive_control"] != (functional == [H1_ALLOWED, H1_DENIED]):
+        return None
+    return evidence
+
+
 def h1_pause_gate_stop(host_log, code, ready, events, stopped):
     """A paused host resumed into its clean gate-denial path, after the device lease ended.
 
@@ -353,7 +458,12 @@ def h1_pause_gate_stop(host_log, code, ready, events, stopped):
     STATUS keeps reason 'run'; its incremented sequence and unchanged renewal identify it.
     This is conclusive interruption evidence, never a timing-inconclusive restart.
     """
-    if (code != 0 or [line for line in host_log.splitlines() if line.strip()] != [H1_ALLOWED, H1_DENIED]
+    lines = [line for line in host_log.splitlines() if line.strip()]
+    diagnostics = json_rows(lines, "bench_gate_denial_diagnostic")
+    if len(diagnostics) > 1:
+        return None
+    lines = without_event(lines, "bench_gate_denial_diagnostic")
+    if (code != 0 or lines != [H1_ALLOWED, H1_DENIED]
             or not isinstance(ready, dict) or "fault" not in ready or ready["fault"] is not None):
         return None
     if not all(isinstance(event, dict) for event in events):

@@ -4,7 +4,7 @@
 - Status: Active
 - Last refreshed: 2026-10-05
 - Primary product surfaces: live Gazebo reference at `sim/gazebo-live.html` and the scripted demo at `sim/index.html`.
-- Evidence reviewed: `sim/DESIGN.md`, `sim/index.html`, `sim/gazebo-live.html`, `sim/gazebo-scene.js`, `sim/person-rig.js`, `ros/gazebo/scene_layout.py`, `ros/gazebo/rosbot_xl.urdf.xacro`, the Gazebo runbook, and Claude's source-based consultation in `.omx/artifacts/claude-design-20260930/` (not a rendered visual review).
+- Evidence reviewed: `sim/DESIGN.md`, `sim/index.html`, `sim/gazebo-live.html`, `sim/gazebo-scene.js`, `sim/person-rig.js`, `ros/gazebo/scene_layout.py`, `ros/gazebo/rosbot_xl.urdf.xacro`, the Gazebo runbook. The review covered source; it was not a rendered visual review.
 - Scope: This file guides the live Gazebo reference. `sim/DESIGN.md` remains the detailed contract for the separate scripted demo.
 
 ## Brand

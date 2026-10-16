@@ -114,7 +114,13 @@ def relay(port, install, authorizer_socket, ready_file=None):
             permit = json.loads(raw)
             if permit.get("kind") != "permit":
                 link.query("STOP")
+                stages["controller_stop_ack_ns"] = time.monotonic_ns()
                 print("차단: 서명 허가 중단, LED OFF", flush=True)
+                reason = permit.get("reason")
+                print(json.dumps({"event": "permit_terminal", "stages": list(traces),
+                                  "reason": reason if permit.get("kind") == "terminal" and reason in (
+                                      "gate_denied", "gate_expired", "authorizer_failure", "operator_complete") else None}),
+                      flush=True)
                 return
             left = min(budget - (time.monotonic() - started), permit["remaining_ms"] / 1000)
             if left <= 0:

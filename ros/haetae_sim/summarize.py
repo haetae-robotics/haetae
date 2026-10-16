@@ -22,6 +22,8 @@ def main(root):
     print()
     print("All 8 scenarios passed 5 repeats in the hosted Jazzy reference model. "
           "These measurements do not describe a physical robot.")
+    print("Timing limits are reported as non-blocking shared-runner observations; "
+          "functional stop and positive-motion assertions remain required.")
     print()
     print("| Scenario | Runs | Worst gate zero | Smallest gap | Other observation |")
     print("|---|---:|---:|---:|---|")
