@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives import serialization
 
-from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled,
+from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, first_stop_after_on,
                             h2_rejected_fault_stop, h2_timing_loss)
 from bench_verify import wait_for
 from permit_checks import require
@@ -61,9 +61,8 @@ class Device:
     def on(self):
         return next((e for e in reversed(self.events()) if e["on"]), None)
 
-    def stopped(self, after, reason=None):
-        return next((e for e in self.events() if not e["on"] and e["device_ms"] >= after
-                     and (reason is None or e["reason"] == reason)), None)
+    def stopped(self, reason=None):
+        return first_stop_after_on(self.events(), reason)
 
     def close(self):
         self.child.kill()
@@ -100,9 +99,9 @@ def protocol_case(directory, config, name, attack, reason):
         session_key = bind_controller(link, key, config)
         approve("ARM")
         request, signature = approve()
-        positive = wait_for(device.on)
+        wait_for(device.on)
         attack(link, sign, request, signature)
-        stopped = wait_for(lambda: device.stopped(positive["device_ms"], reason))
+        stopped = wait_for(lambda: device.stopped(reason))
         if reason == "partial":
             os.write(link.fd, b"\n")  # Finish discard mode; it never re-arms.
             time.sleep(.005)
@@ -194,7 +193,7 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                         timing_loss(relay.returncode, *final_logs())
                         raise AssertionError("relay failed before ON: " + str(relay_log.name))
                     return relay_ready.exists() and device.on()
-                positive = wait_for(positive_ready)
+                wait_for(positive_ready)
                 if pause:
                     os.kill(relay.pid, signal.SIGSTOP)
                     time.sleep(.6)
@@ -204,7 +203,7 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                     killed = True
                 code = relay.wait(timeout=4)
                 relay_text, auth_text, auth_exited = final_logs()
-                stopped = wait_for(lambda: device.stopped(positive["device_ms"]))
+                stopped = wait_for(device.stopped)
                 require(stopped and (not pause and (not kill_authorizer) or code != 0), 'permit_verify.py: qualification predicate failed')
                 denial_delivery = None
                 if not pause and not kill_authorizer:

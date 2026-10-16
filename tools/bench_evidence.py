@@ -100,6 +100,21 @@ def device_settled(events):
     return bool(events) and not events[-1].get("on") and events[-1].get("reason") not in STARTUP_REASONS
 
 
+def first_stop_after_on(events, reason=None):
+    """First OFF after this attempt's first ON, in append order, never by clock ties.
+
+    A different first stop reason cannot be skipped in favor of a later matching
+    row. Callers still reject any ON after the returned stop.
+    """
+    positive = False
+    for event in events:
+        if event.get("on") is True:
+            positive = True
+        elif positive and event.get("on") is False:
+            return event if reason is None or event.get("reason") == reason else None
+    return None
+
+
 def fail_closed_stop(events, accepted):
     """Device evidence that the attempt ended fail-closed by one accepted first failure.
 
