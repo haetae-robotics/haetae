@@ -12,7 +12,7 @@ import time
 
 from bench_link import LinkError, SerialLink
 from bench_gate import BenchGate
-from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, first_stop_after_on, h1_pause_gate_stop,
+from bench_evidence import (H1_ALLOWED, Inconclusive, TimingRecord, bounded_attempts, device_settled, first_stop_after_on, h1_pause_gate_stop,
                             h1_gate_expiry_loss, h1_timing_loss, scheduling_loss)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,7 +168,8 @@ def host_attempt(name, scenario="allow", interrupt=None):
                     timing_loss(code)  # raises Inconclusive only before the fault, with fail-closed evidence
                 if scenario != "allow":
                     assert json.loads(ready.read_text())["fault"] == scenario, "stopped before injecting intended fault"
-                normal_exit = code == 0 and (scenario != "allow" or stopped["reason"] == "stop")
+                completed = Path(log.name).read_text().splitlines() == [H1_ALLOWED, "시험 종료: LED OFF"]
+                normal_exit = code == 0 and (scenario != "allow" or stopped["reason"] == "stop" and completed)
                 assert normal_exit or expected_expiry or measured_loss, "host scenario failed; see " + str(log.name)
                 if measured_loss:
                     stopped = measured_loss

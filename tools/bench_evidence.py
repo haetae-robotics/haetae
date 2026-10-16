@@ -236,8 +236,7 @@ def h2_gate_expiry_loss(relay_log, code, authorizer_log, events):
          relay.get("response_first_byte_ns"), relay.get("response_received_ns"), relay.get("controller_stop_ack_ns")],
         [relay.get("request_send_started_ns"), auth.get("request_first_byte_ns"), auth.get("request_received_ns"),
          auth.get("gate_started_ns"), world.get("request_started_ns"), world.get("response_received_ns"),
-         auth.get("gate_completed_ns"), auth.get("response_send_started_ns"), auth.get("response_sent_ns"),
-         relay.get("controller_stop_ack_ns")],
+         auth.get("gate_completed_ns"), auth.get("response_send_started_ns"), auth.get("response_sent_ns")],
         [auth.get("response_send_started_ns"), relay.get("response_first_byte_ns")]]
     for clocks in chains:
         if not all(type(value) is int and value >= 0 for value in clocks) or clocks != sorted(clocks):

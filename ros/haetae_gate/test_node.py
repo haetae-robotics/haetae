@@ -348,6 +348,55 @@ class NodeBoundaryTest(unittest.TestCase):
         g._tick()
         self.assertEqual(g.aborts, ['arm cancellation did not complete in 250 ms'])
 
+    def test_signed_stop_waits_for_controller_result_without_competing_cancel(self):
+        g = self.gate
+        cancelled = []
+        g.arm_goal = SimpleNamespace(cancel_goal_async=lambda: cancelled.append(True) or
+            SimpleNamespace(add_done_callback=lambda callback: None))
+        g.arm_goal_future = None
+        g.permits = SimpleNamespace(challenges={"arm": "b" * 32}, active_arm="a" * 64,
+                                    goal_sequence=3, sign=lambda *args: "signed-stop")
+        g._cancel_arm()
+        self.assertEqual(g.heartbeats, ["signed-stop"])
+        self.assertEqual(cancelled, [])
+        self.assertTrue(g.cancel_requested)
+        self.assertEqual(g.arm_cancel_deadline, .25)
+        self.assertEqual((g.permits.active_arm, g.permits.goal_sequence), ("0" * 64, 0))
+        clock.value = .1
+        # Only the actual controller result completes the wait, not STOP publish.
+        g._on_arm_result(SimpleNamespace(result=lambda: SimpleNamespace(status=6)))
+        self.assertFalse(g.aborts)
+        self.assertIsNone(g.arm_goal)
+        self.assertIsNone(g.arm_cancel_deadline)
+        self.assertFalse(g.cancel_requested)
+
+    def test_signed_stop_without_a_result_keeps_the_absolute_250ms_deadline(self):
+        g = self.gate
+        g.arm_goal = SimpleNamespace(cancel_goal_async=lambda: self.fail("competing cancel"))
+        g.arm_goal_future = None
+        g.permits = SimpleNamespace(challenges={"arm": "b" * 32}, active_arm="a" * 64,
+                                    goal_sequence=3, sign=lambda *args: "signed-stop")
+        g._cancel_arm()
+        clock.value = .1
+        g._cancel_arm()
+        self.assertEqual(g.arm_cancel_deadline, .25)
+        clock.value = .25
+        g._tick()
+        self.assertEqual(g.aborts, ['arm cancellation did not complete in 250 ms'])
+
+    def test_without_a_published_signed_stop_the_action_cancel_is_still_required(self):
+        g = self.gate
+        for permits in (None, SimpleNamespace(challenges={})):
+            cancelled = []
+            g.permits = permits
+            g.arm_goal = SimpleNamespace(cancel_goal_async=lambda: cancelled.append(True) or
+                SimpleNamespace(add_done_callback=lambda callback: None))
+            g.arm_goal_future = None
+            g.arm_cancel_future = None
+            g._cancel_arm()
+            self.assertEqual(cancelled, [True])
+            self.assertEqual(g.arm_cancel_deadline, .25)
+
     def test_acceptance_timeout_and_late_accepted_handle_are_stopped(self):
         g = self.gate
         g.arm_goal_deadline = .25

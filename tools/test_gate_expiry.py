@@ -81,6 +81,11 @@ class GateExpiryTest(unittest.TestCase):
 
     def test_completed_trace_fault_and_error_boundaries(self):
         relay, auth = h2_logs()
+        # sendall can return to the authorizer after the peer has finished STOP.
+        row = json.loads(auth.splitlines()[-1])
+        row["stages"][-1]["response_sent_ns"] = 120
+        delayed_send_log = auth.splitlines()[0] + "\n" + json.dumps(row) + "\n"
+        self.assertIsNotNone(evidence.h2_gate_expiry_loss(relay, 0, delayed_send_log, events()))
         for left, right, code in ((relay, auth, 1), (relay, auth + "Authorizer fault injected: person\n", 0),
                                  (relay, auth + fixtures.CRASH, 0), (relay + fixtures.CRASH, auth, 0),
                                  (relay, auth.replace("gate_denied", "operator_complete"), 0),
@@ -136,6 +141,24 @@ class GateExpiryTest(unittest.TestCase):
                 via_case=True, scenario="allow", **flags)
             self.assertIsInstance(result, AssertionError)
             self.assertEqual(attempts, ["case"])
+
+    def test_allow_requires_operator_completion_not_just_a_clean_gate_stop(self):
+        runner = harnesses.BenchHarnessTest()
+        # Empty diagnostics and contradictory expiry evidence both remain failures.
+        malformed = cycles()
+        malformed[-1]["responses"][0]["arm_cancelling"] = None
+        for diagnostic in ([], malformed):
+            log = fixtures.real_host_log("allow", deny_cycle=2, clean_return=True, denial_cycles=diagnostic)
+            result, _, attempts = runner.run_attempt(harnesses.ALLOW_EVENTS, log,
+                {"gate_pid": 1, "fault": None}, 0, via_case=True)
+            self.assertIsInstance(result, AssertionError)
+            self.assertIn("host scenario failed", str(result))
+            self.assertEqual(attempts, ["case"])
+        completed = fixtures.real_host_log("allow", clean_return=True)
+        result, _, attempts = runner.run_attempt(harnesses.ALLOW_EVENTS, completed,
+            {"gate_pid": 1, "fault": None}, 0, via_case=True)
+        self.assertTrue(result["passed"])
+        self.assertEqual(attempts, ["case"])
 
 
 if __name__ == "__main__":
