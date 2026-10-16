@@ -182,6 +182,7 @@ test('invalid telemetry leaves last good measurements intact and finite recovery
 
 test('household profile keeps all six stages without legacy attack probes', async () => {
   const page=viewer(); await page.config({household_hazards:true,attack_probes:false});
+  assert.match(page.get('.honesty').textContent,/여섯 생활 위험 사례는 같은 말단 구와 보호 상자 형상을 공유/);
   page.emit({kind:'hazard_scene',stage:4,title:'배터리와 물',case:'water',contents:[]});
   assert.equal(page.get('stage-label').textContent,'4 / 6 · 물');
   assert.equal(page.get('hazard-fixtures').hidden,false);

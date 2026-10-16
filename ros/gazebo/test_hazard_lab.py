@@ -524,6 +524,7 @@ class HazardAdapterTest(unittest.TestCase):
         self.assertEqual(report(partial)["checks"][0]["status"], "failed")
         self.assertNotEqual(result["status"], "passed")
         self.assertEqual(result["scope"], "household_hazard_mandatory_gate_simulation")
+        self.assertIn("여섯 생활 위험 사례는 같은 말단 구와 보호 상자 형상을 공유", result["notice"])
         self.assertEqual(result["checks"][0]["status"], "failed")
         self.assertEqual(result["checks"][1]["status"], "not_run")
 

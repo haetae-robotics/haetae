@@ -130,10 +130,10 @@ print(json.dumps(results))
                     if relay.poll() is not None:
                         raise AssertionError("isolated relay failed; see isolation-relay.log")
                     return relay_ready.exists() and device.on()
-                on = wait_for(positive)
+                wait_for(positive)
                 require(relay.wait(timeout=4) == 0, 'permit_isolation_verify.py: qualification predicate failed')
                 require('Authorizer fault injected: person' in (OUT / 'isolation-authorizer.log').read_text(), 'permit_isolation_verify.py: qualification predicate failed')
-                stopped = wait_for(lambda: device.stopped(on["device_ms"], "stop"))
+                stopped = wait_for(lambda: device.stopped("stop"))
                 report["positive_controller_ON"] = True
                 report["gate_hazard_to_controller_LOCKED"] = bool(stopped)
                 report["passed"] = True

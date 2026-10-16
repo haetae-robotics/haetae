@@ -313,7 +313,7 @@ H1_PAUSE_EVENTS = rows("""\
 
 
 def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cycle=None, failing_op=None,
-                  link_error=None, clean_return=False, fail_after_fault=False, ready_file=None):
+                  link_error=None, clean_return=False, fail_after_fault=False, ready_file=None, denial_cycles=None):
     """The real bench_host.run against fakes; returns its log as the host process writes it.
 
     statuses: STATUS replies in order (None: always ON). failing_cycle: that gate round trip takes
@@ -345,6 +345,8 @@ def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cyc
             return True
         def remaining(self):
             return .05
+        def denial_diagnostics(self):
+            return denial_cycles or []
         def close(self):
             pass
     class Link:
@@ -379,7 +381,8 @@ def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cyc
 class BenchEvidenceTest(unittest.TestCase):
     def test_paused_host_clean_denial_requires_correlated_device_evidence(self):
         log = real_host_log("allow", deny_cycle=2, clean_return=True)
-        self.assertEqual(log.splitlines(), [bench_evidence.H1_ALLOWED, bench_evidence.H1_DENIED])
+        self.assertEqual(log.splitlines()[:2], [bench_evidence.H1_ALLOWED, bench_evidence.H1_DENIED])
+        self.assertEqual(json.loads(log.splitlines()[2]), {"event": "bench_gate_denial_diagnostic", "cycles": []})
         # Both STOP rows, a best-effort final STOP with no row, or coalesced STOP rows.
         for events in (H1_PAUSE_EVENTS, H1_PAUSE_EVENTS[:-1], H1_PAUSE_EVENTS[:7] + H1_PAUSE_EVENTS[-1:]):
             self.assertEqual(h1_pause_gate_stop(log, 0, H1_ALLOW_READY, events, events[6]),
@@ -429,22 +432,20 @@ class BenchEvidenceTest(unittest.TestCase):
     def test_interrupt_stop_evidence_cannot_fall_back_to_lease_expiry(self):
         tree = ast.parse(Path(__file__).with_name('bench_verify.py').read_text())
         attempt = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'host_attempt')
-        assignment = next(node for node in ast.walk(attempt) if isinstance(node, ast.Assign)
-                          and any(isinstance(target, ast.Name) and target.id == 'stopped' for target in node.targets)
-                          and isinstance(node.value, ast.Call) and getattr(node.value.func, 'id', None) == 'wait_for')
-        probe = assignment.value.args[0]
+        guard = next(node for node in ast.walk(attempt) if isinstance(node, ast.Assert)
+                     and isinstance(node.msg, ast.Constant) and node.msg.value == 'unexpected first stop reason')
+        probe = guard.test
         lease = {'reason': 'lease'}
-        device = SimpleNamespace(stopped=lambda after, reason: lease if reason == 'lease' else None)
         for interrupt, scenario, expected, accepted in (
                 ('gate-kill', 'allow', 'stop', False),
                 (None, 'person', 'stop', False),
                 (None, 'allow', 'stop', True),
                 ('kill', 'allow', 'lease', True),
                 ('pause', 'allow', 'lease', True)):
-            scope = dict(device=device, positive={'device_ms': 10}, interrupt=interrupt,
+            scope = dict(stopped=lease, interrupt=interrupt,
                          scenario=scenario, expected=expected)
-            predicate = eval(compile(ast.Expression(probe), 'actual-bench-stop-predicate', 'eval'), scope)
-            self.assertEqual(bool(predicate()), accepted)
+            predicate = eval(compile(ast.Expression(probe), 'actual-bench-stop-reason-guard', 'eval'), scope)
+            self.assertEqual(bool(predicate), accepted)
 
     def test_only_proven_availability_loss_is_accepted_as_fail_closed(self):
         marker = {"event": "device_lease_expired", "status": "LOCKED",
@@ -740,7 +741,7 @@ class DriftGuardTest(unittest.TestCase):
         self.assertIn("assert 0 <= delay <= 300,", (TOOLS / "bench_verify.py").read_text())
         self.assertIn("require(0 <= delay <= 300,", (TOOLS / "permit_verify.py").read_text())
 
-    def run_relay(self, statuses, late_op=None, terminal_run=None, stop_error=None):
+    def run_relay(self, statuses, late_op=None, terminal_run=None, stop_error=None, clean_return=False):
         """The real permit_link.relay against fakes; returns its log as haetae-permit writes it.
 
         terminal_run: the authorizer answers that RUN (counting from 1) with a gate_denied terminal, a
@@ -786,6 +787,8 @@ class DriftGuardTest(unittest.TestCase):
                 permit_link.relay("fake-port", "public-install", "fake-socket")
             except (RuntimeError, OSError, ValueError) as exc:  # what haetae-permit catches and prints
                 return output.getvalue() + H2_ERROR_PREFIX + str(exc) + "\n"
+            if clean_return:
+                return output.getvalue()
         self.fail("relay did not fail")
 
     def test_real_relay_output_is_classified(self):

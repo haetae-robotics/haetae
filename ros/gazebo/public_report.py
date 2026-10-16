@@ -422,7 +422,7 @@ def household_report(result, revision="unknown", run_id="unknown", failed=False)
     return {"schema_version":1,"scope":"household_hazard_mandatory_gate_simulation","status":"failed" if failed or result.get("ok") is not True or any(row["status"]=="failed" for row in checks) else "passed" if passed else "incomplete",
             "source_revision":revision if isinstance(revision,str) and re.fullmatch(r"[a-f0-9]{40}",revision) else "unknown",
             "run_id":run_id if isinstance(run_id,str) and re.fullmatch(r"[a-z0-9_-]{1,64}",run_id) else "unknown","checks":checks,
-            "notice":"중앙 Rust 게이트의 필수 생활 위험 검사 실험입니다. 가상 팔 제어기는 동작별 허가를 검사합니다. 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 미검증입니다.",
+            "notice":"중앙 Rust 게이트의 필수 생활 위험 검사 실험입니다. 여섯 생활 위험 사례는 같은 말단 구와 보호 상자 형상을 공유합니다. 가상 팔 제어기는 동작별 허가를 검사합니다. 실물 보호·인지·파지·화학 반응·사람 밀기 방지는 미검증입니다.",
             "trust":"root 소유 시험 어댑터와 주입된 물체·기기 상태를 신뢰합니다. 좌표와 관절은 Gazebo 측정입니다.",
             "evidence":"서명되지 않은 로컬 요약입니다. 기존 침투 방어·독립 정지 시험은 이 프로필에서 통과로 집계하지 않습니다."}
 

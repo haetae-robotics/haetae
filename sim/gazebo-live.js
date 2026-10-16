@@ -195,7 +195,7 @@ fetch('/viewer-config', { cache: 'no-store' })
       for (let i=1;i<=6;i++) $('stage-'+i).lastChild.textContent = ' '+names[i];
       document.querySelector('h1').textContent = '생활 위험 검증';
       document.querySelector('.workspace-intro').textContent = '위험 경로는 차단하고, 정상 경로는 허용하는지 한 장면씩 확인하세요.';
-      document.querySelector('.honesty').textContent = 'Gazebo 실제 관절·물체 좌표를 표시합니다. 물체 종류, 전원·열원 상태, 용기 내용물은 신뢰된 시험 데이터입니다. 부착과 내용물 이전은 시험 연출이며 실제 파지·인지·화학 반응·사람 밀기 방지를 입증하지 않습니다. 기존 침투 방어 검증은 별도 모드입니다.';
+      document.querySelector('.honesty').textContent = 'Gazebo 실제 관절·물체 좌표를 표시합니다. 여섯 생활 위험 사례는 같은 말단 구와 보호 상자 형상을 공유합니다. 물체 종류, 전원·열원 상태, 용기 내용물은 신뢰된 시험 데이터입니다. 부착과 내용물 이전은 시험 연출이며 실제 파지·인지·화학 반응·사람 밀기 방지를 입증하지 않습니다. 기존 침투 방어 검증은 별도 모드입니다.';
       $('hazard-fixtures').hidden = false;
     }
     stepThrough = Boolean(config.step_through);
