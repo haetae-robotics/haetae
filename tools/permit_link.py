@@ -128,10 +128,10 @@ def relay(port, install, authorizer_socket, ready_file=None):
                 print("허용: 보드가 서명을 확인함, LED ON", flush=True)
                 if ready_file:
                     Path(ready_file).write_text(json.dumps({"on": True}))
-            if op == "BIND":
-                op = "ARM"
-                continue  # No output and no inter-cycle sleep during bootstrap.
-            op = "RUN"
+            if op in ("BIND", "ARM"):
+                # Both are OFF-only bootstrap: reach the first RUN before yielding.
+                op = "ARM" if op == "BIND" else "RUN"
+                continue
             time.sleep(.025)
     except (RuntimeError, OSError, ValueError):
         print(json.dumps({"event": "permit_ipc_failure", "stages": list(traces)}), flush=True)
