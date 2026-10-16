@@ -4,12 +4,15 @@ Shared-runner timing in the board-free H1 bench and H2 signed-permit bench: a
 positive-path attempt that missed a deadline or the device lease before any
 fault was injected or any stop decision reached the host or relay, and whose
 device stopped fail-closed, is timing-inconclusive. A terminal the H2
-authorizer logged fails the attempt even if the relay never read it. Only a
+authorizer logged is never timing-inconclusive even if the relay never read it. Only a
 decision made after that deadline that never arrived (and, in H2, that the
 authorizer could not finish sending, so it logged no terminal) is not seen and
 does not prevent a restart. Inconclusive is never a pass. bounded_attempts()
 restarts only such an attempt, from a fresh device emulator and fresh
 processes, at most HOST_ATTEMPTS times, and all-inconclusive fails the case.
+The separate h2_rejected_fault_stop() path can prove an expected signed-input
+rejection and positive-then-OFF independently of late terminal delivery; it never
+retries, and reports the missed delivery deadline as a non-blocking measurement.
 Every other exception fails at once. The 50 ms and 200 ms limits and the
 300 ms observation bound are read here as evidence thresholds only; nothing
 here changes them.
@@ -245,6 +248,68 @@ def h2_timing_loss(relay_log, code, authorizer_log, events):
     evidence = dict(stop, kind=kind, error=error, relay_last_stage=stages[-1])
     evidence.update(authorizer_timing(authorizer_log, stages[-1]))
     return evidence
+
+
+def h2_rejected_fault_stop(relay_log, code, authorizer_log, events, scenario):
+    """Conclusive rejection + OFF, with late terminal delivery measured separately.
+
+    Only the two signed-input rejection scenarios qualify. This is neither a retry nor
+    proof of a timely terminal: the relay's unchanged 50 ms wait still failed. Require
+    the exact Rust rejection, zero command, a completed unsigned terminal (no MAC),
+    matched request stages and positive device evidence within the existing stop bound.
+    Old diagnostics without the exact rejection/zero-command fields cannot qualify.
+    """
+    expected = {"replay": "replay", "invalid-signature": "signature"}.get(scenario)
+    lines = [line for line in relay_log.splitlines() if line.strip()]
+    auth_lines = [line for line in authorizer_log.splitlines() if line.strip()]
+    if (expected is None or code != 1 or not lines
+            or lines[-1] not in (H2_ERROR_PREFIX + "timed out",
+                                H2_ERROR_PREFIX + "permit IPC frame deadline expired")
+            or TRACEBACK in relay_log or TRACEBACK in authorizer_log
+            or any(line.startswith(H2_ERROR_PREFIX) for line in auth_lines)
+            or [line for line in auth_lines if line.startswith(H2_DECISIONS)] != [
+                "Authorizer fault injected: " + scenario, "Authorizer terminal: gate_denied"]):
+        return None
+    relay_traces = json_rows(lines, "permit_ipc_failure")
+    denials = json_rows(auth_lines, "permit_gate_denial_diagnostic")
+    if len(relay_traces) != 1 or len(denials) != 1:
+        return None
+    relay_stages, stages, cycles = (relay_traces[0].get("stages"), denials[0].get("stages"),
+                                    denials[0].get("cycles"))
+    if not all(isinstance(value, list) and value and all(isinstance(row, dict) for row in value)
+               for value in (relay_stages, stages, cycles)):
+        return None
+    relay, auth, cycle = relay_stages[-1], stages[-1], cycles[-1]
+    responses = cycle.get("responses")
+    if (relay.get("op") != "RUN" or "response_received_ns" in relay or "controller_ack_ns" in relay
+            or "sign_completed_ns" in auth or cycle.get("result") != "denied"
+            or not isinstance(responses, list) or len(responses) != 2
+            or not all(isinstance(row, dict) for row in responses)):
+        return None
+    world, motion = responses
+    if (world.get("phase") != "world" or world.get("outcome") != "world_updated" or world.get("stop") is not None
+            or motion.get("phase") != "motion" or motion.get("outcome") != "rejected"
+            or motion.get("rejection_reason") != expected or motion.get("command_zero") is not True
+            or motion.get("stop") != "denied" or motion.get("status_stop") != "denied"
+            or motion.get("vla_armed") is not False or motion.get("active_present") is not False
+            or motion.get("mode") != "normal" or motion.get("recorder_ok") is not True
+            or motion.get("state_ok") is not True or motion.get("arm_cancelling") is not False):
+        return None
+    # Correlate the denial with the relay's final unanswered RUN, not an earlier cycle.
+    clocks = [relay.get("started_ns"), relay.get("request_send_started_ns"), relay.get("request_sent_ns"),
+              auth.get("request_first_byte_ns"), auth.get("request_received_ns"), auth.get("gate_started_ns"),
+              world.get("request_started_ns"), world.get("response_received_ns"),
+              motion.get("request_started_ns"), motion.get("response_received_ns"),
+              auth.get("gate_completed_ns"), auth.get("response_send_started_ns"), auth.get("response_sent_ns")]
+    if not all(type(value) is int and value >= 0 for value in clocks) or clocks != sorted(clocks):
+        return None
+    stop = fail_closed_stop(events, DEADLINE_STOPS)
+    if stop is None or stop["positive_control"] is not True or not 0 <= stop["last_run_to_off_ms"] <= OBSERVATION_MS:
+        return None
+    return {"path": "verified-rejection", "rejection_reason": expected, "blocking": False,
+            "terminal_delivery": "deadline-missed", "error": lines[-1][len(H2_ERROR_PREFIX):],
+            "gate_cycle_ms": elapsed_ms(auth["gate_started_ns"], auth["gate_completed_ns"]),
+            "request_to_terminal_sent_ms": elapsed_ms(relay["started_ns"], auth["response_sent_ns"])}
 
 
 # H1: bench_host.run() ends with an uncaught exception; the log's last line is the

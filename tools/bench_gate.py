@@ -55,12 +55,19 @@ def diagnostic_response(step, phase, request_ms, elapsed_ms, started_ns=None, co
     kind = diagnostic_enum(kind, DIAGNOSTIC_OUTCOMES)
     decision = outcome.get("decision") if isinstance(outcome.get("decision"), dict) else {}
     world = outcome.get("world_updated") if isinstance(outcome.get("world_updated"), dict) else {}
+    rejected = outcome.get("rejected") if isinstance(outcome.get("rejected"), dict) else {}
+    rejection = {"replayed or zero counter": "replay", "input signature failed": "signature"}
+    error = rejected.get("error")
+    cmd = step.get("cmd")
     fired = decision.get("fired")
     armed = status.get("armed")
     return {"phase": diagnostic_enum(phase, {"world", "motion"}),
             "request_t_ms": diagnostic_uint(request_ms), "elapsed_ms": diagnostic_elapsed(elapsed_ms),
             "request_started_ns": diagnostic_uint(started_ns), "response_received_ns": diagnostic_uint(completed_ns),
             "stop": diagnostic_stop(step.get("stop")), "outcome": kind,
+            "rejection_reason": rejection.get(error) if isinstance(error, str) else None,
+            "command_zero": (isinstance(cmd, dict) and set(cmd) == {"linear", "angular"}
+                             and all(type(value) in (int, float) and value == 0 for value in cmd.values())),
             "verdict": diagnostic_enum(decision.get("verdict"), {"yun", "jeol", "bul"}),
             "fired_count": min(len(fired), 65535) if isinstance(fired, list) else None,
             "decision_expires_ms": diagnostic_uint(decision.get("expires_ms")),
