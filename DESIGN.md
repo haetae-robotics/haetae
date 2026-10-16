@@ -73,7 +73,7 @@
 - Error: say that the simulator connection failed and where to check terminal output.
 - Success: confirm completion only from the result event.
 - Disabled: start action waits for the server's ready phase.
-- Between scenes: the same primary control becomes “다음 단계”; the robot is already stopped, while physics, telemetry and safety monitoring continue. Refreshing restores the current waiting step.
+- Between scenes: the same primary control becomes “다음 단계”; the robot is already stopped, while physics, telemetry and the gate's checks continue. Refreshing restores the current waiting step.
 - Offline/slow network: retain the last status but mark the feed as delayed or disconnected.
 - Runner failure: show “시뮬레이션 중단”, disable progression, and retain the failure on refresh. A stale telemetry timer must not replace a disconnection or terminal error label.
 
