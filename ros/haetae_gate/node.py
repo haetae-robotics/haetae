@@ -302,16 +302,22 @@ class HaetaeGate(Node):
             self._abort(exc)
 
     def _cancel_arm(self):
+        signed_stop = False
         if self.permits and "arm" in self.permits.challenges:
             self.heartbeat_pub.publish(String(data=self._stop_permit("arm", IDLE, self._now() * 1_000_000)))
             self.permits.active_arm = IDLE
             self.permits.goal_sequence = 0
+            signed_stop = True
         if self.arm_goal is None and self.arm_goal_future is None:
             return
         self.cancel_requested = True
         if self.arm_cancel_deadline is None:
             self.arm_cancel_deadline = time.monotonic() + 0.25
-        if self.arm_goal is not None and self.arm_cancel_future is None:
+        # The permit controller aborts the goal on signed STOP. A concurrent
+        # ROS cancel can move that same handle to CANCELING before its queued
+        # abort is delivered, leaving neither terminal result deliverable.
+        # Keep the same absolute result deadline; do not send a competing RPC.
+        if not signed_stop and self.arm_goal is not None and self.arm_cancel_future is None:
             self.arm_cancel_future = self.arm_goal.cancel_goal_async()
             self.arm_cancel_future.add_done_callback(self._on_arm_cancel)
 

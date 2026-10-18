@@ -12,8 +12,8 @@ import time
 
 from bench_link import LinkError, SerialLink
 from bench_gate import BenchGate
-from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, h1_pause_gate_stop,
-                            h1_timing_loss, scheduling_loss)
+from bench_evidence import (H1_ALLOWED, Inconclusive, TimingRecord, bounded_attempts, device_settled, first_stop_after_on, h1_pause_gate_stop,
+                            h1_gate_expiry_loss, h1_timing_loss, scheduling_loss)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "bench"
@@ -47,9 +47,8 @@ class Device:
     def on(self):
         return next((e for e in reversed(self.events()) if e["on"]), None)
 
-    def stopped(self, after, reason=None):
-        return next((e for e in self.events() if not e["on"] and e["device_ms"] >= after
-                     and (reason is None or e["reason"] == reason)), None)
+    def stopped(self, reason=None):
+        return first_stop_after_on(self.events(), reason)
 
     def close(self):
         self.child.kill()
@@ -64,9 +63,9 @@ def protocol_case(name, attack, reason):
         link.exchange("HELLO")
         link.exchange("ARM")
         link.exchange("RUN")
-        positive = wait_for(device.on)
+        wait_for(device.on)
         attack(link)
-        stopped = wait_for(lambda: device.stopped(positive["device_ms"], reason))
+        stopped = wait_for(lambda: device.stopped(reason))
         # No renewed output after rejection in this same session.
         try:
             link.exchange("RUN")
@@ -123,14 +122,15 @@ def host_attempt(name, scenario="allow", interrupt=None):
                                     stdout=log, stderr=log, start_new_session=True)
             def timing_loss(code):
                 # Called only after the host exited, so its log and ready file are final.
-                # Inconclusive only for a fail-closed timing loss before any fault, delivered
-                # stop decision or interrupt; anything else stays an ordinary failure.
+                # Only pre-fault fail-closed timing loss, including strictly proven
+                # TTL expiry. Other delivered decisions and all applied interrupts fail.
                 try:
                     wait_for(lambda: device_settled(device.events()), 1)
                 except AssertionError:
                     pass  # no stop evidence: h1_timing_loss returns None
                 time.sleep(.05)  # rows for bytes the host wrote just before it exited
-                evidence = h1_timing_loss(Path(log.name).read_text(), code, ready_state(ready), device.events())
+                evidence = (h1_timing_loss(Path(log.name).read_text(), code, ready_state(ready), device.events()) or
+                            h1_gate_expiry_loss(Path(log.name).read_text(), code, ready_state(ready), device.events()))
                 if evidence is not None:
                     raise Inconclusive(evidence)
             def is_ready():
@@ -145,7 +145,7 @@ def host_attempt(name, scenario="allow", interrupt=None):
                         pass
                 return None
             gate_pid = wait_for(is_ready)["gate_pid"]
-            positive = wait_for(device.on)
+            wait_for(device.on)
             if interrupt == "kill":
                 host.kill()
             elif interrupt == "pause":
@@ -153,9 +153,9 @@ def host_attempt(name, scenario="allow", interrupt=None):
             elif interrupt == "gate-kill":
                 os.kill(gate_pid, signal.SIGKILL)
             expected = "lease" if interrupt in ("kill", "pause") else "stop"
-            stopped = wait_for(lambda: device.stopped(positive["device_ms"], expected) or
-                              (device.stopped(positive["device_ms"], "lease")
-                               if interrupt is None and scenario == "allow" else None))
+            # Read the first OFF before classifying an availability loss. Filtering
+            # by reason here could skip that OFF and hide a later reactivation.
+            stopped = wait_for(device.stopped)
             if interrupt == "pause":
                 os.kill(host.pid, signal.SIGCONT)
             code = host.wait(timeout=3)
@@ -164,11 +164,12 @@ def host_attempt(name, scenario="allow", interrupt=None):
                 expected_expiry = (scenario == "world-loss" and code == 1 and
                                    "stale actuation response: world expired" in Path(log.name).read_text())
                 measured_loss = scheduling_loss(Path(log.name).read_text(), code, scenario, device.events())
-                if code != 0 and not (expected_expiry or measured_loss):
+                if not (expected_expiry or measured_loss):
                     timing_loss(code)  # raises Inconclusive only before the fault, with fail-closed evidence
                 if scenario != "allow":
                     assert json.loads(ready.read_text())["fault"] == scenario, "stopped before injecting intended fault"
-                normal_exit = code == 0 and (scenario != "allow" or stopped["reason"] == "stop")
+                completed = Path(log.name).read_text().splitlines() == [H1_ALLOWED, "시험 종료: LED OFF"]
+                normal_exit = code == 0 and (scenario != "allow" or stopped["reason"] == "stop" and completed)
                 assert normal_exit or expected_expiry or measured_loss, "host scenario failed; see " + str(log.name)
                 if measured_loss:
                     stopped = measured_loss
@@ -184,6 +185,9 @@ def host_attempt(name, scenario="allow", interrupt=None):
                 assert code != 0 or gate_stop, "interrupted host unexpectedly reported success"
                 if interrupt == "pause":
                     resume["resume_path"] = "gate-stop" if gate_stop else "error-exit"
+            assert (stopped["reason"] == expected or
+                    interrupt is None and scenario == "allow" and stopped["reason"] == "lease"), \
+                "unexpected first stop reason"
             assert not any(e["on"] for e in events[events.index(stopped) + 1:])
             last_on = next(e for e in reversed(events) if e["on"])
             delay = stopped["device_ms"] - last_on["renewed_ms"]

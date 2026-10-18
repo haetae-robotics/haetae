@@ -113,7 +113,7 @@ Its operational request/acknowledgment budget remains 50 ms.
 
 Shared CI runners can stretch the host's 25 ms wait between renewals (macOS
 timer coalescing) or pause the whole VM. In the H1 bench and the signed H2
-bench, a scenario attempt is timing-inconclusive only when all of these hold:
+bench, a deadline or lease attempt is timing-inconclusive only when all of these hold:
 
 - The host or relay exited with one of the bounded deadline or lease messages
   (a 50 ms gate, IPC or USB deadline, or a locked controller after its 200 ms
@@ -150,8 +150,24 @@ failure after fault injection. Person input and deliberately omitted world
 updates are marked before those world faults. This boundary records a fault
 attempt, not proof that the Rust gate received it or the board acted on it.
 H2 uses the same input boundary for its authorizer fault marker. A logged
-terminal never permits a timing-inconclusive retry, including a denial or
-failure during ordinary world preparation.
+terminal normally prevents a timing-inconclusive retry. There is one narrow
+exception for proven pre-fault expiry during an ordinary world update:
+
+- The final diagnostic contains the last approved motion and exactly one denied
+  world response. That response is `world_updated`, with both stop fields
+  `expired`, no rejection, a zero command and no active motion. Both responses
+  show normal mode, an armed VLA source and healthy recorder/state.
+- The denied request timestamp is at or after the previous approved decision's
+  recorded expiry. An early expiry, a different denial or a fault marker fails.
+- H1 completed its STOP and emitted the bounded gate diagnostic with no error.
+  H2 completed exactly one `gate_denied` terminal; its final RUN and authorizer
+  stages bind that world request to the terminal and the relay's STOP acknowledgment.
+  A missing trace, incomplete authorizer exit or failed STOP cannot qualify.
+- Native device evidence shows a first fail-closed lease or STOP and no later
+  ON, with the same 200 ms lease floor and 300 ms STOP observation bound above.
+
+This exception is timing-inconclusive even if no ON occurred. It never proves
+the scenario passed; a later attempt still needs ON and the intended fault.
 
 The harness sees decisions that reached the host or relay, and every terminal
 the H2 authorizer logged. A decision made after the deadline that the harness
@@ -159,16 +175,18 @@ cannot see does not prevent a restart. For H2 this is an authorizer terminal
 (a gate denial, gate expiry, authorizer failure or allow completion) that the
 authorizer could not finish sending, so its log has no terminal line, and that
 the relay did not receive before its own deadline. A terminal the authorizer
-logged prevents a retry even if the relay never read it. For H1 it is a gate
+logged prevents a retry unless it meets the strict pre-fault expiry exception
+above. For H1 it is a gate
 reply that came after the host's 50 ms wait had ended. A denial before the
 fault that coincides with such a delay is therefore restarted rather than
 failed.
 
 An inconclusive attempt never counts as a pass. The scenario restarts with a
 fresh device emulator and fresh processes, at most three attempts, and three
-inconclusive attempts fail it. Except for the conclusive H2 rejection path below,
+inconclusive attempts fail it. Except for the pre-fault expiry exception above
+and the conclusive H2 rejection path below,
 every other failure, any loss after the fault
-was injected or after a stop decision reached the host or relay, and any ON
+was injected or after any other stop decision reached the host or relay, and any ON
 after a stop fail at once. The interruption cases (host kill, host pause, Rust
 kill, relay pause, authorizer kill) restart only for a loss before positive
 control; after the interruption they run once. A passing attempt keeps every

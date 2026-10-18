@@ -114,7 +114,13 @@ def relay(port, install, authorizer_socket, ready_file=None):
             permit = json.loads(raw)
             if permit.get("kind") != "permit":
                 link.query("STOP")
+                stages["controller_stop_ack_ns"] = time.monotonic_ns()
                 print("차단: 서명 허가 중단, LED OFF", flush=True)
+                reason = permit.get("reason")
+                print(json.dumps({"event": "permit_terminal", "stages": list(traces),
+                                  "reason": reason if permit.get("kind") == "terminal" and reason in (
+                                      "gate_denied", "gate_expired", "authorizer_failure", "operator_complete") else None}),
+                      flush=True)
                 return
             left = min(budget - (time.monotonic() - started), permit["remaining_ms"] / 1000)
             if left <= 0:
@@ -128,10 +134,10 @@ def relay(port, install, authorizer_socket, ready_file=None):
                 print("허용: 보드가 서명을 확인함, LED ON", flush=True)
                 if ready_file:
                     Path(ready_file).write_text(json.dumps({"on": True}))
-            if op == "BIND":
-                op = "ARM"
-                continue  # No output and no inter-cycle sleep during bootstrap.
-            op = "RUN"
+            if op in ("BIND", "ARM"):
+                # Both are OFF-only bootstrap: reach the first RUN before yielding.
+                op = "ARM" if op == "BIND" else "RUN"
+                continue
             time.sleep(.025)
     except (RuntimeError, OSError, ValueError):
         print(json.dumps({"event": "permit_ipc_failure", "stages": list(traces)}), flush=True)

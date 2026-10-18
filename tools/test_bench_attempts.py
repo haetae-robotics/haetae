@@ -17,7 +17,7 @@ from unittest.mock import patch
 import bench_evidence
 import bench_verify
 import permit_verify
-from bench_evidence import HOST_ATTEMPTS, Inconclusive, TimingRecord, warning
+from bench_evidence import HOST_ATTEMPTS, Inconclusive, TimingRecord, first_stop_after_on, warning
 from test_bench_evidence import (CRASH, H1_ALLOW_EVENTS, H1_ALLOW_LOG, H1_ALLOW_READY, H1_PAUSE_EVENTS, H1_PRE_ON_EVENTS,
                                  H1_PRE_ON_LOG, H1_REPLAY_EVENTS, H1_REPLAY_LOG, H1_UNARMED_EVENTS, H1_UNARMED_LOG,
                                  H1_WORLD_LOSS_EVENTS, H1_WORLD_LOSS_LOG, PERSON_AUTH, PERSON_EVENTS, PERSON_RELAY,
@@ -48,9 +48,8 @@ def fake_device(out, events, attempts):
             return [dict(event) for event in events]
         def on(self):
             return next((event for event in reversed(events) if event["on"]), None)
-        def stopped(self, after, reason=None):
-            return next((event for event in events if not event["on"] and event["device_ms"] >= after
-                         and (reason is None or event["reason"] == reason)), None)
+        def stopped(self, reason=None):
+            return first_stop_after_on(events, reason)
         def close(self):
             pass
     return Device

@@ -47,6 +47,6 @@ The normal build needs only Python's standard library. Raster export tools are b
 
 The preceding six-concept exploration was generated with built-in imagegen after an actual local Claude concept consultation. The approved product A silhouette and A/B wordmarks were separated from their raster concepts and recreated as curves. The organization B links and joint were rebuilt with simple geometry. Final colors, spacing, backgrounds and optical icons are authored vector variants.
 
-Local exploration: `artifacts/brand-logo-20261004/`. Claude's text consultation and invocation evidence: `.omx/artifacts/ask-claude-brand-logos-20261004.md` (prompt SHA256 `8bc4edb319ab8a0cac0f9471b90d391d3ee60efa31e489cbbb61c4e235fcfad1`). This was a concept consultation, not a Claude visual approval of the final SVGs. Final vectors were checked by rendering them locally.
+Claude's text consultation covered concepts; it was not a visual approval of the final SVGs. Final vectors were checked by rendering them locally.
 
 Application: live Gazebo header and favicon; scripted demo header, favicon and pipeline; repository README. Historical v3.9 robot badge geometry remains part of the legacy illustrative model and is not an identity source. The vector identities have not undergone trademark review.
