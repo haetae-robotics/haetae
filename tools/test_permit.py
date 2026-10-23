@@ -93,6 +93,17 @@ class PermitContractTest(unittest.TestCase):
         authorizer.session_key = bytes(32)
         self.assertEqual(authorizer.approve(self.value), {"kind": "terminal", "reason": "gate_expired"})
         self.assertTrue(authorizer.locked)
+        # A gate error is an authorizer_failure terminal; only its fixed kind is kept for diagnostics.
+        from bridge import BridgeFailure, ExpiredActuation, StaleActuation
+        for error, kind in ((StaleActuation("stale actuation response: elapsed 94.4 ms >= 50 ms"), "deadline"),
+                            (ExpiredActuation("stale actuation response: world expired"), "world_expired"),
+                            (BridgeFailure("gate output closed"), "gate")):
+            class FailingGate:
+                def cycle(self, fault, **kwargs):
+                    raise error
+            authorizer.gate, authorizer.locked, authorizer.failure = FailingGate(), False, None
+            self.assertEqual(authorizer.approve(self.value), {"kind": "terminal", "reason": "authorizer_failure"})
+            self.assertEqual((authorizer.locked, authorizer.failure), (True, kind))
 
     def test_authorizer_fault_marker_requires_the_gate_fault_callback(self):
         from permit_authorizer import Authorizer

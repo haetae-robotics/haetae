@@ -299,6 +299,15 @@ WORLD_LOSS_STALE = dict(WORLD_LOSS_APPROVAL, elapsed_ms=0.421, stop="stale_world
                         active_present=False, world_age_ms=231, active_expires_ms=None)
 WORLD_LOSS_LATE_CYCLE = {"result": "incomplete", "responses": [WORLD_LOSS_APPROVAL]}
 WORLD_LOSS_APPROVED_CYCLE = {"result": "approved", "responses": [WORLD_LOSS_APPROVAL]}
+# The real gate approving a world-loss cycle that the authorizer's recheck then expired ("world
+# expired"): world 197 ms old, reply after 10.9 ms (local release build). The gate denies only a
+# world older than 200 ms, so it also approves one exactly 200 ms old (CI replies take 0.4-3 ms).
+WORLD_EXPIRED_APPROVAL = dict(WORLD_LOSS_APPROVAL, request_t_ms=1792779585431, elapsed_ms=10.897,
+                              request_started_ns=549917375, response_received_ns=560396125,
+                              decision_expires_ms=1792779585631, active_expires_ms=1792779585631, world_age_ms=197)
+WORLD_EXPIRED_CYCLE = {"result": "incomplete", "responses": [WORLD_EXPIRED_APPROVAL]}
+WORLD_LIMIT_CYCLE = {"result": "incomplete", "responses": [dict(WORLD_EXPIRED_APPROVAL, world_age_ms=200,
+                                                                elapsed_ms=2.5)]}
 
 # An uncaught crash as the interpreter prints it. haetae-permit turns every RuntimeError, OSError
 # and ValueError (all timing errors) into one "permit 오류:" line, so a timing loss never has one.
@@ -875,6 +884,155 @@ class H1WorldLossTimingLossTest(unittest.TestCase):
             self.assertIsNone(h1_world_loss_timing_loss(log, 1, H1_WORLD_LOSS_READY, events), events)
 
 
+PERMIT = {"kind": "permit", "signature": "00" * 32, "duration": 200, "remaining_ms": 50}
+AUTHORIZER_FAILURE = {"kind": "terminal", "reason": "authorizer_failure"}
+GATE_DENIED = {"kind": "terminal", "reason": "gate_denied"}
+
+
+def fault_authorizer_log(reply, fault="world-loss", **flags):
+    """The real permit_authorizer.serve output after the fault line its approve() printed first."""
+    return bench_evidence.H2_FAULT + fault + "\n" + DriftGuardTest.run_authorizer(None, reply, **flags)
+
+
+H2_STALE_DENIAL = {"result": "denied", "responses": [WORLD_LOSS_STALE]}
+
+
+class H2FaultStopTest(unittest.TestCase):
+    """A completed H2 fault case passes only at its own gate decision."""
+
+    def test_every_fault_passes_at_its_gate_denial(self):
+        for scenario in ("person", "world-loss", "replay", "invalid-signature"):
+            log = fault_authorizer_log(GATE_DENIED, scenario, cycles=[H2_STALE_DENIAL])
+            self.assertEqual(log.splitlines()[:2], [bench_evidence.H2_FAULT + scenario,
+                                                    "Authorizer terminal: gate_denied"])
+            self.assertEqual(bench_evidence.h2_fault_terminal(log, scenario), "gate_denied", scenario)
+            for other in {"person", "world-loss", "replay", "invalid-signature"} - {scenario}:
+                self.assertIsNone(bench_evidence.h2_fault_terminal(log, other), (scenario, other))
+            for bad in (log.replace(bench_evidence.H2_FAULT + scenario + "\n", ""),
+                        log + "Authorizer terminal: gate_denied\n", log + CRASH,
+                        log + H2_ERROR_PREFIX + "[Errno 32] Broken pipe\n"):
+                self.assertIsNone(bench_evidence.h2_fault_terminal(bad, scenario), scenario)
+
+    def test_world_loss_may_end_at_the_authorizer_world_expiry_of_a_gate_approval(self):
+        expired = fault_authorizer_log(AUTHORIZER_FAILURE, failure="world_expired", cycles=[WORLD_EXPIRED_CYCLE])
+        lines = expired.splitlines()
+        self.assertEqual(lines[1], "Authorizer terminal: authorizer_failure")
+        self.assertEqual(json.loads(lines[-1]), {"event": bench_evidence.H2_GATE_ERROR, "error": "world_expired",
+                                                 "cycles": [WORLD_EXPIRED_CYCLE]})
+        self.assertEqual(bench_evidence.h2_fault_terminal(expired, "world-loss"), "world_expired")
+        self.assertIsNone(bench_evidence.h2_fault_terminal(expired.replace("world-loss", "person", 1), "person"))
+        # The gate's inclusive limit: it approves a world exactly 200 ms old, which the recheck expires,
+        # in the cycle or at remaining() after an approved cycle.
+        approved_limit = dict(WORLD_LIMIT_CYCLE, result="approved")
+        for cycles in ([WORLD_LIMIT_CYCLE], [approved_limit], [WORLD_LOSS_APPROVED_CYCLE, WORLD_LIMIT_CYCLE]):
+            log = fault_authorizer_log(AUTHORIZER_FAILURE, failure="world_expired", cycles=cycles)
+            self.assertEqual(bench_evidence.h2_fault_terminal(log, "world-loss"), "world_expired", cycles)
+        limit = WORLD_LIMIT_CYCLE["responses"][0]
+        for cycles in ([H2_STALE_DENIAL], [{"result": "incomplete", "responses": []}],
+                       [{"result": "incomplete", "responses": [dict(limit, world_age_ms=201)]}],  # the gate's denial
+                       [{"result": "incomplete", "responses": [dict(limit, elapsed_ms=50.0)]}],  # a 50 ms deadline
+                       [WORLD_LOSS_LATE_CYCLE], [{"result": "denied", "responses": [limit]}]):
+            log = fault_authorizer_log(AUTHORIZER_FAILURE, failure="world_expired", cycles=cycles)
+            self.assertIsNone(bench_evidence.h2_fault_terminal(log, "world-loss"), cycles)
+        error_row = [line + "\n" for line in lines if bench_evidence.H2_GATE_ERROR in line][0]
+        self.assertIsNone(bench_evidence.h2_fault_terminal(expired + error_row, "world-loss"))  # two diagnostics
+
+    def test_any_other_terminal_after_the_fault_is_not_its_stop(self):
+        # Before, any terminal passed: a Rust gate that exited after the fault ended the case "passed".
+        for failure in ("gate", "gate_timeout", "deadline", "stale", "expired", "other", None):
+            for scenario in ("person", "world-loss", "replay", "invalid-signature"):
+                for cycle in (WORLD_LOSS_LATE_CYCLE, WORLD_EXPIRED_CYCLE, WORLD_LIMIT_CYCLE):
+                    log = fault_authorizer_log(AUTHORIZER_FAILURE, scenario, failure=failure, cycles=[cycle])
+                    self.assertIsNone(bench_evidence.h2_fault_terminal(log, scenario), (failure, scenario, cycle))
+        expired = fault_authorizer_log({"kind": "terminal", "reason": "gate_expired"}, cycles=[WORLD_LOSS_LATE_CYCLE])
+        self.assertIsNone(bench_evidence.h2_fault_terminal(expired, "world-loss"))
+
+    def test_messages_and_callers_exist_in_source(self):
+        authorizer = (TOOLS / "permit_authorizer.py").read_text()
+        self.assertIn('print("' + bench_evidence.H2_FAULT + '" + fault', authorizer)
+        self.assertIn('{"event": "' + bench_evidence.H2_GATE_ERROR + '", "error": authorizer.failure', authorizer)
+        self.assertIn('h2_fault_terminal(auth_text, "person") == "gate_denied"',
+                      (TOOLS / "permit_isolation_verify.py").read_text())
+
+    def test_authorizer_failure_kinds_never_keep_error_text(self):
+        import permit_authorizer
+        from bridge import BridgeFailure, ExpiredActuation, StaleActuation
+        cases = [(ExpiredActuation("stale actuation response: world expired"), "world_expired"),
+                 (ExpiredActuation("stale actuation response: proposal expired"), "expired"),
+                 (StaleActuation("stale actuation response: elapsed 94.4 ms >= 50 ms"), "deadline"),
+                 (StaleActuation("stale actuation response: elapsed 94.4 ms >= 60 ms"), "stale"),
+                 (StaleActuation("stale actuation response: missing expiry or world age"), "stale"),
+                 (BridgeFailure("gate response timeout"), "gate_timeout"),
+                 (BridgeFailure("gate output closed"), "gate"), (ValueError("private payload"), "other")]
+        for exc, kind in cases:
+            self.assertEqual(permit_authorizer.failure_kind(exc), kind, exc)
+        # The messages it names are the bridge's own.
+        bridge = (ROOT / "ros/haetae_gate/bridge.py").read_text()
+        for text in ('ExpiredActuation("stale actuation response: world expired")',
+                     'BridgeFailure("gate response timeout")', 'f"stale actuation response: elapsed {elapsed_ms:.1f} ms'):
+            self.assertIn(text, bridge)
+
+
+class H2WorldLossTimingLossTest(unittest.TestCase):
+    """The H2 relay gave up on a RUN after the world-loss fault, before the gate saw a stale world."""
+
+    def test_a_relay_deadline_before_a_stale_world_is_inconclusive(self):
+        for auth, error, result in ((H2_WORLD_LOSS_PERMIT_AUTH, None, "approved"),
+                                    (H2_WORLD_LOSS_DEADLINE_AUTH, "deadline", "incomplete")):
+            self.assertEqual(bench_evidence.json_rows(auth.splitlines(), bench_evidence.H2_GATE_ERROR)[0]
+                             ["cycles"][-1]["result"], result)
+            loss = bench_evidence.h2_world_loss_timing_loss(PERSON_RELAY, 1, auth, PERSON_EVENTS)
+            self.assertEqual((loss["kind"], loss["fault"], loss["authorizer_error"], loss["world_age_ms"],
+                              loss["stop_reason"], loss["last_run_to_off_ms"], loss["error"]),
+                             ("deadline", "world-loss", error, 43, "lease", 360, "timed out"))
+            self.assertNotIn("response_received_ns", loss["relay_last_stage"])
+            # The pre-fault rule is unchanged: a logged fault is never its timing loss.
+            self.assertIsNone(h2_timing_loss(PERSON_RELAY, 1, auth, PERSON_EVENTS))
+        # The same 50 ms deadline raised by remaining() after an approved cycle.
+        remaining = fault_authorizer_log(AUTHORIZER_FAILURE, failure="deadline", cycles=[WORLD_LOSS_APPROVED_CYCLE])
+        self.assertEqual(bench_evidence.h2_world_loss_timing_loss(PERSON_RELAY, 1, remaining, PERSON_EVENTS)
+                         ["authorizer_error"], "deadline")
+
+    def test_it_requires_the_world_loss_fault_and_a_fresh_gate_approval(self):
+        bad = [fault_authorizer_log(PERMIT, "person", cycles=[WORLD_LOSS_APPROVED_CYCLE]),
+               DriftGuardTest.run_authorizer(None, PERMIT, cycles=[WORLD_LOSS_APPROVED_CYCLE]),  # no fault line
+               fault_authorizer_log(GATE_DENIED, cycles=[H2_STALE_DENIAL]),
+               fault_authorizer_log(AUTHORIZER_FAILURE, failure="gate_timeout",
+                                    cycles=[{"result": "incomplete", "responses": []}]),
+               fault_authorizer_log(AUTHORIZER_FAILURE, failure="gate", cycles=[WORLD_LOSS_LATE_CYCLE]),
+               # The fault's own stop, a world expiry, delivered late fails like a late stale-world denial.
+               fault_authorizer_log(AUTHORIZER_FAILURE, failure="world_expired", cycles=[WORLD_EXPIRED_CYCLE]),
+               fault_authorizer_log(PERMIT, cycles=[WORLD_LOSS_LATE_CYCLE]),
+               H2_WORLD_LOSS_PERMIT_AUTH.replace("\n", "\nAuthorizer terminal: authorizer_failure\n", 1),
+               fault_authorizer_log({"kind": "terminal", "reason": "gate_expired"}, cycles=[WORLD_LOSS_LATE_CYCLE]),
+               fault_authorizer_log(PERMIT, cycles=[{"result": "approved", "responses": [
+                   dict(WORLD_LOSS_APPROVAL, world_age_ms=200)]}]),
+               H2_WORLD_LOSS_PERMIT_AUTH + H2_WORLD_LOSS_PERMIT_AUTH.splitlines(keepends=True)[-2],
+               H2_WORLD_LOSS_PERMIT_AUTH.replace(H2_WORLD_LOSS_PERMIT_AUTH.splitlines(keepends=True)[-2], ""),
+               H2_WORLD_LOSS_PERMIT_AUTH + CRASH]
+        for auth in bad:
+            self.assertIsNone(bench_evidence.h2_world_loss_timing_loss(PERSON_RELAY, 1, auth, PERSON_EVENTS), auth)
+
+    def test_it_requires_a_relay_that_received_no_reply_and_a_fail_closed_stop(self):
+        auth = H2_WORLD_LOSS_PERMIT_AUTH
+        for code in (0, 2, -9, None):
+            self.assertIsNone(bench_evidence.h2_world_loss_timing_loss(PERSON_RELAY, code, auth, PERSON_EVENTS))
+        last = PERSON_RELAY.splitlines()[-1]
+        for relay in (REPLY_RELAY,  # the reply reached the relay: it may have carried a stop decision
+                      PERSON_RELAY.replace(last, H2_ERROR_PREFIX + H2_LEASE),
+                      PERSON_RELAY.replace(last, H2_ERROR_PREFIX + "invalid H2 controller response: H2 ERR x"),
+                      PERSON_RELAY + CRASH, PERSON_RELAY.replace(last, "permit 오류: permit IPC frame deadline expired")
+                      .replace('"permit_ipc_failure"', '"other"')):
+            self.assertIsNone(bench_evidence.h2_world_loss_timing_loss(relay, 1, auth, PERSON_EVENTS), relay[-80:])
+        self.assertIsNotNone(bench_evidence.h2_world_loss_timing_loss(
+            PERSON_RELAY.replace(last, H2_ERROR_PREFIX + "permit IPC frame deadline expired"), 1, auth, PERSON_EVENTS))
+        no_on = PERSON_EVENTS[:4] + [dict(PERSON_EVENTS[-1], renewed_ms=841, device_ms=900)]  # a STOP 59 ms after ARM
+        self.assertFalse(bench_evidence.fail_closed_stop(no_on, bench_evidence.DEADLINE_STOPS)["positive_control"])
+        for events in (PERSON_EVENTS[:7], PERSON_EVENTS + [PERSON_EVENTS[6]], no_on,
+                       PERSON_EVENTS[:7] + [dict(PERSON_EVENTS[7], device_ms=1370)]):  # lease before 200 ms
+            self.assertIsNone(bench_evidence.h2_world_loss_timing_loss(PERSON_RELAY, 1, auth, events), events)
+
+
 class DriftGuardTest(unittest.TestCase):
     """The classifiers match exact strings; pin them to the code that produces them."""
 
@@ -965,7 +1123,7 @@ class DriftGuardTest(unittest.TestCase):
         deadline = h2_timing_loss(self.run_relay(["ON", "ON"], late_op="RUN"), 1, "", PERSON_EVENTS)
         self.assertEqual((deadline["kind"], deadline["error"]), ("deadline", "permit IPC frame deadline expired"))
 
-    def run_authorizer(self, reply, stall=False, cycles=None, sent=None, permits_before=0):
+    def run_authorizer(self, reply, stall=False, cycles=None, sent=None, permits_before=0, failure=None):
         """The real permit_authorizer.serve against fakes; returns its log as haetae-permit writes it.
 
         It reads one RUN request and answers with reply; then the relay closes the socket. stall: the
@@ -981,6 +1139,7 @@ class DriftGuardTest(unittest.TestCase):
             def __init__(self, *args):
                 self.gate = SimpleNamespace(denial_diagnostics=lambda: cycles or [])
                 self.remaining_permits = permits_before
+                self.failure = failure
             def approve(self, value, stages=None):
                 if self.remaining_permits:
                     self.remaining_permits -= 1
@@ -1206,6 +1365,15 @@ class CadenceTest(unittest.TestCase):
                           payload["pooled"]["renewal_gap_ms"]["n"]), (False, 1, {"person": 1}, 3))
         json.dumps(payload, allow_nan=False)
         self.assertTrue(all(math.isfinite(value) for value in payload["pooled"]["renewal_gap_ms"].values()))
+
+
+
+# Real authorizer output, built once DriftGuardTest.run_authorizer exists.
+# The authorizer approved a world-loss cycle and sent the permit; the relay had already given up.
+H2_WORLD_LOSS_PERMIT_AUTH = fault_authorizer_log(PERMIT, cycles=[WORLD_LOSS_APPROVED_CYCLE])
+# The authorizer refused its own world-loss approval at the 50 ms deadline.
+H2_WORLD_LOSS_DEADLINE_AUTH = fault_authorizer_log(AUTHORIZER_FAILURE, failure="deadline",
+                                                   cycles=[WORLD_LOSS_LATE_CYCLE])
 
 
 if __name__ == "__main__":

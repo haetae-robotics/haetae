@@ -3,11 +3,12 @@
 Shared-runner timing in the board-free H1 bench and H2 signed-permit bench: a
 positive-path attempt that missed a deadline or the device lease before any
 fault was injected, and whose device stopped fail-closed, is timing-inconclusive.
-H1 world-loss extends this window until the gate sees a stale world, only with the
-error diagnostic's proof of a normal positive decision on a fresh world.
+World loss (H1 and H2) extends this window until the gate sees a stale world, only with
+the error diagnostic's proof of a normal positive decision on a fresh world.
 A completed gate denial is an exception only with the strict gate_expiry_evidence
 proof of an ordinary pre-fault TTL expiry, matched to the host or relay STOP.
-Every other terminal the H2 authorizer logged is never timing-inconclusive. Only a
+Every other terminal the H2 authorizer logged is never timing-inconclusive, except its
+own authorizer_failure at the 50 ms deadline inside that world-loss window. Only a
 decision made after that deadline that never arrived (and, in H2, that the
 authorizer could not finish sending, so it logged no terminal) is not seen and
 does not prevent a restart. Inconclusive is never a pass. bounded_attempts()
@@ -414,6 +415,84 @@ def h2_rejected_fault_stop(relay_log, code, authorizer_log, events, scenario):
             "request_to_terminal_sent_ms": elapsed_ms(relay["started_ns"], auth["response_sent_ns"])}
 
 
+H2_FAULT = "Authorizer fault injected: "
+H2_GATE_ERROR = "permit_gate_error_diagnostic"
+
+
+def h2_fault_terminal(authorizer_log, scenario):
+    """The stop decision that ended a completed H2 fault case: "gate_denied", "world_expired" or None.
+
+    A fault case ends at the gate's own denial. World loss may instead end when the authorizer's
+    freshness recheck expired the gate's last approval, the H1 "world expired" case, shown by its
+    gate error diagnostic: a normal positive decision on a world at most WORLD_MAX_AGE_MS old
+    (the gate denies only an older one), received within 50 ms, in the cycle or at remaining().
+    Any other terminal (a gate timeout, a gate that exited, any other authorizer failure) is not
+    the intended fault's stop.
+    """
+    lines = [line for line in authorizer_log.splitlines() if line.strip()]
+    if TRACEBACK in lines or any(line.startswith(H2_ERROR_PREFIX) for line in lines):
+        return None
+    decisions = [line for line in lines if line.startswith(H2_DECISIONS)]
+    if decisions == [H2_FAULT + scenario, "Authorizer terminal: gate_denied"]:
+        return "gate_denied"
+    if scenario != "world-loss" or decisions != [H2_FAULT + scenario, "Authorizer terminal: authorizer_failure"]:
+        return None
+    errors = json_rows(lines, H2_GATE_ERROR)
+    if len(errors) != 1 or errors[0].get("error") != "world_expired":
+        return None
+    motion = world_loss_fresh_approval(errors[0].get("cycles"), at_limit=True)
+    elapsed = motion.get("elapsed_ms") if motion is not None else None
+    return "world_expired" if type(elapsed) in (int, float) and 0 <= elapsed < 50 else None
+
+
+def h2_world_loss_timing_loss(relay_log, code, authorizer_log, events):
+    """An H2 world-loss attempt whose relay missed its deadline before the gate saw a stale world.
+
+    The relay gave up on the authorizer's reply to a RUN after the world-loss fault: exit 1 with
+    a deadline message, one relay trace whose last stage is a RUN with no reply received, so no
+    stop decision reached the relay. The authorizer logged the fault and exactly one gate error
+    diagnostic whose last cycle passes world_loss_fresh_approval(): an approval it answered with
+    a permit (no error), or one the authorizer itself refused at its 50 ms deadline, in the cycle
+    or at remaining(). A logged terminal can only be that authorizer_failure. No traceback in
+    either log, and fail_closed_stop() shows ON, then a fail-closed OFF. A gate timeout records
+    no decision, and a stale-world denial or world expiry is the fault's own stop delivered late,
+    so they stay failures. Never a pass.
+    """
+    lines = [line for line in relay_log.splitlines() if line.strip()]
+    if code != 1 or not lines or not lines[-1].startswith(H2_ERROR_PREFIX):
+        return None
+    error = lines[-1][len(H2_ERROR_PREFIX):]
+    if error not in H2_DEADLINES or TRACEBACK in relay_log or TRACEBACK in authorizer_log:
+        return None
+    traces = json_rows(lines, "permit_ipc_failure")
+    stages = traces[0].get("stages") if len(traces) == 1 else None
+    if (not isinstance(stages, list) or not stages or not isinstance(stages[-1], dict)
+            or stages[-1].get("op") != "RUN" or "response_received_ns" in stages[-1]):
+        return None
+    auth_lines = [line for line in authorizer_log.splitlines() if line.strip()]
+    decisions = [line for line in auth_lines if line.startswith(H2_DECISIONS)]
+    errors = json_rows(auth_lines, H2_GATE_ERROR)
+    fault_only = [H2_FAULT + "world-loss"]
+    if decisions not in (fault_only, fault_only + ["Authorizer terminal: authorizer_failure"]) or len(errors) != 1:
+        return None
+    cycles, failure = errors[0].get("cycles"), errors[0].get("error")
+    motion = world_loss_fresh_approval(cycles)
+    if motion is None:
+        return None
+    result = cycles[-1]["result"]
+    if not (failure is None and result == "approved" and len(decisions) == 1
+            or failure == "deadline" and result in ("incomplete", "approved")):
+        return None
+    stop = fail_closed_stop(events, DEADLINE_STOPS)
+    if stop is None or not stop["positive_control"]:
+        return None
+    evidence = dict(stop, kind="deadline", error=error, fault="world-loss", authorizer_error=failure,
+                    world_age_ms=motion["world_age_ms"], cycle_ms_at_response=motion.get("elapsed_ms"),
+                    relay_last_stage=stages[-1])
+    evidence.update(authorizer_timing(authorizer_log, stages[-1]))
+    return evidence
+
+
 # H1: bench_host.run() ends with an uncaught exception; the log's last line is the
 # traceback's "module.Class: message" (strings pinned by tests).
 H1_LEASE = "device lease locked; explicit new run required"
@@ -547,11 +626,12 @@ def h1_timing_loss(host_log, code, ready, events):
     return dict(stop, kind=found[0], error=lines[-1])
 
 
-def world_loss_fresh_approval(cycles):
+def world_loss_fresh_approval(cycles, at_limit=False):
     """The last diagnostic cycle is a world-loss cycle whose only gate response approved a fresh world.
 
     A world-loss cycle omits its world update, so its one response is the motion decision. It
     must be a normal positive decision with no stop, on a world younger than WORLD_MAX_AGE_MS.
+    at_limit also accepts a world exactly WORLD_MAX_AGE_MS old: the gate denies only an older one.
     """
     if not isinstance(cycles, list) or not cycles or not isinstance(cycles[-1], dict):
         return None
@@ -568,7 +648,7 @@ def world_loss_fresh_approval(cycles):
             or motion.get("active_present") is not True or motion.get("mode") != "normal"
             or motion.get("vla_armed") is not True or motion.get("recorder_ok") is not True
             or motion.get("state_ok") is not True or motion.get("arm_cancelling") is not False
-            or type(age) is not int or not 0 <= age < WORLD_MAX_AGE_MS):
+            or type(age) is not int or not 0 <= age < WORLD_MAX_AGE_MS + (1 if at_limit else 0)):
         return None
     return motion
 
@@ -581,8 +661,9 @@ def h1_world_loss_timing_loss(host_log, code, ready, events):
     the fault. Requires host exit 1 with a timing exception last; ready fault world-loss and
     exactly the allow and world-loss lines (no gate stop, completion or failed STOP); exactly
     one error diagnostic whose last cycle passes world_loss_fresh_approval(), where an exception
-    inside that cycle is the elapsed deadline; and fail_closed_stop() evidence after ON. A gate
-    response timeout records no decision, so it stays a failure. Returns None otherwise.
+    inside that cycle is the elapsed deadline and one after an approved cycle is a USB, lease or
+    50 ms deadline; and fail_closed_stop() evidence after ON. A gate response timeout records no
+    decision, so it stays a failure. Returns None otherwise.
     """
     lines = [line for line in host_log.splitlines() if line.strip()]
     if code != 1 or not lines or TRACEBACK not in lines:
