@@ -13,7 +13,7 @@ import time
 from bench_link import LinkError, SerialLink
 from bench_gate import BenchGate
 from bench_evidence import (H1_ALLOWED, Inconclusive, TimingRecord, bounded_attempts, device_settled, first_stop_after_on, h1_pause_gate_stop,
-                            h1_gate_expiry_loss, h1_timing_loss, scheduling_loss)
+                            h1_gate_expiry_loss, h1_timing_loss, h1_world_loss_timing_loss, scheduling_loss)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "bench"
@@ -123,14 +123,17 @@ def host_attempt(name, scenario="allow", interrupt=None):
             def timing_loss(code):
                 # Called only after the host exited, so its log and ready file are final.
                 # Only pre-fault fail-closed timing loss, including strictly proven
-                # TTL expiry. Other delivered decisions and all applied interrupts fail.
+                # TTL expiry, or a world-loss loss before the gate saw a stale world.
+                # Other delivered decisions and all applied interrupts fail.
                 try:
                     wait_for(lambda: device_settled(device.events()), 1)
                 except AssertionError:
                     pass  # no stop evidence: h1_timing_loss returns None
                 time.sleep(.05)  # rows for bytes the host wrote just before it exited
-                evidence = (h1_timing_loss(Path(log.name).read_text(), code, ready_state(ready), device.events()) or
-                            h1_gate_expiry_loss(Path(log.name).read_text(), code, ready_state(ready), device.events()))
+                text, state = Path(log.name).read_text(), ready_state(ready)
+                evidence = (h1_timing_loss(text, code, state, device.events()) or
+                            h1_gate_expiry_loss(text, code, state, device.events()) or
+                            h1_world_loss_timing_loss(text, code, state, device.events()))
                 if evidence is not None:
                     raise Inconclusive(evidence)
             def is_ready():

@@ -15,7 +15,7 @@ from unittest.mock import patch
 import bench_evidence
 from bench_evidence import (H1_LEASE, H1_STOP_CALL, H2_DEADLINES, H2_ERROR_PREFIX, H2_LEASE, H2_REPLY_PREFIX,
                             TimingRecord, cadence, distribution, h1_pause_gate_stop, h1_timing_loss,
-                            h2_timing_loss, scheduling_loss)
+                            h1_world_loss_timing_loss, h2_timing_loss, scheduling_loss)
 
 TOOLS = Path(__file__).resolve().parent
 ROOT = TOOLS.parent
@@ -269,6 +269,35 @@ H1_WORLD_LOSS_EVENTS = rows("""\
 {"device_ms":786,"on":true,"reason":"run","sequence":4,"renewed_ms":740}
 {"device_ms":847,"on":false,"reason":"stop","sequence":5,"renewed_ms":740}
 """)
+
+# H1, run 39109523272 (ubuntu-latest, main), world-loss attempt 1: after ON and the world-loss
+# marker, the first cycle without a world update took 94.4 ms (StaleActuation) and the host's
+# STOP turned the LED off 120 ms after the last renewal. Rows 5-80 (the 25 ms renewals) are omitted.
+H1_LATE_WORLD_LOSS_EVENTS = rows("""\
+{"device_ms":0,"on":false,"reason":"boot","sequence":0,"renewed_ms":0}
+{"device_ms":543,"on":false,"reason":"hello","sequence":0,"renewed_ms":0}
+{"device_ms":543,"on":false,"reason":"armed","sequence":1,"renewed_ms":543}
+{"device_ms":543,"on":false,"reason":"armed","sequence":2,"renewed_ms":543}
+{"device_ms":544,"on":true,"reason":"run","sequence":3,"renewed_ms":543}
+{"device_ms":1539,"on":true,"reason":"run","sequence":81,"renewed_ms":1539}
+{"device_ms":1564,"on":true,"reason":"run","sequence":82,"renewed_ms":1539}
+{"device_ms":1659,"on":false,"reason":"stop","sequence":83,"renewed_ms":1539}
+""")
+H1_WORLD_LOSS_READY = {"gate_pid": 3230, "fault": "world-loss"}
+# bench_gate projections of the real Rust gate (local release build) in world-loss cycles: a late
+# approval while the world is 43 ms old, and the stale-world denial. The bridge's own 50 ms request
+# timeout bounds the round trip (8 ms here), so a late cycle spent its time on the host (53 ms here).
+WORLD_LOSS_APPROVAL = {
+    "phase": "motion", "request_t_ms": 1792764233674, "elapsed_ms": 53.0, "request_started_ns": 216295583,
+    "response_received_ns": 224223583, "stop": None, "outcome": "decision", "rejection_reason": None,
+    "command_zero": False, "verdict": "yun", "fired_count": 0, "decision_expires_ms": 1792764233874,
+    "world_stamp_ms": None, "mode": "normal", "status_stop": None, "vla_armed": True, "active_present": True,
+    "world_age_ms": 43, "active_expires_ms": 1792764233874, "recorder_ok": True, "state_ok": True,
+    "arm_cancelling": False}
+WORLD_LOSS_STALE = dict(WORLD_LOSS_APPROVAL, elapsed_ms=0.421, stop="stale_world", command_zero=True, verdict="bul",
+                        fired_count=1, decision_expires_ms=None, status_stop="stale_world", vla_armed=False,
+                        active_present=False, world_age_ms=231, active_expires_ms=None)
+WORLD_LOSS_LATE_CYCLE = {"result": "incomplete", "responses": [WORLD_LOSS_APPROVAL]}
 
 # An uncaught crash as the interpreter prints it. haetae-permit turns every RuntimeError, OSError
 # and ValueError (all timing errors) into one "permit 오류:" line, so a timing loss never has one.
@@ -707,6 +736,100 @@ class H1TimingLossTest(unittest.TestCase):
             self.assertIsNone(h1_timing_loss(H1_PRE_ON_LOG, 1, None, armed + [h1_off(late, "stop", 563)]), late)
 
 
+def world_loss_log(cycles=(WORLD_LOSS_LATE_CYCLE,)):
+    """The real bench_host output for a gate deadline in the first cycle without a world update."""
+    return real_host_log("world-loss", failing_cycle=4, fail_after_fault=True, denial_cycles=list(cycles))
+
+
+class H1WorldLossTimingLossTest(unittest.TestCase):
+    """Run 39109523272: a world-loss deadline before the gate could see a stale world."""
+
+    def test_real_host_output_of_a_late_fresh_approval_is_inconclusive(self):
+        log = world_loss_log()
+        lines = log.splitlines()
+        self.assertEqual(lines[:2], [bench_evidence.H1_ALLOWED, bench_evidence.H1_WORLD_LOSS])
+        self.assertEqual(json.loads(lines[2]), {"event": bench_evidence.H1_ERROR_DIAGNOSTIC,
+                                                "cycles": [WORLD_LOSS_LATE_CYCLE]})
+        self.assertEqual(lines[3], bench_evidence.TRACEBACK)
+        loss = h1_world_loss_timing_loss(log, 1, H1_WORLD_LOSS_READY, H1_LATE_WORLD_LOSS_EVENTS)
+        self.assertEqual((loss["kind"], loss["fault"], loss["positive_control"], loss["stop_reason"],
+                          loss["last_run_to_off_ms"], loss["world_age_ms"], loss["cycle_ms_at_response"],
+                          loss["gate_round_trip_ms"]),
+                         ("deadline", "world-loss", True, "stop", 120, 43, 53.0, 7.928))
+        self.assertEqual(loss["error"], "bridge.StaleActuation: stale actuation response: elapsed 53.1 ms >= 50 ms")
+        # The pre-fault rule is unchanged: it never accepts the injected fault.
+        self.assertIsNone(h1_timing_loss(log, 1, H1_WORLD_LOSS_READY, H1_LATE_WORLD_LOSS_EVENTS))
+        # Same output, earlier approval after the world-loss fault, then a late RUN acknowledgment.
+        approved = {"result": "approved", "responses": [WORLD_LOSS_APPROVAL]}
+        for error in bench_evidence.H1_USB_DEADLINES:
+            run_late = world_loss_log([approved]).replace(lines[-1], "bench_link.LinkError: " + error)
+            self.assertEqual(h1_world_loss_timing_loss(run_late, 1, H1_WORLD_LOSS_READY,
+                                                       H1_LATE_WORLD_LOSS_EVENTS)["kind"], "deadline", error)
+
+    def test_it_requires_the_injected_world_loss_and_no_stop_decision(self):
+        log = world_loss_log()
+        for code in (0, 2, -9, None):
+            self.assertIsNone(h1_world_loss_timing_loss(log, code, H1_WORLD_LOSS_READY, H1_LATE_WORLD_LOSS_EVENTS))
+        for ready in (None, "unreadable", {}, {"gate_pid": 1, "fault": None}, {"gate_pid": 1, "fault": "person"},
+                      {"gate_pid": 1, "fault": "replay"}):
+            self.assertIsNone(h1_world_loss_timing_loss(log, 1, ready, H1_LATE_WORLD_LOSS_EVENTS), ready)
+        lines = log.splitlines()
+        diagnostic = lines[2]
+        for bad in (log.replace(bench_evidence.H1_WORLD_LOSS + "\n", ""),
+                    log.replace(bench_evidence.H1_ALLOWED + "\n", ""),
+                    log.replace(diagnostic + "\n", ""),
+                    log.replace(diagnostic, diagnostic + "\n" + diagnostic),
+                    log.replace(diagnostic, bench_evidence.H1_DENIED + "\n" + diagnostic),
+                    log.replace(diagnostic, "시험 종료: LED OFF\n" + diagnostic),
+                    log.replace(bench_evidence.H1_WORLD_LOSS, "시험: 가상 사람이 접근합니다"),
+                    log.replace(lines[-2], "    " + H1_STOP_CALL + "\n" + lines[-2]),
+                    log.replace(bench_evidence.TRACEBACK + "\n", "")):
+            self.assertIsNone(h1_world_loss_timing_loss(bad, 1, H1_WORLD_LOSS_READY, H1_LATE_WORLD_LOSS_EVENTS))
+
+    def test_it_requires_a_normal_positive_gate_decision_on_a_fresh_world(self):
+        changes = [{"world_age_ms": 200}, {"world_age_ms": 231}, {"world_age_ms": -1}, {"world_age_ms": None},
+                   {"world_age_ms": 43.0}, {"world_age_ms": True}, {"stop": "stale_world"},
+                   {"status_stop": "stale_world"}, {"stop": "expired"}, {"verdict": "bul"}, {"verdict": "jeol"},
+                   {"command_zero": True}, {"active_present": False}, {"mode": "hold"}, {"vla_armed": False},
+                   {"recorder_ok": False}, {"state_ok": False}, {"arm_cancelling": True}, {"outcome": "rejected"},
+                   {"rejection_reason": "replay"}, {"phase": "world"}]
+        for change in changes:
+            cycle = {"result": "incomplete", "responses": [dict(WORLD_LOSS_APPROVAL, **change)]}
+            self.assertIsNone(h1_world_loss_timing_loss(world_loss_log([cycle]), 1, H1_WORLD_LOSS_READY,
+                                                        H1_LATE_WORLD_LOSS_EVENTS), change)
+        world = dict(WORLD_LOSS_APPROVAL, phase="world", outcome="world_updated", verdict=None)
+        for cycles in ([], [{"result": "denied", "responses": [WORLD_LOSS_STALE]}],
+                       [{"result": "denied", "responses": [WORLD_LOSS_APPROVAL]}],
+                       [{"result": "incomplete", "responses": []}],  # a gate response timeout records no decision
+                       [{"result": "incomplete", "responses": [world, WORLD_LOSS_APPROVAL]}],  # a pre-fault cycle
+                       [{"result": "incomplete", "responses": [WORLD_LOSS_APPROVAL, WORLD_LOSS_APPROVAL]}],
+                       [WORLD_LOSS_LATE_CYCLE, {"result": "incomplete", "responses": []}]):
+            self.assertIsNone(h1_world_loss_timing_loss(world_loss_log(cycles), 1, H1_WORLD_LOSS_READY,
+                                                        H1_LATE_WORLD_LOSS_EVENTS), cycles)
+
+    def test_other_errors_stay_failures(self):
+        log = world_loss_log()
+        last = log.splitlines()[-1]
+        for error in ("bridge.BridgeFailure: gate response timeout",
+                      "bridge.ExpiredActuation: stale actuation response: world expired",
+                      "bridge.StaleActuation: stale actuation response: missing expiry or world age",
+                      "bridge.StaleActuation: stale actuation response: elapsed 53.1 ms >= 60 ms",
+                      "bridge.BridgeFailure: gate output closed", "KeyError: 'cmd'",
+                      "bench_link.LinkError: USB response timeout",  # cannot follow an incomplete cycle
+                      "RuntimeError: scenario did not stop within its bounded window"):
+            self.assertIsNone(h1_world_loss_timing_loss(log.replace(last, error), 1, H1_WORLD_LOSS_READY,
+                                                        H1_LATE_WORLD_LOSS_EVENTS), error)
+
+    def test_it_requires_a_fail_closed_stop_after_on(self):
+        log = world_loss_log()
+        on, last = H1_LATE_WORLD_LOSS_EVENTS[:7], H1_LATE_WORLD_LOSS_EVENTS[7]
+        self.assertIsNotNone(h1_world_loss_timing_loss(log, 1, H1_WORLD_LOSS_READY, on + [dict(last, device_ms=1839)]))
+        for events in (on, on + [dict(last, device_ms=1840)], on + [dict(last, reason="signature")],
+                       on + [dict(last, reason="lease")], on + [last, dict(on[-1], device_ms=1700)],
+                       H1_LATE_WORLD_LOSS_EVENTS[:4] + [dict(last, renewed_ms=543, device_ms=600)]):
+            self.assertIsNone(h1_world_loss_timing_loss(log, 1, H1_WORLD_LOSS_READY, events), events)
+
+
 class DriftGuardTest(unittest.TestCase):
     """The classifiers match exact strings; pin them to the code that produces them."""
 
@@ -938,6 +1061,14 @@ class DriftGuardTest(unittest.TestCase):
         self.assertIn('"' + H1_LEASE + '"', host)
         for prefix in bench_evidence.H1_DECISIONS:
             self.assertIn('print("' + prefix, host)
+        self.assertIn('"world-loss": "' + bench_evidence.H1_WORLD_LOSS[len("시험: "):] + '"', host)
+        self.assertIn('{"event": "' + bench_evidence.H1_ERROR_DIAGNOSTIC + '", "cycles": gate.denial_diagnostics()}',
+                      host)
+        # The world-loss window ends at the bench policy's world age limit, the one the host enforces.
+        gate = (TOOLS / "bench_gate.py").read_text()
+        self.assertEqual(bench_evidence.WORLD_MAX_AGE_MS, 200)
+        self.assertIn('"freshness": {"world_max_age_ms": 200,', gate)
+        self.assertIn("require_fresh_actuation(step, elapsed, now_ms(), 200, 50)", gate)
         link = (TOOLS / "bench_link.py").read_text()
         for text in bench_evidence.H1_USB_DEADLINES:
             self.assertIn('LinkError("' + text + '")', link)

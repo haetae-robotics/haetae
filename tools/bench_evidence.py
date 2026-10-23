@@ -3,6 +3,8 @@
 Shared-runner timing in the board-free H1 bench and H2 signed-permit bench: a
 positive-path attempt that missed a deadline or the device lease before any
 fault was injected, and whose device stopped fail-closed, is timing-inconclusive.
+H1 world-loss extends this window until the gate sees a stale world, only with the
+error diagnostic's proof of a normal positive decision on a fresh world.
 A completed gate denial is an exception only with the strict gate_expiry_evidence
 proof of an ordinary pre-fault TTL expiry, matched to the host or relay STOP.
 Every other terminal the H2 authorizer logged is never timing-inconclusive. Only a
@@ -427,6 +429,9 @@ H1_DECISIONS = ("시험: ", "차단: ", "시험 종료: ")  # fault injected, ga
 H1_STOP_CALL = 'link.exchange("STOP")'
 H1_ALLOWED = "허용: LED ON (테스트 명령이 통과 중)"
 H1_DENIED = "차단: LED OFF, 재시작은 새 run 명령으로만 가능합니다."
+H1_WORLD_LOSS = "시험: 세계 입력 갱신을 끊습니다"
+H1_ERROR_DIAGNOSTIC = "bench_gate_error_diagnostic"
+WORLD_MAX_AGE_MS = 200  # bench policy world_max_age_ms in bench_gate.py (pinned by tests); never tuned here
 
 
 def h1_gate_expiry_loss(host_log, code, ready, events):
@@ -542,6 +547,74 @@ def h1_timing_loss(host_log, code, ready, events):
     return dict(stop, kind=found[0], error=lines[-1])
 
 
+def world_loss_fresh_approval(cycles):
+    """The last diagnostic cycle is a world-loss cycle whose only gate response approved a fresh world.
+
+    A world-loss cycle omits its world update, so its one response is the motion decision. It
+    must be a normal positive decision with no stop, on a world younger than WORLD_MAX_AGE_MS.
+    """
+    if not isinstance(cycles, list) or not cycles or not isinstance(cycles[-1], dict):
+        return None
+    cycle = cycles[-1]
+    responses = cycle.get("responses")
+    if (cycle.get("result") not in ("incomplete", "approved") or not isinstance(responses, list)
+            or len(responses) != 1 or not isinstance(responses[0], dict)):
+        return None
+    motion = responses[0]
+    age = motion.get("world_age_ms")
+    if (motion.get("phase") != "motion" or motion.get("outcome") != "decision" or motion.get("verdict") != "yun"
+            or motion.get("stop") is not None or motion.get("status_stop") is not None
+            or motion.get("rejection_reason") is not None or motion.get("command_zero") is not False
+            or motion.get("active_present") is not True or motion.get("mode") != "normal"
+            or motion.get("vla_armed") is not True or motion.get("recorder_ok") is not True
+            or motion.get("state_ok") is not True or motion.get("arm_cancelling") is not False
+            or type(age) is not int or not 0 <= age < WORLD_MAX_AGE_MS):
+        return None
+    return motion
+
+
+def h1_world_loss_timing_loss(host_log, code, ready, events):
+    """A world-loss attempt that missed a deadline or lease before the gate saw a stale world.
+
+    The fault omits world updates. Until the world is older than WORLD_MAX_AGE_MS each cycle is
+    an ordinary approval, so a timing loss in that window leaves the fault untested, as before
+    the fault. Requires host exit 1 with a timing exception last; ready fault world-loss and
+    exactly the allow and world-loss lines (no gate stop, completion or failed STOP); exactly
+    one error diagnostic whose last cycle passes world_loss_fresh_approval(), where an exception
+    inside that cycle is the elapsed deadline; and fail_closed_stop() evidence after ON. A gate
+    response timeout records no decision, so it stays a failure. Returns None otherwise.
+    """
+    lines = [line for line in host_log.splitlines() if line.strip()]
+    if code != 1 or not lines or TRACEBACK not in lines:
+        return None
+    found = h1_error_kind(lines[-1])
+    if found is None:
+        return None
+    if not (isinstance(ready, dict) and ready.get("fault") == "world-loss"):
+        return None
+    head = without_event(without_event(lines[:lines.index(TRACEBACK)], H1_ERROR_DIAGNOSTIC), "device_lease_expired")
+    if head != [H1_ALLOWED, H1_WORLD_LOSS] or any(line.strip() == H1_STOP_CALL for line in lines):
+        return None
+    diagnostics = json_rows(lines, H1_ERROR_DIAGNOSTIC)
+    if len(diagnostics) != 1:
+        return None
+    cycles = diagnostics[0].get("cycles")
+    motion = world_loss_fresh_approval(cycles)
+    if motion is None:
+        return None
+    exception, _, message = lines[-1].partition(": ")
+    if (cycles[-1]["result"] == "incomplete"
+            and not (exception == "bridge.StaleActuation" and H1_STALE.fullmatch(message))):
+        return None
+    stop = fail_closed_stop(events, found[1])
+    if stop is None or not stop["positive_control"]:
+        return None
+    # Non-blocking measurement: where the cycle's time went (host side vs. gate round trip).
+    return dict(stop, kind=found[0], error=lines[-1], fault="world-loss", world_age_ms=motion["world_age_ms"],
+                cycle_ms_at_response=motion.get("elapsed_ms"),
+                gate_round_trip_ms=elapsed_ms(motion.get("request_started_ns"), motion.get("response_received_ns")))
+
+
 def read_events(path):
     """Complete JSON rows of a native device audit log; a partial last row is skipped."""
     rows = []
@@ -638,10 +711,12 @@ def warning(protocol, case, attempt, evidence, restart):
     Only an attempt before the last says it restarts; after the last one the case fails.
     """
     positive = "seen" if evidence.get("positive_control") else "not reached"
+    window = (f" after the {evidence['fault']} fault, before the gate saw a stale world"
+              if evidence.get("fault") == "world-loss" else "")
     next_step = (f"restarting with a {restart}" if attempt < HOST_ATTEMPTS
                  else "no attempts left; the case fails (inconclusive never counts as a pass)")
     text = (f"{protocol} {case} attempt {attempt}/{HOST_ATTEMPTS} timing-inconclusive, not a pass: "
-            f"{evidence.get('kind')} loss ({evidence.get('error')}); positive ON {positive}; first device OFF: "
+            f"{evidence.get('kind')} loss{window} ({evidence.get('error')}); positive ON {positive}; first device OFF: "
             f"{evidence.get('stop_reason')} {evidence.get('last_run_to_off_ms')} ms after the last renewal, "
             f"no later ON; {next_step}")
     return "::warning::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")

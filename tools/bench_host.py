@@ -83,6 +83,12 @@ def run(binary, port, scenario, seconds, ready_file=None):
                 return
             time.sleep(.025)
         raise RuntimeError("scenario did not stop within its bounded window")
+    except Exception:
+        if link is not None:
+            # Same fixed-size projection as a denial: the last gate decisions behind an error exit.
+            print(json.dumps({"event": "bench_gate_error_diagnostic", "cycles": gate.denial_diagnostics()}),
+                  flush=True)
+        raise
     finally:
         if link:
             link.stop()
