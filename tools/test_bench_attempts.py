@@ -19,10 +19,11 @@ import bench_verify
 import permit_verify
 from bench_evidence import HOST_ATTEMPTS, Inconclusive, TimingRecord, first_stop_after_on, warning
 from test_bench_evidence import (CRASH, H1_ALLOW_EVENTS, H1_ALLOW_LOG, H1_ALLOW_READY, H1_PAUSE_EVENTS, H1_PRE_ON_EVENTS,
-                                 H1_PRE_ON_LOG, H1_REPLAY_EVENTS, H1_REPLAY_LOG, H1_UNARMED_EVENTS, H1_UNARMED_LOG,
-                                 H1_WORLD_LOSS_EVENTS, H1_WORLD_LOSS_LOG, PERSON_AUTH, PERSON_EVENTS, PERSON_RELAY,
-                                 PR22_AUTH, PR22_EVENTS, PR22_RELAY, REPLY_AUTH_SENT, REPLY_AUTH_UNSENT, REPLY_EVENTS,
-                                 REPLY_RELAY, real_host_log)
+                                 H1_LATE_WORLD_LOSS_EVENTS, H1_PRE_ON_LOG, H1_REPLAY_EVENTS, H1_REPLAY_LOG,
+                                 H1_UNARMED_EVENTS, H1_UNARMED_LOG, H1_WORLD_LOSS_EVENTS, H1_WORLD_LOSS_LOG,
+                                 H1_WORLD_LOSS_READY, PERSON_AUTH, PERSON_EVENTS, PERSON_RELAY, PR22_AUTH, PR22_EVENTS,
+                                 PR22_RELAY, REPLY_AUTH_SENT, REPLY_AUTH_UNSENT, REPLY_EVENTS, REPLY_RELAY,
+                                 WORLD_LOSS_STALE, real_host_log, world_loss_log)
 
 UNUSED_PID = 2 ** 30  # above every Linux/macOS pid_max
 LOSS = {"kind": "lease", "error": "controller locked; explicit operator restart required",
@@ -165,6 +166,9 @@ class RetryPolicyTest(unittest.TestCase):
         line = warning("H2", "person", 1, {"kind": "deadline", "error": "50%\r\nlate"}, "fresh start")
         self.assertEqual(line.splitlines(), [line])
         self.assertIn("50%25%0D%0Alate", line)
+        self.assertNotIn("fault", line)
+        line = warning("H1", "world-loss", 1, {"kind": "deadline", "error": "late", "fault": "world-loss"}, "fresh start")
+        self.assertIn("deadline loss after the world-loss fault, before the gate saw a stale world (late)", line)
 
 
 class PermitHarnessTest(unittest.TestCase):
@@ -408,6 +412,32 @@ class BenchHarnessTest(unittest.TestCase):
                                                    1, scenario=scenario, via_case=True)
             self.assertNotIsInstance(result, Inconclusive, scenario)
             self.assertIn("host scenario failed", str(result), scenario)
+            self.assertEqual(attempts, ["case"], scenario)
+
+    def test_a_world_loss_deadline_before_a_stale_world_restarts_and_never_passes(self):
+        # Run 39109523272: the first cycle without a world update missed the 50 ms deadline.
+        log = world_loss_log()
+        result, _, _ = self.run_attempt(H1_LATE_WORLD_LOSS_EVENTS, log, H1_WORLD_LOSS_READY, 1, scenario="world-loss")
+        self.assertIsInstance(result, Inconclusive)
+        self.assertEqual((result.evidence["kind"], result.evidence["fault"], result.evidence["last_run_to_off_ms"]),
+                         ("deadline", "world-loss", 120))
+        result, _, attempts = self.run_attempt(H1_LATE_WORLD_LOSS_EVENTS, log, H1_WORLD_LOSS_READY, 1,
+                                               scenario="world-loss", via_case=True)
+        self.assertIn("inconclusive never counts as a pass", str(result))
+        self.assertEqual(attempts, ["case", "case-retry1", "case-retry2"])
+        # Control: a USB deadline after the gate denied the stale world (its STOP) fails at once.
+        stale = real_host_log("world-loss", deny_cycle=5, failing_op="STOP", link_error="USB response timeout",
+                              denial_cycles=[{"result": "denied", "responses": [WORLD_LOSS_STALE]}])
+        result, _, attempts = self.run_attempt(H1_LATE_WORLD_LOSS_EVENTS, stale, H1_WORLD_LOSS_READY, 1,
+                                               scenario="world-loss", via_case=True)
+        self.assertNotIsInstance(result, Inconclusive)
+        self.assertIn("host scenario failed", str(result))
+        self.assertEqual(attempts, ["case"])
+        # Neither rule extends to other faults.
+        for scenario in ("person", "replay", "invalid-signature"):
+            result, _, attempts = self.run_attempt(H1_LATE_WORLD_LOSS_EVENTS, log, {"gate_pid": 1, "fault": scenario},
+                                                   1, scenario=scenario, via_case=True)
+            self.assertNotIsInstance(result, Inconclusive, scenario)
             self.assertEqual(attempts, ["case"], scenario)
 
     def test_a_stop_that_times_out_after_a_decision_runs_once(self):

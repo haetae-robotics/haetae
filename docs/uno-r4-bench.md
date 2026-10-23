@@ -169,6 +169,28 @@ exception for proven pre-fault expiry during an ordinary world update:
 This exception is timing-inconclusive even if no ON occurred. It never proves
 the scenario passed; a later attempt still needs ON and the intended fault.
 
+H1 world-loss has one narrow exception after the fault. The fault omits world
+updates, and the Rust gate keeps approving until the world is older than its
+200 ms limit, so a timing loss inside that window leaves the fault untested.
+On an error exit the H1 host prints the same fixed-size gate projection as on
+a denial (`bench_gate_error_diagnostic`). The attempt is timing-inconclusive
+only when all of these hold:
+
+- The ready file records the world-loss fault. The host log holds only the
+  allow and world-loss lines (no gate stop, allow completion or failed STOP)
+  and ends with one of the deadline or lease messages above.
+- The diagnostic's last cycle has no world update, and its only gate response
+  is a normal positive decision: verdict `yun`, no stop, a non-zero command,
+  active motion, normal mode, an armed VLA source, healthy recorder/state and
+  a world younger than 200 ms. An error inside that cycle must be the 50 ms
+  elapsed deadline.
+- The device shows ON, then a fail-closed first OFF and no later ON, with the
+  same 200 ms lease floor and 300 ms STOP observation bound as above.
+
+A gate response timeout records no decision, so it still fails at once, as
+does any loss after the gate denied the stale world. Like every inconclusive
+attempt, this one restarts and never counts as a pass.
+
 The harness sees decisions that reached the host or relay, and every terminal
 the H2 authorizer logged. A decision made after the deadline that the harness
 cannot see does not prevent a restart. For H2 this is an authorizer terminal
@@ -183,8 +205,8 @@ failed.
 
 An inconclusive attempt never counts as a pass. The scenario restarts with a
 fresh device emulator and fresh processes, at most three attempts, and three
-inconclusive attempts fail it. Except for the pre-fault expiry exception above
-and the conclusive H2 rejection path below,
+inconclusive attempts fail it. Except for the pre-fault expiry exception and
+the H1 world-loss window above, and the conclusive H2 rejection path below,
 every other failure, any loss after the fault
 was injected or after any other stop decision reached the host or relay, and any ON
 after a stop fail at once. The interruption cases (host kill, host pause, Rust

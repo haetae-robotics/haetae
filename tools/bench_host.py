@@ -15,6 +15,7 @@ def run(binary, port, scenario, seconds, ready_file=None):
         raise ValueError("unknown bench scenario")
     gate = None
     link = None
+    error_exit = False
     previous = {}
 
     def mark_ready(fault=None):
@@ -83,10 +84,17 @@ def run(binary, port, scenario, seconds, ready_file=None):
                 return
             time.sleep(.025)
         raise RuntimeError("scenario did not stop within its bounded window")
+    except Exception:
+        error_exit = link is not None
+        raise
     finally:
         if link:
             link.stop()
             link.close()
+        if error_exit:
+            # As for a denial, STOP first, then the same fixed-size projection of the last gate decisions.
+            print(json.dumps({"event": "bench_gate_error_diagnostic", "cycles": gate.denial_diagnostics()}),
+                  flush=True)
         if gate:
             gate.close()
         for sig, handler in previous.items():

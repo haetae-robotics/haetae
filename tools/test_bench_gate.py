@@ -91,6 +91,41 @@ class GateDiagnosticTest(unittest.TestCase):
         self.assertIsNone(gate.approval)
         self.assertIsNone(gate.last_approved_cycle)
 
+    def test_world_loss_projections_feed_the_world_loss_timing_rule(self):
+        from bench_evidence import world_loss_fresh_approval
+        # The fault observer's time counts, so the first cycle without a world update misses its deadline.
+        gate, requests = fake_gate([step("world"), step("motion"), step("motion")])
+        clock = [0.0]
+        def slow_observer(_):
+            clock[0] += .060
+        with patch.object(bench_gate, "now_ms", return_value=1000), \
+                patch.object(bench_gate.time, "monotonic", lambda: clock[0]):
+            self.assertTrue(gate.cycle())
+            with self.assertRaisesRegex(bench_gate.BridgeFailure, "elapsed 60.0 ms >= 50 ms"):
+                gate.cycle("world-loss", on_fault=slow_observer)
+        self.assertEqual([json.loads(request["data"])["role"] for request in requests], ["world", "vla", "vla"])
+        cycles = gate.denial_diagnostics()
+        self.assertEqual([cycle["result"] for cycle in cycles], ["approved", "incomplete"])
+        self.assertIs(world_loss_fresh_approval(cycles), cycles[-1]["responses"][0])
+        # An approved world-loss cycle (a later RUN, STATUS or remaining() error) qualifies; a pre-fault one never.
+        gate, _ = fake_gate([step("world"), step("motion"), step("motion")])
+        with patch.object(bench_gate, "now_ms", return_value=1000):
+            self.assertTrue(gate.cycle())
+            self.assertIsNone(world_loss_fresh_approval(gate.denial_diagnostics()))
+            self.assertTrue(gate.cycle("world-loss"))
+        self.assertIsNotNone(world_loss_fresh_approval(gate.denial_diagnostics()))
+        # The gate's own stale-world denial and a response timeout never qualify.
+        for response in (step("motion", allowed=False, stop="stale_world", expires=None),
+                         bench_gate.BridgeFailure("gate response timeout")):
+            gate, _ = fake_gate([step("world"), step("motion"), response])
+            with patch.object(bench_gate, "now_ms", return_value=1000):
+                self.assertTrue(gate.cycle())
+                try:
+                    self.assertFalse(gate.cycle("world-loss"))
+                except bench_gate.BridgeFailure:
+                    pass
+            self.assertIsNone(world_loss_fresh_approval(gate.denial_diagnostics()), response)
+
     def test_early_world_denial_preserves_previous_approved_expiry_and_exact_request_t(self):
         gate, requests = fake_gate([step("world"), step("motion"), step("world", stop="expired", expires=None)])
         with patch.object(bench_gate, "now_ms", side_effect=range(1000, 1100)), \
