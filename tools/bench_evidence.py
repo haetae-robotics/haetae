@@ -602,9 +602,11 @@ def h1_world_loss_timing_loss(host_log, code, ready, events):
     motion = world_loss_fresh_approval(cycles)
     if motion is None:
         return None
+    # Never a gate request with an unknown answer: an incomplete cycle ends at its own 50 ms
+    # deadline, an approved one at that deadline (remaining()) or a later USB or lease error.
     exception, _, message = lines[-1].partition(": ")
-    if (cycles[-1]["result"] == "incomplete"
-            and not (exception == "bridge.StaleActuation" and H1_STALE.fullmatch(message))):
+    stale = exception == "bridge.StaleActuation" and H1_STALE.fullmatch(message)
+    if not stale and (cycles[-1]["result"] == "incomplete" or exception != "bench_link.LinkError"):
         return None
     stop = fail_closed_stop(events, found[1])
     if stop is None or not stop["positive_control"]:

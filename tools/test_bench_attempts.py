@@ -425,8 +425,9 @@ class BenchHarnessTest(unittest.TestCase):
                                                scenario="world-loss", via_case=True)
         self.assertIn("inconclusive never counts as a pass", str(result))
         self.assertEqual(attempts, ["case", "case-retry1", "case-retry2"])
-        # Control: the same deadline after the gate denied a stale world fails at once.
-        stale = world_loss_log([{"result": "denied", "responses": [WORLD_LOSS_STALE]}])
+        # Control: a USB deadline after the gate denied the stale world (its STOP) fails at once.
+        stale = real_host_log("world-loss", deny_cycle=5, failing_op="STOP", link_error="USB response timeout",
+                              denial_cycles=[{"result": "denied", "responses": [WORLD_LOSS_STALE]}])
         result, _, attempts = self.run_attempt(H1_LATE_WORLD_LOSS_EVENTS, stale, H1_WORLD_LOSS_READY, 1,
                                                scenario="world-loss", via_case=True)
         self.assertNotIsInstance(result, Inconclusive)

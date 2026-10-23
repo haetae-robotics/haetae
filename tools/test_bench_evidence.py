@@ -298,6 +298,7 @@ WORLD_LOSS_STALE = dict(WORLD_LOSS_APPROVAL, elapsed_ms=0.421, stop="stale_world
                         fired_count=1, decision_expires_ms=None, status_stop="stale_world", vla_armed=False,
                         active_present=False, world_age_ms=231, active_expires_ms=None)
 WORLD_LOSS_LATE_CYCLE = {"result": "incomplete", "responses": [WORLD_LOSS_APPROVAL]}
+WORLD_LOSS_APPROVED_CYCLE = {"result": "approved", "responses": [WORLD_LOSS_APPROVAL]}
 
 # An uncaught crash as the interpreter prints it. haetae-permit turns every RuntimeError, OSError
 # and ValueError (all timing errors) into one "permit 오류:" line, so a timing loss never has one.
@@ -342,24 +343,31 @@ H1_PAUSE_EVENTS = rows("""\
 
 
 def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cycle=None, failing_op=None,
-                  link_error=None, clean_return=False, fail_after_fault=False, ready_file=None, denial_cycles=None):
+                  link_error=None, clean_return=False, fail_after_fault=False, ready_file=None, denial_cycles=None,
+                  op_after_fault=False, show_stop=False):
     """The real bench_host.run against fakes; returns its log as the host process writes it.
 
     statuses: STATUS replies in order (None: always ON). failing_cycle: that gate round trip takes
     53.1 ms. deny_cycle: that gate cycle denies with no fault injected. failing_op: every exchange
-    of that op raises LinkError(link_error). The clock advances 0.1 s per reading, so the allow
+    of that op raises LinkError(link_error), with op_after_fault only once the fault was marked.
+    The clock advances 0.1 s per reading, so the allow
     scenario completes after its 1 s window, while a person fault is not due within three cycles.
-    clean_return opts into a normal return; otherwise this helper requires an exception.
+    clean_return opts into a normal return; otherwise this helper requires an exception. show_stop
+    writes a "<link.stop>" line where the host's final best-effort STOP runs.
     """
     import bench_host
     from bench_link import LinkError
     status = iter(statuses) if statuses is not None else itertools.repeat("ON")
-    clock, cycles = [0.], [0]
+    clock, cycles, faulted = [0.], [0], [False]
     class Gate:
         def __init__(self, binary):
             self.bridge = SimpleNamespace(child=SimpleNamespace(pid=1))
         def cycle(self, fault, on_fault=None):
             cycles[0] += 1
+            if on_fault is not None:
+                def on_fault(fault, mark=on_fault):
+                    faulted[0] = True
+                    mark(fault)
             if fault and on_fault and fail_after_fault:
                 on_fault(fault)
             if cycles[0] == failing_cycle:
@@ -382,13 +390,14 @@ def real_host_log(scenario="person", statuses=None, failing_cycle=None, deny_cyc
         def __init__(self, port):
             pass
         def exchange(self, op, timeout=.05):
-            if op == failing_op:
+            if op == failing_op and (faulted[0] or not op_after_fault):
                 raise LinkError(link_error)
             if op == "STATUS":
                 return next(status)
             return {"HELLO": "LOCKED", "ARM": "ARMED", "RUN": "ON", "STOP": "LOCKED"}[op]
         def stop(self):
-            pass  # SerialLink.stop swallows LinkError and OSError
+            if show_stop:  # SerialLink.stop swallows LinkError and OSError
+                print("<link.stop>")
         def close(self):
             pass
     def monotonic():
@@ -759,12 +768,37 @@ class H1WorldLossTimingLossTest(unittest.TestCase):
         self.assertEqual(loss["error"], "bridge.StaleActuation: stale actuation response: elapsed 53.1 ms >= 50 ms")
         # The pre-fault rule is unchanged: it never accepts the injected fault.
         self.assertIsNone(h1_timing_loss(log, 1, H1_WORLD_LOSS_READY, H1_LATE_WORLD_LOSS_EVENTS))
-        # Same output, earlier approval after the world-loss fault, then a late RUN acknowledgment.
-        approved = {"result": "approved", "responses": [WORLD_LOSS_APPROVAL]}
+        # An approved world-loss cycle, then a late RUN acknowledgment from the real host.
         for error in bench_evidence.H1_USB_DEADLINES:
-            run_late = world_loss_log([approved]).replace(lines[-1], "bench_link.LinkError: " + error)
+            run_late = real_host_log("world-loss", failing_op="RUN", link_error=error, op_after_fault=True,
+                                     denial_cycles=[WORLD_LOSS_APPROVED_CYCLE])
+            self.assertEqual(run_late.splitlines()[:2], lines[:2])
+            self.assertEqual(run_late.splitlines()[-1], "bench_link.LinkError: " + error)
             self.assertEqual(h1_world_loss_timing_loss(run_late, 1, H1_WORLD_LOSS_READY,
                                                        H1_LATE_WORLD_LOSS_EVENTS)["kind"], "deadline", error)
+        # The same 50 ms deadline raised by remaining() after that approval.
+        self.assertEqual(h1_world_loss_timing_loss(world_loss_log([WORLD_LOSS_APPROVED_CYCLE]), 1, H1_WORLD_LOSS_READY,
+                                                   H1_LATE_WORLD_LOSS_EVENTS)["kind"], "deadline")
+
+    def test_the_host_stops_before_it_prints_the_error_diagnostic(self):
+        lines = real_host_log("world-loss", failing_cycle=4, fail_after_fault=True, show_stop=True).splitlines()
+        self.assertEqual(lines[2:4], ["<link.stop>", json.dumps({"event": bench_evidence.H1_ERROR_DIAGNOSTIC,
+                                                                 "cycles": []})])
+        self.assertEqual(lines[4], bench_evidence.TRACEBACK)
+
+    def test_a_device_lease_lost_after_an_approved_world_loss_cycle_is_inconclusive(self):
+        log = real_host_log("world-loss", statuses=["ON"] * 4 + ["LOCKED"], denial_cycles=[WORLD_LOSS_APPROVED_CYCLE])
+        lines = log.splitlines()
+        self.assertEqual(lines[:2], [bench_evidence.H1_ALLOWED, bench_evidence.H1_WORLD_LOSS])
+        self.assertEqual(json.loads(lines[2])["event"], "device_lease_expired")
+        self.assertEqual(lines[-1], "bench_link.LinkError: " + H1_LEASE)
+        on = H1_LATE_WORLD_LOSS_EVENTS[:6]  # last renewal at 1539
+        lease = dict(H1_LATE_WORLD_LOSS_EVENTS[7], reason="lease")
+        loss = h1_world_loss_timing_loss(log, 1, H1_WORLD_LOSS_READY, on + [dict(lease, device_ms=1740)])
+        self.assertEqual((loss["kind"], loss["stop_reason"], loss["last_run_to_off_ms"]), ("lease", "lease", 201))
+        # The device lease cannot end early, and a STOP is not a lease loss.
+        for events in (on + [dict(lease, device_ms=1738)], on + [H1_LATE_WORLD_LOSS_EVENTS[7]]):
+            self.assertIsNone(h1_world_loss_timing_loss(log, 1, H1_WORLD_LOSS_READY, events), events)
 
     def test_it_requires_the_injected_world_loss_and_no_stop_decision(self):
         log = world_loss_log()
@@ -819,6 +853,17 @@ class H1WorldLossTimingLossTest(unittest.TestCase):
                       "RuntimeError: scenario did not stop within its bounded window"):
             self.assertIsNone(h1_world_loss_timing_loss(log.replace(last, error), 1, H1_WORLD_LOSS_READY,
                                                         H1_LATE_WORLD_LOSS_EVENTS), error)
+        # After an approved cycle, only a USB, lease or 50 ms deadline; never a gate request with an unknown answer.
+        approved = world_loss_log([WORLD_LOSS_APPROVED_CYCLE])
+        for error in ("bridge.BridgeFailure: gate response timeout", "bridge.BridgeFailure: gate output closed"):
+            self.assertIsNone(h1_world_loss_timing_loss(approved.replace(last, error), 1, H1_WORLD_LOSS_READY,
+                                                        H1_LATE_WORLD_LOSS_EVENTS), error)
+        # A STOP that times out after the gate denied the stale world (real host output).
+        denied = real_host_log("world-loss", deny_cycle=5, failing_op="STOP", link_error="USB response timeout",
+                               denial_cycles=[WORLD_LOSS_APPROVED_CYCLE,
+                                              {"result": "denied", "responses": [WORLD_LOSS_STALE]}])
+        self.assertIn(H1_STOP_CALL, [line.strip() for line in denied.splitlines()])
+        self.assertIsNone(h1_world_loss_timing_loss(denied, 1, H1_WORLD_LOSS_READY, H1_LATE_WORLD_LOSS_EVENTS))
 
     def test_it_requires_a_fail_closed_stop_after_on(self):
         log = world_loss_log()

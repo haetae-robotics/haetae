@@ -168,7 +168,9 @@ def host_attempt(name, scenario="allow", interrupt=None):
                                    "stale actuation response: world expired" in Path(log.name).read_text())
                 measured_loss = scheduling_loss(Path(log.name).read_text(), code, scenario, device.events())
                 if not (expected_expiry or measured_loss):
-                    timing_loss(code)  # raises Inconclusive only before the fault, with fail-closed evidence
+                    # Raises Inconclusive only before the fault, or before the gate saw a stale world,
+                    # with fail-closed evidence.
+                    timing_loss(code)
                 if scenario != "allow":
                     assert json.loads(ready.read_text())["fault"] == scenario, "stopped before injecting intended fault"
                 completed = Path(log.name).read_text().splitlines() == [H1_ALLOWED, "시험 종료: LED OFF"]
