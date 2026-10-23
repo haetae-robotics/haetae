@@ -2,6 +2,7 @@
 import json
 import hashlib
 from pathlib import Path
+import re
 import socket
 import time
 from collections import deque
@@ -11,9 +12,23 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 
 from bench_gate import BenchGate
+from bridge import BridgeFailure, ExpiredActuation, StaleActuation
 from permit_keys import deployment, private_bytes
 from permit_protocol import context, decode_json, payload, bind_payload
 from permit_ipc import send_line, receive_line, mark
+
+
+def failure_kind(exc):
+    """Fixed name of the error behind an authorizer_failure terminal; never its text."""
+    text = str(exc)
+    if isinstance(exc, ExpiredActuation):
+        return "world_expired" if text == "stale actuation response: world expired" else "expired"
+    if isinstance(exc, StaleActuation):
+        deadline = re.fullmatch(r"stale actuation response: elapsed [0-9]+\.[0-9] ms >= 50 ms", text)
+        return "deadline" if deadline else "stale"
+    if isinstance(exc, BridgeFailure):
+        return "gate_timeout" if text == "gate response timeout" else "gate"
+    return "other"
 
 
 class Authorizer:
@@ -34,6 +49,7 @@ class Authorizer:
         self.last_fault = None
         self.session_key = None
         self.armed_authorized = False
+        self.failure = None
 
     def mark_fault(self, fault):
         if fault != self.last_fault:
@@ -87,12 +103,19 @@ class Authorizer:
             self.armed_authorized = True
             return {"kind": "permit", "signature": signature, "duration": 200,
                     "remaining_ms": remaining * 1000}
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError) as exc:
             self.locked = True
+            self.failure = failure_kind(exc)
             return {"kind": "terminal", "reason": "authorizer_failure"}
 
     def close(self):
         self.gate.close()
+
+
+def gate_error_diagnostic(authorizer):
+    """Same fixed-size gate projection as a denial, for an exit without a gate denial."""
+    return json.dumps({"event": "permit_gate_error_diagnostic", "error": authorizer.failure,
+                       "cycles": authorizer.gate.denial_diagnostics()})
 
 
 def serve(binary, key, config, path, scenario, seconds, ready_file=None, socket_group=None):
@@ -131,9 +154,11 @@ def serve(binary, key, config, path, scenario, seconds, ready_file=None, socket_
                                           "stages": list(traces)}), flush=True)
                     if result["reason"] in ("authorizer_failure", "gate_expired"):
                         print(json.dumps({"event": "permit_ipc_failure", "stages": list(traces)}), flush=True)
+                        print(gate_error_diagnostic(authorizer), flush=True)
                     return
     except (RuntimeError, OSError, ValueError):
         print(json.dumps({"event": "permit_ipc_failure", "stages": list(traces)}), flush=True)
+        print(gate_error_diagnostic(authorizer), flush=True)
         raise
     finally:
         authorizer.close()

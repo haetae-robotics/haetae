@@ -23,7 +23,9 @@ from test_bench_evidence import (CRASH, H1_ALLOW_EVENTS, H1_ALLOW_LOG, H1_ALLOW_
                                  H1_UNARMED_EVENTS, H1_UNARMED_LOG, H1_WORLD_LOSS_EVENTS, H1_WORLD_LOSS_LOG,
                                  H1_WORLD_LOSS_READY, PERSON_AUTH, PERSON_EVENTS, PERSON_RELAY, PR22_AUTH, PR22_EVENTS,
                                  PR22_RELAY, REPLY_AUTH_SENT, REPLY_AUTH_UNSENT, REPLY_EVENTS, REPLY_RELAY,
-                                 WORLD_LOSS_STALE, real_host_log, world_loss_log)
+                                 WORLD_LOSS_STALE, real_host_log, world_loss_log, AUTHORIZER_FAILURE, GATE_DENIED,
+                                 H2_STALE_DENIAL, H2_WORLD_LOSS_DEADLINE_AUTH, H2_WORLD_LOSS_PERMIT_AUTH,
+                                 WORLD_LOSS_LATE_CYCLE, fault_authorizer_log)
 
 UNUSED_PID = 2 ** 30  # above every Linux/macOS pid_max
 LOSS = {"kind": "lease", "error": "controller locked; explicit operator restart required",
@@ -231,6 +233,43 @@ class PermitHarnessTest(unittest.TestCase):
         result, calls, _ = self.run_attempt(ALLOW_EVENTS, "허용: 보드가 서명을 확인함, LED ON\n차단: 서명 허가 중단, LED OFF\n",
                                             0, late_auth="Authorizer terminal: operator_complete\n", scenario="allow")
         self.assertEqual((result["passed"], result["stop_reason"], result["last_run_to_off_ms"]), (True, "stop", 89))
+        self.assertNotIn("fault_stop", result)
+
+    def test_a_world_loss_relay_deadline_before_a_stale_world_restarts_and_never_passes(self):
+        result, _, _ = self.run_attempt(PERSON_EVENTS, PERSON_RELAY, 1, auth_text=H2_WORLD_LOSS_PERMIT_AUTH,
+                                        scenario="world-loss")
+        self.assertIsInstance(result, Inconclusive)
+        self.assertEqual((result.evidence["fault"], result.evidence["authorizer_error"], result.evidence["kind"]),
+                         ("world-loss", None, "deadline"))
+        result, _, attempts = self.run_attempt(PERSON_EVENTS, PERSON_RELAY, 1, auth_text=H2_WORLD_LOSS_DEADLINE_AUTH,
+                                               scenario="world-loss", via_case=True)
+        self.assertIn("inconclusive never counts as a pass", str(result))
+        self.assertEqual(attempts, ["case", "case-retry1", "case-retry2"])
+        # Controls: the gate's stale-world denial, or another fault, before the same relay deadline.
+        for scenario, auth in (("world-loss", fault_authorizer_log(GATE_DENIED, cycles=[H2_STALE_DENIAL])),
+                               ("person", H2_WORLD_LOSS_PERMIT_AUTH.replace("world-loss", "person", 1))):
+            result, _, attempts = self.run_attempt(PERSON_EVENTS, PERSON_RELAY, 1, auth_text=auth,
+                                                   scenario=scenario, via_case=True)
+            self.assertNotIsInstance(result, Inconclusive, scenario)
+            self.assertIn("scenario failed", str(result))
+            self.assertEqual(attempts, ["case"])
+
+    def test_a_completed_fault_case_passes_only_at_its_gate_decision(self):
+        relay = "허용: 보드가 서명을 확인함, LED ON\n차단: 서명 허가 중단, LED OFF\n"
+        for scenario in ("person", "world-loss", "replay", "invalid-signature"):
+            denied = fault_authorizer_log(GATE_DENIED, scenario, cycles=[H2_STALE_DENIAL])
+            result, _, _ = self.run_attempt(ALLOW_EVENTS, relay, 0, late_auth=denied, scenario=scenario)
+            self.assertEqual((result["passed"], result["fault_stop"]), (True, "gate_denied"), scenario)
+            # Before, any terminal passed, for example after the Rust gate exited following the fault.
+            gone = fault_authorizer_log(AUTHORIZER_FAILURE, scenario, failure="gate", cycles=[WORLD_LOSS_LATE_CYCLE])
+            result, _, attempts = self.run_attempt(ALLOW_EVENTS, relay, 0, late_auth=gone, scenario=scenario,
+                                                   via_case=True)
+            self.assertIsInstance(result, AssertionError, scenario)
+            self.assertIn("fault did not end at its gate decision", str(result))
+            self.assertEqual(attempts, ["case"])
+        expired = fault_authorizer_log(AUTHORIZER_FAILURE, failure="world_expired", cycles=[WORLD_LOSS_LATE_CYCLE])
+        result, _, _ = self.run_attempt(ALLOW_EVENTS, relay, 0, late_auth=expired, scenario="world-loss")
+        self.assertEqual((result["passed"], result["fault_stop"]), (True, "world_expired"))
 
     def test_loss_after_the_fault_stays_a_failure(self):
         result, _, _ = self.run_attempt(PERSON_EVENTS, PERSON_RELAY, 1,

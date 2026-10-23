@@ -414,6 +414,81 @@ def h2_rejected_fault_stop(relay_log, code, authorizer_log, events, scenario):
             "request_to_terminal_sent_ms": elapsed_ms(relay["started_ns"], auth["response_sent_ns"])}
 
 
+H2_FAULT = "Authorizer fault injected: "
+H2_GATE_ERROR = "permit_gate_error_diagnostic"
+
+
+def h2_fault_terminal(authorizer_log, scenario):
+    """The stop decision that ended a completed H2 fault case: "gate_denied", "world_expired" or None.
+
+    A fault case ends at the gate's own denial. World loss may instead end when the authorizer's
+    freshness check expired the gate's last approval of a fresh world, the H1 "world expired"
+    case, shown by its gate error diagnostic. Any other terminal (a gate timeout, a gate that
+    exited, any other authorizer failure) is not the intended fault's stop.
+    """
+    lines = [line for line in authorizer_log.splitlines() if line.strip()]
+    if TRACEBACK in lines or any(line.startswith(H2_ERROR_PREFIX) for line in lines):
+        return None
+    decisions = [line for line in lines if line.startswith(H2_DECISIONS)]
+    if decisions == [H2_FAULT + scenario, "Authorizer terminal: gate_denied"]:
+        return "gate_denied"
+    if scenario != "world-loss" or decisions != [H2_FAULT + scenario, "Authorizer terminal: authorizer_failure"]:
+        return None
+    errors = json_rows(lines, H2_GATE_ERROR)
+    if (len(errors) == 1 and errors[0].get("error") == "world_expired"
+            and world_loss_fresh_approval(errors[0].get("cycles")) is not None
+            and errors[0]["cycles"][-1]["result"] == "incomplete"):
+        return "world_expired"
+    return None
+
+
+def h2_world_loss_timing_loss(relay_log, code, authorizer_log, events):
+    """An H2 world-loss attempt whose relay missed its deadline before the gate saw a stale world.
+
+    The relay gave up on the authorizer's reply to a RUN after the world-loss fault: exit 1 with
+    a deadline message, one relay trace whose last stage is a RUN with no reply received, so no
+    stop decision reached the relay. The authorizer logged the fault and exactly one gate error
+    diagnostic whose last cycle passes world_loss_fresh_approval(): an approval it answered with
+    a permit (no error), or one the authorizer itself refused at its 50 ms deadline or world
+    expiry. A logged terminal can only be that authorizer_failure. No traceback in either log,
+    and fail_closed_stop() shows ON, then a fail-closed OFF. A gate timeout records no decision
+    and a stale-world denial is the fault's own stop, so both stay failures. Never a pass.
+    """
+    lines = [line for line in relay_log.splitlines() if line.strip()]
+    if code != 1 or not lines or not lines[-1].startswith(H2_ERROR_PREFIX):
+        return None
+    error = lines[-1][len(H2_ERROR_PREFIX):]
+    if error not in H2_DEADLINES or TRACEBACK in relay_log or TRACEBACK in authorizer_log:
+        return None
+    traces = json_rows(lines, "permit_ipc_failure")
+    stages = traces[0].get("stages") if len(traces) == 1 else None
+    if (not isinstance(stages, list) or not stages or not isinstance(stages[-1], dict)
+            or stages[-1].get("op") != "RUN" or "response_received_ns" in stages[-1]):
+        return None
+    auth_lines = [line for line in authorizer_log.splitlines() if line.strip()]
+    decisions = [line for line in auth_lines if line.startswith(H2_DECISIONS)]
+    errors = json_rows(auth_lines, H2_GATE_ERROR)
+    fault_only = [H2_FAULT + "world-loss"]
+    if decisions not in (fault_only, fault_only + ["Authorizer terminal: authorizer_failure"]) or len(errors) != 1:
+        return None
+    cycles, failure = errors[0].get("cycles"), errors[0].get("error")
+    motion = world_loss_fresh_approval(cycles)
+    if motion is None:
+        return None
+    result = cycles[-1]["result"]
+    if not (failure is None and result == "approved" and len(decisions) == 1
+            or failure in ("deadline", "world_expired") and result == "incomplete"):
+        return None
+    stop = fail_closed_stop(events, DEADLINE_STOPS)
+    if stop is None or not stop["positive_control"]:
+        return None
+    evidence = dict(stop, kind="deadline", error=error, fault="world-loss", authorizer_error=failure,
+                    world_age_ms=motion["world_age_ms"], cycle_ms_at_response=motion.get("elapsed_ms"),
+                    relay_last_stage=stages[-1])
+    evidence.update(authorizer_timing(authorizer_log, stages[-1]))
+    return evidence
+
+
 # H1: bench_host.run() ends with an uncaught exception; the log's last line is the
 # traceback's "module.Class: message" (strings pinned by tests).
 H1_LEASE = "device lease locked; explicit new run required"
@@ -581,8 +656,9 @@ def h1_world_loss_timing_loss(host_log, code, ready, events):
     the fault. Requires host exit 1 with a timing exception last; ready fault world-loss and
     exactly the allow and world-loss lines (no gate stop, completion or failed STOP); exactly
     one error diagnostic whose last cycle passes world_loss_fresh_approval(), where an exception
-    inside that cycle is the elapsed deadline; and fail_closed_stop() evidence after ON. A gate
-    response timeout records no decision, so it stays a failure. Returns None otherwise.
+    inside that cycle is the elapsed deadline and one after an approved cycle is a USB, lease or
+    50 ms deadline; and fail_closed_stop() evidence after ON. A gate response timeout records no
+    decision, so it stays a failure. Returns None otherwise.
     """
     lines = [line for line in host_log.splitlines() if line.strip()]
     if code != 1 or not lines or TRACEBACK not in lines:

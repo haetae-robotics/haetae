@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 
+from bench_evidence import h2_fault_terminal
 from bench_verify import wait_for
 from permit_checks import require
 from permit_keys import provision
@@ -132,7 +133,14 @@ print(json.dumps(results))
                     return relay_ready.exists() and device.on()
                 wait_for(positive)
                 require(relay.wait(timeout=4) == 0, 'permit_isolation_verify.py: qualification predicate failed')
-                require('Authorizer fault injected: person' in (OUT / 'isolation-authorizer.log').read_text(), 'permit_isolation_verify.py: qualification predicate failed')
+                try:
+                    authorizer.wait(timeout=1)  # it prints its terminal after sending it
+                except subprocess.TimeoutExpired:
+                    pass
+                auth_text = (OUT / 'isolation-authorizer.log').read_text()
+                require('Authorizer fault injected: person' in auth_text, 'permit_isolation_verify.py: qualification predicate failed')
+                require(h2_fault_terminal(auth_text, "person") == "gate_denied",
+                        'isolated person fault did not end at its gate denial; see isolation-authorizer.log')
                 stopped = wait_for(lambda: device.stopped("stop"))
                 report["positive_controller_ON"] = True
                 report["gate_hazard_to_controller_LOCKED"] = bool(stopped)

@@ -16,7 +16,8 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives import serialization
 
 from bench_evidence import (Inconclusive, TimingRecord, bounded_attempts, device_settled, first_stop_after_on,
-                            h2_gate_expiry_loss, h2_rejected_fault_stop, h2_timing_loss)
+                            h2_fault_terminal, h2_gate_expiry_loss, h2_rejected_fault_stop, h2_timing_loss,
+                            h2_world_loss_timing_loss)
 from bench_verify import wait_for
 from permit_checks import require
 from permit_keys import private_bytes, provision
@@ -174,14 +175,16 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                     return Path(relay_log.name).read_text(), Path(auth_log.name).read_text(), exited
                 def timing_loss(code, relay_text, auth_text, auth_exited):
                     # Only pre-fault fail-closed timing loss, including strictly proven
-                    # TTL expiry. Other delivered decisions and all applied interrupts fail.
+                    # TTL expiry, or a world-loss relay deadline before the gate saw a stale
+                    # world. Other delivered decisions and all applied interrupts fail.
                     # The authorizer prints a terminal only after sending it, so the log of one that
                     # stop_pair had to kill may lack a stop decision that reached the relay.
                     if not auth_exited:
                         return
                     time.sleep(.05)  # rows for bytes the relay wrote just before it exited
                     evidence = (h2_timing_loss(relay_text, code, auth_text, device.events()) or
-                                h2_gate_expiry_loss(relay_text, code, auth_text, device.events()))
+                                h2_gate_expiry_loss(relay_text, code, auth_text, device.events()) or
+                                h2_world_loss_timing_loss(relay_text, code, auth_text, device.events()))
                     if evidence is not None:
                         raise Inconclusive(evidence)
                 def positive_ready():
@@ -206,7 +209,7 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                 relay_text, auth_text, auth_exited = final_logs()
                 stopped = wait_for(device.stopped)
                 require(stopped and (not pause and (not kill_authorizer) or code != 0), 'permit_verify.py: qualification predicate failed')
-                denial_delivery = None
+                denial_delivery = fault_stop = None
                 if not pause and not kill_authorizer:
                     if code != 0:
                         if auth_exited:
@@ -218,7 +221,9 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                         require('Authorizer terminal: operator_complete' in auth_text, 'permit_verify.py: qualification predicate failed')
                     else:
                         require('Authorizer fault injected: ' + scenario in auth_text, 'stopped before intended fault')
-                        require('Authorizer terminal: ' in auth_text, 'permit_verify.py: qualification predicate failed')
+                        # The fault must end at its own gate decision, not at any other terminal.
+                        fault_stop = "gate_denied" if denial_delivery is not None else h2_fault_terminal(auth_text, scenario)
+                        require(fault_stop is not None, 'fault did not end at its gate decision: ' + str(auth_log.name))
                 time.sleep(.05)
                 events = device.events()
                 require(not any((e['on'] for e in events[events.index(stopped) + 1:])), 'permit_verify.py: qualification predicate failed')
@@ -227,6 +232,8 @@ def host_attempt(directory, config, name, scenario="allow", pause=False, kill_au
                 require(0 <= delay <= 300, 'permit_verify.py: qualification predicate failed')
                 result = {"case": name, "passed": True, "positive_control": True,
                           "stop_reason": stopped["reason"], "last_run_to_off_ms": delay, "relay_exit": code}
+                if fault_stop is not None:
+                    result["fault_stop"] = fault_stop
                 if denial_delivery is not None:
                     result["denial_delivery"] = denial_delivery
                     print("::warning::H2 " + scenario + ": verified Rust rejection and LED OFF; "

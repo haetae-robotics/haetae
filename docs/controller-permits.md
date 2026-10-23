@@ -73,6 +73,10 @@ time from changes in the wall clock. The prior approval matters because a
 denial can clear the active expiry. Rule identifiers and rejection text are
 excluded; only a bounded rule count is recorded. These diagnostics add no positive-path log writes
 and do not change the terminal envelope, authorization or retry decisions.
+When the authorizer ends any other way (an `authorizer_failure` or `gate_expired`
+terminal, or an IPC error), it writes the same bounded projection as
+`permit_gate_error_diagnostic`, with a fixed error name such as `deadline`,
+`world_expired`, `gate_timeout` or `gate` and never the error text.
 
 Per-command Ed25519 took 65.398 ms on the development board's USB reply and was
 correctly rejected under 50 ms. O3 also failed. Therefore **Ed25519-signed BIND
@@ -159,7 +163,12 @@ hatch is supplied. This removes two runtime programming entry paths;
 
 `verify` checks portable crypto, epoch model, protocol attacks, actual Rust
 authorizer and relay failures. Hazards require positive ON and intended fault
-evidence; early failure cannot pass. Software/physical USB reports are separate.
+evidence; early failure cannot pass. A fault case passes only when the authorizer's
+terminal is the gate's own denial (`gate_denied`). World loss may instead end
+when the authorizer's freshness recheck expires the gate's last approval of a
+fresh world (`world_expired`). Any other terminal after the fault, such as a
+gate timeout or a gate that exited, fails; the report records the stop as
+`fault_stop`. Software/physical USB reports are separate.
 A fail-closed timing loss before the fault restarts the scenario with a fresh
 emulator, authorizer and relay, at most three attempts; it never counts as a
 pass ([timing-inconclusive attempts](uno-r4-bench.md#timing-inconclusive-attempts)).

@@ -191,6 +191,24 @@ A gate response timeout records no decision, so it still fails at once, as
 does any loss after the gate denied the stale world. Like every inconclusive
 attempt, this one restarts and never counts as a pass.
 
+The H2 bench applies the same window to world loss. When the authorizer ends
+without a gate denial, it prints the same projection as
+`permit_gate_error_diagnostic`, with a fixed error name (such as `deadline`,
+`world_expired` or `gate_timeout`) and never the error text. The attempt is
+timing-inconclusive only when all of these hold:
+
+- The relay exited with one of the deadline messages above, and its last RUN
+  stage received no reply, so no stop decision reached it.
+- The authorizer exited by itself, logged the world-loss fault and exactly one
+  gate error diagnostic, and no other decision except its own
+  `authorizer_failure`. The last cycle is the same normal positive decision on
+  a world younger than 200 ms: either answered with a permit, or refused by the
+  authorizer at its 50 ms deadline or world expiry.
+- The device shows ON, then a fail-closed first OFF and no later ON, as above.
+
+A gate timeout, a stale-world denial, a reply that reached the relay, other
+faults and crashes still fail at once.
+
 The harness sees decisions that reached the host or relay, and every terminal
 the H2 authorizer logged. A decision made after the deadline that the harness
 cannot see does not prevent a restart. For H2 this is an authorizer terminal
