@@ -25,7 +25,7 @@ from test_bench_evidence import (CRASH, H1_ALLOW_EVENTS, H1_ALLOW_LOG, H1_ALLOW_
                                  PR22_RELAY, REPLY_AUTH_SENT, REPLY_AUTH_UNSENT, REPLY_EVENTS, REPLY_RELAY,
                                  WORLD_LOSS_STALE, real_host_log, world_loss_log, AUTHORIZER_FAILURE, GATE_DENIED,
                                  H2_STALE_DENIAL, H2_WORLD_LOSS_DEADLINE_AUTH, H2_WORLD_LOSS_PERMIT_AUTH,
-                                 WORLD_LOSS_LATE_CYCLE, fault_authorizer_log)
+                                 WORLD_EXPIRED_CYCLE, WORLD_LIMIT_CYCLE, WORLD_LOSS_LATE_CYCLE, fault_authorizer_log)
 
 UNUSED_PID = 2 ** 30  # above every Linux/macOS pid_max
 LOSS = {"kind": "lease", "error": "controller locked; explicit operator restart required",
@@ -267,9 +267,10 @@ class PermitHarnessTest(unittest.TestCase):
             self.assertIsInstance(result, AssertionError, scenario)
             self.assertIn("fault did not end at its gate decision", str(result))
             self.assertEqual(attempts, ["case"])
-        expired = fault_authorizer_log(AUTHORIZER_FAILURE, failure="world_expired", cycles=[WORLD_LOSS_LATE_CYCLE])
-        result, _, _ = self.run_attempt(ALLOW_EVENTS, relay, 0, late_auth=expired, scenario="world-loss")
-        self.assertEqual((result["passed"], result["fault_stop"]), (True, "world_expired"))
+        for cycle in (WORLD_EXPIRED_CYCLE, WORLD_LIMIT_CYCLE):  # 197 ms, and the gate's inclusive 200 ms limit
+            expired = fault_authorizer_log(AUTHORIZER_FAILURE, failure="world_expired", cycles=[cycle])
+            result, _, _ = self.run_attempt(ALLOW_EVENTS, relay, 0, late_auth=expired, scenario="world-loss")
+            self.assertEqual((result["passed"], result["fault_stop"]), (True, "world_expired"))
 
     def test_loss_after_the_fault_stays_a_failure(self):
         result, _, _ = self.run_attempt(PERSON_EVENTS, PERSON_RELAY, 1,

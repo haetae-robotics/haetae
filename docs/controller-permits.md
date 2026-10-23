@@ -165,13 +165,15 @@ hatch is supplied. This removes two runtime programming entry paths;
 authorizer and relay failures. Hazards require positive ON and intended fault
 evidence; early failure cannot pass. A fault case passes only when the authorizer's
 terminal is the gate's own denial (`gate_denied`). World loss may instead end
-when the authorizer's freshness recheck expires the gate's last approval of a
-fresh world (`world_expired`). Any other terminal after the fault, such as a
+when the authorizer's freshness recheck expires the gate's last approval
+(`world_expired`): a normal positive decision on a world at most 200 ms old,
+since the gate denies only an older one. Any other terminal after the fault, such as a
 gate timeout or a gate that exited, fails; the report records the stop as
 `fault_stop`. Software/physical USB reports are separate.
-A fail-closed timing loss before the fault restarts the scenario with a fresh
-emulator, authorizer and relay, at most three attempts; it never counts as a
-pass ([timing-inconclusive attempts](uno-r4-bench.md#timing-inconclusive-attempts)).
+A fail-closed timing loss before the fault, or in the world-loss window before
+the gate sees a stale world, restarts the scenario with a fresh emulator,
+authorizer and relay, at most three attempts; it never counts as a pass
+([timing-inconclusive attempts](uno-r4-bench.md#timing-inconclusive-attempts)).
 
 Linux root may run `sudo -E env PATH="$PATH" python3 haetae-permit verify-isolation`.
 Authorizer UID2001, gateway2003 and AI2004 test key read/write/signal denials,

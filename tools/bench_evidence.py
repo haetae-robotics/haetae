@@ -3,11 +3,12 @@
 Shared-runner timing in the board-free H1 bench and H2 signed-permit bench: a
 positive-path attempt that missed a deadline or the device lease before any
 fault was injected, and whose device stopped fail-closed, is timing-inconclusive.
-H1 world-loss extends this window until the gate sees a stale world, only with the
-error diagnostic's proof of a normal positive decision on a fresh world.
+World loss (H1 and H2) extends this window until the gate sees a stale world, only with
+the error diagnostic's proof of a normal positive decision on a fresh world.
 A completed gate denial is an exception only with the strict gate_expiry_evidence
 proof of an ordinary pre-fault TTL expiry, matched to the host or relay STOP.
-Every other terminal the H2 authorizer logged is never timing-inconclusive. Only a
+Every other terminal the H2 authorizer logged is never timing-inconclusive, except its
+own authorizer_failure at the 50 ms deadline inside that world-loss window. Only a
 decision made after that deadline that never arrived (and, in H2, that the
 authorizer could not finish sending, so it logged no terminal) is not seen and
 does not prevent a restart. Inconclusive is never a pass. bounded_attempts()
@@ -422,9 +423,11 @@ def h2_fault_terminal(authorizer_log, scenario):
     """The stop decision that ended a completed H2 fault case: "gate_denied", "world_expired" or None.
 
     A fault case ends at the gate's own denial. World loss may instead end when the authorizer's
-    freshness check expired the gate's last approval of a fresh world, the H1 "world expired"
-    case, shown by its gate error diagnostic. Any other terminal (a gate timeout, a gate that
-    exited, any other authorizer failure) is not the intended fault's stop.
+    freshness recheck expired the gate's last approval, the H1 "world expired" case, shown by its
+    gate error diagnostic: a normal positive decision on a world at most WORLD_MAX_AGE_MS old
+    (the gate denies only an older one), received within 50 ms, in the cycle or at remaining().
+    Any other terminal (a gate timeout, a gate that exited, any other authorizer failure) is not
+    the intended fault's stop.
     """
     lines = [line for line in authorizer_log.splitlines() if line.strip()]
     if TRACEBACK in lines or any(line.startswith(H2_ERROR_PREFIX) for line in lines):
@@ -435,11 +438,11 @@ def h2_fault_terminal(authorizer_log, scenario):
     if scenario != "world-loss" or decisions != [H2_FAULT + scenario, "Authorizer terminal: authorizer_failure"]:
         return None
     errors = json_rows(lines, H2_GATE_ERROR)
-    if (len(errors) == 1 and errors[0].get("error") == "world_expired"
-            and world_loss_fresh_approval(errors[0].get("cycles")) is not None
-            and errors[0]["cycles"][-1]["result"] == "incomplete"):
-        return "world_expired"
-    return None
+    if len(errors) != 1 or errors[0].get("error") != "world_expired":
+        return None
+    motion = world_loss_fresh_approval(errors[0].get("cycles"), at_limit=True)
+    elapsed = motion.get("elapsed_ms") if motion is not None else None
+    return "world_expired" if type(elapsed) in (int, float) and 0 <= elapsed < 50 else None
 
 
 def h2_world_loss_timing_loss(relay_log, code, authorizer_log, events):
@@ -449,10 +452,11 @@ def h2_world_loss_timing_loss(relay_log, code, authorizer_log, events):
     a deadline message, one relay trace whose last stage is a RUN with no reply received, so no
     stop decision reached the relay. The authorizer logged the fault and exactly one gate error
     diagnostic whose last cycle passes world_loss_fresh_approval(): an approval it answered with
-    a permit (no error), or one the authorizer itself refused at its 50 ms deadline or world
-    expiry. A logged terminal can only be that authorizer_failure. No traceback in either log,
-    and fail_closed_stop() shows ON, then a fail-closed OFF. A gate timeout records no decision
-    and a stale-world denial is the fault's own stop, so both stay failures. Never a pass.
+    a permit (no error), or one the authorizer itself refused at its 50 ms deadline, in the cycle
+    or at remaining(). A logged terminal can only be that authorizer_failure. No traceback in
+    either log, and fail_closed_stop() shows ON, then a fail-closed OFF. A gate timeout records
+    no decision, and a stale-world denial or world expiry is the fault's own stop delivered late,
+    so they stay failures. Never a pass.
     """
     lines = [line for line in relay_log.splitlines() if line.strip()]
     if code != 1 or not lines or not lines[-1].startswith(H2_ERROR_PREFIX):
@@ -477,7 +481,7 @@ def h2_world_loss_timing_loss(relay_log, code, authorizer_log, events):
         return None
     result = cycles[-1]["result"]
     if not (failure is None and result == "approved" and len(decisions) == 1
-            or failure in ("deadline", "world_expired") and result == "incomplete"):
+            or failure == "deadline" and result in ("incomplete", "approved")):
         return None
     stop = fail_closed_stop(events, DEADLINE_STOPS)
     if stop is None or not stop["positive_control"]:
@@ -622,11 +626,12 @@ def h1_timing_loss(host_log, code, ready, events):
     return dict(stop, kind=found[0], error=lines[-1])
 
 
-def world_loss_fresh_approval(cycles):
+def world_loss_fresh_approval(cycles, at_limit=False):
     """The last diagnostic cycle is a world-loss cycle whose only gate response approved a fresh world.
 
     A world-loss cycle omits its world update, so its one response is the motion decision. It
     must be a normal positive decision with no stop, on a world younger than WORLD_MAX_AGE_MS.
+    at_limit also accepts a world exactly WORLD_MAX_AGE_MS old: the gate denies only an older one.
     """
     if not isinstance(cycles, list) or not cycles or not isinstance(cycles[-1], dict):
         return None
@@ -643,7 +648,7 @@ def world_loss_fresh_approval(cycles):
             or motion.get("active_present") is not True or motion.get("mode") != "normal"
             or motion.get("vla_armed") is not True or motion.get("recorder_ok") is not True
             or motion.get("state_ok") is not True or motion.get("arm_cancelling") is not False
-            or type(age) is not int or not 0 <= age < WORLD_MAX_AGE_MS):
+            or type(age) is not int or not 0 <= age < WORLD_MAX_AGE_MS + (1 if at_limit else 0)):
         return None
     return motion
 

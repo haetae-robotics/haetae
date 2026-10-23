@@ -203,11 +203,13 @@ timing-inconclusive only when all of these hold:
   gate error diagnostic, and no other decision except its own
   `authorizer_failure`. The last cycle is the same normal positive decision on
   a world younger than 200 ms: either answered with a permit, or refused by the
-  authorizer at its 50 ms deadline or world expiry.
+  authorizer at its 50 ms deadline, in the cycle or when it rechecked the
+  approval just before answering.
 - The device shows ON, then a fail-closed first OFF and no later ON, as above.
 
-A gate timeout, a stale-world denial, a reply that reached the relay, other
-faults and crashes still fail at once.
+A gate timeout, a reply that reached the relay, other faults and crashes still
+fail at once. So does the fault's own stop delivered late: a stale-world denial,
+or the authorizer's world expiry of the gate's last approval.
 
 The harness sees decisions that reached the host or relay, and every terminal
 the H2 authorizer logged. A decision made after the deadline that the harness
@@ -216,7 +218,8 @@ cannot see does not prevent a restart. For H2 this is an authorizer terminal
 authorizer could not finish sending, so its log has no terminal line, and that
 the relay did not receive before its own deadline. A terminal the authorizer
 logged prevents a retry unless it meets the strict pre-fault expiry exception
-above. For H1 it is a gate
+or is the authorizer's own 50 ms deadline in the H2 world-loss window above.
+For H1 it is a gate
 reply that came after the host's 50 ms wait had ended. A denial before the
 fault that coincides with such a delay is therefore restarted rather than
 failed.
@@ -224,7 +227,7 @@ failed.
 An inconclusive attempt never counts as a pass. The scenario restarts with a
 fresh device emulator and fresh processes, at most three attempts, and three
 inconclusive attempts fail it. Except for the pre-fault expiry exception and
-the H1 world-loss window above, and the conclusive H2 rejection path below,
+the H1 and H2 world-loss windows above, and the conclusive H2 rejection path below,
 every other failure, any loss after the fault
 was injected or after any other stop decision reached the host or relay, and any ON
 after a stop fail at once. The interruption cases (host kill, host pause, Rust
@@ -249,8 +252,10 @@ does not retry a post-fault loss or change the relay's 50 ms wait. The case reco
 `relay_exit: 1` and `denial_delivery` with `blocking: false`, the missed terminal
 delivery deadline and gate/request-to-terminal times, and emits a CI warning.
 Functional rejection and OFF can pass while terminal delivery missed its limit;
-this does not claim timely terminal delivery or physical arm behavior. Allow,
-person, world-loss and interruption cases retain their existing pass conditions.
+this does not claim timely terminal delivery or physical arm behavior. Allow
+and interruption cases retain their existing pass conditions. A completed H2
+person or world-loss case must end at its gate decision, as
+[controller-permits.md](controller-permits.md) describes.
 
 For the H1 host-pause case, a pause after STATUS can resume into a gate denial
 and a clean host exit. The harness accepts that path only when the final host
